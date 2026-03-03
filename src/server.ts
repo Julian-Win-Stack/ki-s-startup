@@ -28,7 +28,7 @@ import { loadTheoremPrompts, hashTheoremPrompts } from "./prompts/theorem.js";
 import { loadWriterPrompts, hashWriterPrompts } from "./prompts/writer.js";
 import { loadInspectorPrompts, hashInspectorPrompts } from "./prompts/inspector.js";
 
-import { shell, stateHtml, timelineHtml, timeHtml, verifyHtml, oobAll, lineageHtml } from "./views/html.js";
+import { shell, stateHtml, timelineHtml, timeHtml, verifyHtml, oobAll, branchSelectorHtml } from "./views/html.js";
 import {
   theoremShell,
   theoremFoldsHtml,
@@ -840,7 +840,7 @@ const routes: Route[] = [
     const total = chain.length;
     const depth = clampDepth(total, requestedDepth);
     const slice = depth === total ? chain : chain.slice(total - depth);
-    return html(timelineHtml(stream, slice, at, depth, total));
+    return html(timelineHtml(stream, slice, at));
   },
 
   // Todo: time island
@@ -861,17 +861,15 @@ const routes: Route[] = [
     return html(verifyHtml(chain));
   },
 
-  // Todo: lineage island
+  // Todo: branches island
   async (u) => {
-    if (u.pathname !== "/island/lineage") return null;
+    if (u.pathname !== "/island/branches") return null;
     const stream = u.searchParams.get("stream") ?? "todo";
     const at = parseAt(u.searchParams.get("at"));
-    const chain = await runtime.chain(stream);
-    const total = chain.length;
-    const selectedAt = at === null ? total : Math.min(Math.max(0, at), total);
     const branches = await runtime.branches();
+    const children = await runtime.children(stream);
     const current = await runtime.branch(stream);
-    return html(lineageHtml(stream, branches, current, selectedAt, total));
+    return html(branchSelectorHtml(stream, branches, children, current, at));
   },
 
   // Todo: travel (OOB)
@@ -884,8 +882,9 @@ const routes: Route[] = [
     const chain = at === null ? fullChain : fullChain.slice(0, at);
     const state = at === null ? await runtime.state(stream) : await runtime.stateAt(stream, at);
     const branches = await runtime.branches();
+    const children = await runtime.children(stream);
     const current = await runtime.branch(stream);
-    return html(oobAll(stream, chain, state, at, total, branches, current));
+    return html(oobAll(stream, chain, state, at, total, branches, children, current));
   },
 
   // Todo: command
