@@ -1,14 +1,14 @@
 # Receipt
 
-Store only receipts. Derive everything else—state, UI, audit, replay—from pure folds over the receipt chain.
+Store only receipts. Derive everything else—state, UI, audit, replay—by replaying the receipt chain.
 
 ---
 
 ## The problem
 
-Ever tried to answer: *“How did we get into this state?”*
+Most systems persist only **what is** (a mutable snapshot), not **what happened**.
 
-Traditional apps store **what is** (a mutable snapshot). When something goes wrong, you guess. Logs are scattered, incomplete, or rotated. Audit trails get bolted on later. Debugging becomes archaeology. Reproducing bugs becomes luck.
+When something goes wrong, Logs are scattered, incomplete, or rotated. Audit trails are added later. Debugging turns into archaeology, and reproducing bugs becomes unreliable.
 
 ---
 
@@ -28,24 +28,40 @@ That single choice unlocks:
 
 ---
 
+## 30-second terms
+
+- **Fold** = replay all receipts in order to rebuild current state.
+- **Rebracketing** = change merge order of parallel agent outputs; it does not rewrite those outputs.
+- **Branch** = fork a run into a separate timeline so agents can work in parallel safely.
+
+---
+
 ## What this is
 
-Receipt is a small architectural kernel (~500 LoC in this repo; much less in the core) where the only durable artifact is the **receipt chain**.
+Receipt is a **multi-agent framework** and this repo is a **reference implementation** with a small architectural kernel (~500 LoC in this repo; much less in the core) where the only durable artifact is the **receipt chain**. The API surface is small and explicit. Prompts, memory slices, and merge decisions are observable receipts.
 
 No database required. No ORM required. Just events + pure functions.
 
 ```text
 Command  →  decide  →  Event  →  append  →  Chain
                                               ↓
-                                            fold
+                                        fold (replay)
                                               ↓
                          View  ←  render  ←  State
 ```
 
 * **Events are facts**: immutable, append-only, hash-linked, tamper-evident
-* **State is derived**: compute it by folding receipts, never store it as truth
+* **State is derived**: compute it by replaying receipts (`fold`), never store it as truth
 * **UI is a projection**: HTML, JSON, graphs, diffs—all from the same chain
 * **Time travel is built-in**: replay the first N receipts to see past state
+
+---
+
+## What makes it multi-agent
+
+- **Branching is first-class**: fork streams for parallel agents and merge explicitly.
+- **Per-run streams**: each run (and branch) lives in its own JSONL file for clean replay.
+- **Policy hooks**: memory, branching, and merge policies are explicit and replace hidden state.
 
 ---
 
@@ -104,11 +120,33 @@ const verify = (chain) => chain.every((r, i) => i === 0 || r.prev === chain[i-1]
 
 Everything else is wiring.
 
+---
+
+## Comparison
+
+| Approach           | How it differs                                                  |
+| ------------------ | --------------------------------------------------------------- |
+| **CRUD**           | mutable state; history is optional/partial                      |
+| **Redux**          | time travel is dev-only; actions aren’t durable                 |
+| **Event Sourcing** | often heavy infra + projection complexity                       |
+| **Blockchain**     | consensus overhead + latency                                    |
+| **Receipt**        | local-first, append-only, hash-linked, derived state via replay (`fold`) |
+
+Receipt borrows the *useful* part of blockchains (hash-linked history) without the consensus cost, and the *useful* part of event sourcing (events as truth) without requiring a whole platform.
+
+---
+
 ## Run
 
 ```bash
 npm install
 npm run dev
+```
+
+Scaffold a new Receipt Runtime agent:
+
+```bash
+npm run new:agent -- my-agent
 ```
 
 Open: [http://localhost:8787](http://localhost:8787)
@@ -122,18 +160,47 @@ src/
 ├── core/                 # The kernel (axioms)
 │   ├── types.ts          # Receipt, Chain, Reducer, View, Decide
 │   ├── chain.ts          # append, fold, take, verify, computeHash
+│   ├── checkpoint.ts     # optional fold checkpoints
+│   ├── run.ts            # run lifecycle + resume helpers
 │   ├── store.ts          # Store interface
-│   ├── runtime.ts        # Composition: store + decide + reduce → Runtime
-│   └── capability.ts     # Builder DSL with reads/writes contracts (optional)
+│   └── runtime.ts        # Composition: store + decide + reduce → Runtime
 │
-├── adapters/             # Persistence adapters
-│   └── jsonl.ts          # JSONL file store
+├── adapters/             # IO adapters
+│   ├── jsonl.ts          # JSONL file store + stream manifest + branch metadata receipts
+│   ├── jsonl-indexed.ts  # JSONL store with sidecar indexes (head/count optimized)
+│   ├── openai.ts         # LLM text generation (no tools)
+│   └── receipt-tools.ts  # receipt file helpers for inspector
+│
+├── engine/               # Reusable orchestration primitives
+│   └── runtime/          # Receipt Runtime surface
+│       ├── workflow.ts   # queued emitters + lifecycle runner
+│       ├── receipt-runtime.ts # defineReceiptAgent + runReceiptAgent
+│       ├── planner.ts    # typed needs/provides planner
+│       ├── plan-validate.ts # cycle/missing provider validation
+│       └── policies.ts   # memory/branch/merge policy types
+│
+├── agents/               # Concrete agent workflows
+│   ├── theorem.ts        # theorem guild workflow
+│   ├── writer.ts         # writer guild workflow
+│   └── inspector.ts      # receipt inspector workflow
 │
 ├── modules/              # Domain modules (pure)
-│   └── todo.ts           # decide: Cmd → Event[], reduce: (S, E) → S
+│   ├── todo.ts           # decide: Cmd → Event[], reduce: (S, E) → S
+│   ├── planner.ts        # planner events + state
+│   ├── theorem.ts        # LLM-only theorem receipts
+│   ├── writer.ts         # planner-driven writer receipts
+│   └── inspector.ts      # receipt inspector receipts
+│
+├── prompts/              # Prompt loaders
+│   ├── theorem.ts
+│   ├── writer.ts
+│   └── inspector.ts
 │
 ├── views/                # View functions (Chain → Output)
-│   └── html.ts           # HTML views (HTMX-style “islands”)
+│   ├── html.ts           # Todo HTML views (HTMX-style “islands”)
+│   ├── theorem.ts        # Theorem UI projection
+│   ├── writer.ts         # Writer UI projection
+│   └── receipt.ts        # Receipt inspector UI
 │
 └── server.ts             # HTTP layer (thin routing)
 ```
@@ -218,7 +285,8 @@ const reduce = (state: State, event: Event): State => {
 
 ```ts
 const store = jsonlStore<Event>(DATA_DIR);
-const rt = createRuntime(store, decide, reduce, initial);
+const branchStore = jsonBranchStore(DATA_DIR);
+const rt = createRuntime(store, branchStore, decide, reduce, initial);
 
 await rt.execute(stream, { type: "add", text: "Hello" });
 
@@ -252,5 +320,63 @@ This repo includes a small todo app with a chain explorer to make the model tang
 * **Verification**: integrity status via hash-chain checks
 
 The UI is optional. The chain is the product.
+
+---
+
+## Built-in multi-agent apps
+
+All agent demos are receipt-native: prompts, decisions, outputs, and status changes are durable receipts.
+
+1. **Theorem Guild** (`/theorem`)
+   - Multi-agent proof workflow with branches, memory slices, and rebracketing (merge-order selection).
+2. **Writer Guild** (`/writer`)
+   - Planner-driven writing workflow with explicit capability needs/provides.
+3. **Receipt Inspector** (`/receipt`)
+   - Multi-agent analysis of receipt files (analyze/improve/timeline/qa modes).
+
+Set `OPENAI_API_KEY` to run LLM-backed theorem/writer/inspector analysis flows.
+
+Run:
+
+```bash
+npm run dev
+```
+
+Optional performance mode:
+
+```bash
+RECEIPT_INDEXED_STORE=1 npm run dev
+```
+
+Open:
+- http://localhost:8787/theorem
+- http://localhost:8787/writer
+- http://localhost:8787/receipt
+
+---
+
+## Build your own agent
+
+- Start here: `docs/create-agent.md`
+- Full framework reference: `docs/agent-framework.md`
+
+Quick scaffold:
+
+```bash
+npm run new:agent -- my-agent
+```
+
+---
+
+## Receipt runtime principles
+
+Receipt Runtime builds multi-agent systems without hidden mutable state by default:
+
+1. **Receipts are source of truth**: every meaningful action is appended, never mutated.
+2. **State is a fold (replay)**: each view and policy is derived from chain replay.
+3. **Per-run streams**: each run has its own stream; branches isolate parallel agent timelines.
+4. **Planner receipts**: readiness, start, completion, and state patches are first-class events.
+5. **Merge lenses**: theorem rebracketing chooses merge order from explicit bracket structures; it does not edit underlying agent outputs.
+6. **Replay/debug first**: rerun or time-travel by slicing the chain, not by reconstructing logs.
 
 ---

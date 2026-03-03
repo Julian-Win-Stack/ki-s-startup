@@ -3,6 +3,7 @@
 // ============================================================================
 
 import type { Chain } from "../core/types.js";
+import { getLatestRunId } from "../core/run.js";
 import { fold } from "../core/chain.js";
 import type { TheoremEvent } from "../modules/theorem.js";
 import { reduce as reduceTheorem, initial as initialTheorem } from "../modules/theorem.js";
@@ -15,41 +16,12 @@ export type TheoremRunSummary = {
   readonly count: number;
 };
 
-export const getLatestTheoremRunId = (chain: Chain<TheoremEvent>): string | undefined => {
-  for (let i = chain.length - 1; i >= 0; i -= 1) {
-    const event = chain[i].body;
-    if (event.type === "problem.set") return event.runId;
-  }
-  return undefined;
-};
+export const getLatestTheoremRunId = (chain: Chain<TheoremEvent>): string | undefined =>
+  getLatestRunId(chain, "problem.set");
 
 export const sliceTheoremChain = (chain: Chain<TheoremEvent>, runId?: string): Chain<TheoremEvent> => {
   if (!runId) return chain;
-
-  const byRun = chain.filter((r) => ("runId" in r.body ? r.body.runId === runId : false));
-  const hasNonProblem = byRun.some((r) => r.body.type !== "problem.set");
-
-  if (hasNonProblem) return byRun;
-
-  let start = -1;
-  for (let i = 0; i < chain.length; i += 1) {
-    const event = chain[i].body;
-    if (event.type === "problem.set" && event.runId === runId) {
-      start = i;
-      break;
-    }
-  }
-  if (start < 0) return chain;
-  let end = chain.length;
-  for (let i = start + 1; i < chain.length; i += 1) {
-    if (chain[i].body.type === "problem.set") {
-      end = i;
-      break;
-    }
-  }
-  const legacySlice = chain.slice(start, end);
-  const legacyHasUntyped = legacySlice.some((r) => !("runId" in r.body) || !r.body.runId);
-  return legacyHasUntyped ? legacySlice : byRun;
+  return chain.filter((r) => ("runId" in r.body ? r.body.runId === runId : false));
 };
 
 export const buildTheoremRuns = (chain: Chain<TheoremEvent>): TheoremRunSummary[] => {

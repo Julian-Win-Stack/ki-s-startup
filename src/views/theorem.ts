@@ -3,9 +3,15 @@
 // ============================================================================
 
 import type { Chain } from "../core/types.js";
-import { verify, computeHash } from "../core/chain.js";
+import { verify } from "../core/chain.js";
 import type { TheoremEvent, TheoremState } from "../modules/theorem.js";
 import type { TheoremRunSummary } from "../agents/theorem.js";
+import {
+  frameworkCoordinationHtml,
+  type FrameworkContextRow,
+  type FrameworkLaneRow,
+  type FrameworkTrailRow,
+} from "./agent-framework.js";
 
 const esc = (s: string): string =>
   s.replace(/&/g, "&amp;")
@@ -22,6 +28,9 @@ const prettyAgent = (id: string): string =>
     .split(/[-_]/g)
     .map((p) => p.slice(0, 1).toUpperCase() + p.slice(1))
     .join(" ");
+
+const prettyPhase = (phase?: string): string =>
+  phase ? phase.slice(0, 1).toUpperCase() + phase.slice(1) : "Context";
 
 const stripTexText = (line: string): string =>
   line.replace(/\\text\{([^}]*)\}/g, (_m, inner) => inner);
@@ -116,8 +125,19 @@ export const theoremShell = (
   stream: string,
   examples: ReadonlyArray<{ id: string; label: string; problem: string }>,
   activeRun?: string,
-  at?: number | null
-): string => `<!doctype html>
+  at?: number | null,
+  branch?: string
+): string => {
+  const resumeQuery = activeRun
+    ? [
+        `stream=${encodeURIComponent(stream)}`,
+        `run=${encodeURIComponent(activeRun)}`,
+        branch ? `branch=${encodeURIComponent(branch)}` : "",
+        at !== null && at !== undefined ? `at=${encodeURIComponent(String(at))}` : "",
+      ].filter(Boolean).join("&")
+    : "";
+  const resumeUrl = activeRun ? `/theorem/run?${resumeQuery}` : "";
+  return `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -167,6 +187,22 @@ export const theoremShell = (
       font-weight: 700;
       margin-bottom: 16px;
     }
+    .brand-tag {
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(107,220,255,0.4);
+      color: rgba(107,220,255,0.9);
+      background: rgba(107,220,255,0.12);
+    }
+    .brand-sub {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: -8px;
+      margin-bottom: 16px;
+    }
     .nav-title {
       font-size: 12px;
       letter-spacing: 0.18em;
@@ -200,9 +236,22 @@ export const theoremShell = (
       border: 1px solid var(--line);
       background: var(--panel);
     }
+    .controls-title {
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .controls-sub {
+      font-size: 11px;
+      color: rgba(255,255,255,0.55);
+    }
     .controls form {
       display: grid;
       gap: 10px;
+    }
+    .controls form.resume-form {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
     }
     .controls textarea {
       background: rgba(255,255,255,0.04);
@@ -223,6 +272,18 @@ export const theoremShell = (
       padding: 12px 18px;
       cursor: pointer;
       height: fit-content;
+    }
+    .resume-form { margin-top: 4px; }
+    .resume-form button {
+      border: none;
+      background: rgba(255,255,255,0.08);
+      color: var(--ink);
+      font-weight: 600;
+      border-radius: 12px;
+      padding: 10px 16px;
+      cursor: pointer;
+      height: fit-content;
+      width: auto;
     }
     .run-controls {
       display: flex;
@@ -265,6 +326,66 @@ export const theoremShell = (
       display: grid;
       gap: 16px;
     }
+    .travel-island {
+      margin-top: 16px;
+      min-height: 90px;
+      border-radius: 14px;
+      border: 1px solid rgba(107,220,255,0.3);
+      background: linear-gradient(120deg, rgba(107,220,255,0.16), rgba(195,139,255,0.12));
+      padding: 14px;
+    }
+    .travel-hero { display: grid; gap: 10px; }
+    .travel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .travel-title { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+    .travel-pill {
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.22);
+      padding: 3px 8px;
+      color: rgba(255,255,255,0.8);
+      background: rgba(255,255,255,0.06);
+    }
+    .travel-pill.live {
+      border-color: rgba(110,243,160,0.55);
+      color: rgba(110,243,160,0.95);
+      background: rgba(110,243,160,0.12);
+    }
+    .travel-pill.past {
+      border-color: rgba(255,211,106,0.55);
+      color: rgba(255,211,106,0.95);
+      background: rgba(255,211,106,0.12);
+    }
+    .travel-meta { font-size: 12px; color: rgba(255,255,255,0.72); }
+    .travel-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+    }
+    .travel-actions { display: inline-flex; gap: 8px; }
+    .travel-btn {
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 9px;
+      padding: 6px 10px;
+      font-size: 11px;
+      color: var(--ink);
+      background: rgba(255,255,255,0.08);
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .travel-btn[disabled],
+    .travel-btn.disabled {
+      pointer-events: none;
+      opacity: 0.35;
+    }
+    .travel-scrub { min-width: 0; }
+    .travel-slider {
+      width: 100%;
+      accent-color: #6bdcff;
+    }
+    .travel-step { font-size: 11px; color: rgba(255,255,255,0.75); white-space: nowrap; }
     .activity {
       padding: 18px 16px;
       border-left: 1px solid var(--line);
@@ -284,7 +405,8 @@ export const theoremShell = (
 <body hx-ext="sse" sse-connect="/theorem/stream?stream=${encodeURIComponent(stream)}">
   <div class="app">
     <aside class="sidebar">
-      <div class="brand">Theorem Guild</div>
+      <div class="brand">Theorem Guild <span class="brand-tag">multi-agent</span></div>
+      <div class="brand-sub">Receipts only. Streams per run. Replay-first.</div>
       <div class="nav-title">Runs</div>
       <button class="new-chat" type="button" onclick="window.location.href='/theorem?stream=${encodeURIComponent(stream)}&run=new'">+ New Run</button>
       <div id="tg-folds"
@@ -297,9 +419,19 @@ export const theoremShell = (
     </aside>
 
     <main class="main">
+      <div id="tg-travel"
+           class="travel-island"
+           hx-get="/theorem/island/travel?stream=${encodeURIComponent(stream)}&run=${encodeURIComponent(activeRun ?? "")}&branch=${encodeURIComponent(branch ?? "")}&at=${encodeURIComponent(String(at ?? ""))}"
+           hx-trigger="load, sse:theorem-refresh throttle:700ms"
+           hx-swap="innerHTML">
+        <div class="empty">Loading time travel...</div>
+      </div>
+
       <div class="controls">
+        <div class="controls-title">Multi-agent proof run</div>
+        <div class="controls-sub">Parallel attempts, critiques, and merges recorded as receipts.</div>
         <form hx-post="/theorem/run?stream=${encodeURIComponent(stream)}" hx-swap="none">
-          <textarea name="problem" id="tg-problem" placeholder="Paste a theorem / problem statement..." required></textarea>
+          <textarea name="problem" id="tg-problem" placeholder="Paste a theorem / problem statement for the guild..." required></textarea>
           <div class="run-controls">
             <label class="rounds">
               <span>Rounds</span>
@@ -314,19 +446,25 @@ export const theoremShell = (
               <input type="number" name="memory" min="5" max="200" value="60" />
             </label>
             <label class="rounds">
-              <span>Branch</span>
+              <span>Branch threshold</span>
               <input type="number" name="branch" min="1" max="6" value="2" />
             </label>
-            <button>Run guild</button>
+            <button>Run multi-agent</button>
           </div>
         </form>
         <div class="examples">
           ${examples.map(ex => `<button type="button" data-problem="${esc(ex.problem)}">${esc(ex.label)}</button>`).join("")}
         </div>
+        ${activeRun
+          ? `<form class="resume-form" hx-post="${resumeUrl}" hx-swap="none">
+              <input type="hidden" name="append" id="tg-resume-append" />
+              <button type="submit">Resume current run</button>
+            </form>`
+          : ""}
       </div>
 
       <div class="run-area" id="tg-chat"
-           hx-get="/theorem/island/chat?stream=${encodeURIComponent(stream)}&run=${encodeURIComponent(activeRun ?? "")}&at=${encodeURIComponent(String(at ?? ""))}"
+           hx-get="/theorem/island/chat?stream=${encodeURIComponent(stream)}&run=${encodeURIComponent(activeRun ?? "")}&branch=${encodeURIComponent(branch ?? "")}&at=${encodeURIComponent(String(at ?? ""))}"
            hx-trigger="load, sse:theorem-refresh throttle:1200ms"
            hx-swap="innerHTML">
         <div class="empty">Loading run...</div>
@@ -334,7 +472,7 @@ export const theoremShell = (
     </main>
 
     <aside class="activity" id="tg-side"
-           hx-get="/theorem/island/side?stream=${encodeURIComponent(stream)}&run=${encodeURIComponent(activeRun ?? "")}&at=${encodeURIComponent(String(at ?? ""))}"
+           hx-get="/theorem/island/side?stream=${encodeURIComponent(stream)}&run=${encodeURIComponent(activeRun ?? "")}&branch=${encodeURIComponent(branch ?? "")}&at=${encodeURIComponent(String(at ?? ""))}"
            hx-trigger="load, sse:theorem-refresh throttle:800ms"
            hx-swap="innerHTML">
       <div class="empty">Loading panels...</div>
@@ -350,6 +488,13 @@ export const theoremShell = (
           if (problem && input) input.value = problem;
         });
       });
+      const resumeForm = document.querySelector(".resume-form");
+      const resumeAppend = document.getElementById("tg-resume-append");
+      if (resumeForm && input && resumeAppend) {
+        resumeForm.addEventListener("submit", () => {
+          resumeAppend.value = input.value || "";
+        });
+      }
 
       const freeze = () => {
         document.body.dataset.freezeCoord = "1";
@@ -401,6 +546,7 @@ export const theoremShell = (
   </script>
 </body>
 </html>`;
+};
 
 // ============================================================================
 // Folds
@@ -456,6 +602,65 @@ export const theoremFoldsHtml = (
   </style>`;
 };
 
+export const theoremTravelHtml = (opts: {
+  readonly stream: string;
+  readonly runId?: string;
+  readonly branch?: string;
+  readonly at: number | null | undefined;
+  readonly total: number;
+}): string => {
+  const { stream, runId, branch, at, total } = opts;
+  if (!runId) {
+    return `<div class="travel-hero">
+      <div class="travel-head">
+        <div class="travel-title">Time travel</div>
+        <div class="travel-pill">idle</div>
+      </div>
+      <div class="travel-meta">Select a run to scrub receipts and replay coordination.</div>
+    </div>`;
+  }
+
+  const maxAt = Math.max(0, total);
+  const currentAt = at === null || at === undefined ? maxAt : Math.max(0, Math.min(at, maxAt));
+  const isPast = currentAt < maxAt;
+  const params = (nextAt?: number | null): string => {
+    const q = new URLSearchParams({ stream, run: runId });
+    if (branch) q.set("branch", branch);
+    if (nextAt !== undefined && nextAt !== null && nextAt < maxAt) q.set("at", String(nextAt));
+    return `/theorem/travel?${q.toString()}`;
+  };
+  const atStart = currentAt <= 0;
+  const atHead = currentAt >= maxAt;
+
+  return `<div class="travel-hero">
+    <div class="travel-head">
+      <div class="travel-title">Time travel</div>
+      <div class="travel-pill ${isPast ? "past" : "live"}">${isPast ? "past view" : "live head"}</div>
+    </div>
+    <div class="travel-meta">Replay any prefix of the run. Coordination, context, and proof state are folded from receipts at this point in time.</div>
+    <div class="travel-row">
+      <div class="travel-actions">
+        <button type="button" class="travel-btn" ${atStart ? "disabled" : ""}
+          hx-get="${params(0)}" hx-swap="none">Start</button>
+        <button type="button" class="travel-btn" ${atStart ? "disabled" : ""}
+          hx-get="${params(Math.max(0, currentAt - 1))}" hx-swap="none">Back</button>
+        <button type="button" class="travel-btn" ${atHead ? "disabled" : ""}
+          hx-get="${params(Math.min(maxAt, currentAt + 1))}" hx-swap="none">Forward</button>
+        <button type="button" class="travel-btn" ${atHead ? "disabled" : ""}
+          hx-get="${params(null)}" hx-swap="none">Live</button>
+      </div>
+      <form class="travel-scrub">
+        <input type="hidden" name="stream" value="${esc(stream)}" />
+        <input type="hidden" name="run" value="${esc(runId)}" />
+        ${branch ? `<input type="hidden" name="branch" value="${esc(branch)}" />` : ""}
+        <input class="travel-slider" type="range" min="0" max="${maxAt}" value="${currentAt}" name="at"
+          hx-get="/theorem/travel" hx-include="closest form" hx-trigger="change delay:90ms" hx-swap="none" />
+      </form>
+      <div class="travel-step">Step ${currentAt} / ${maxAt}</div>
+    </div>
+  </div>`;
+};
+
 // ============================================================================
 // Chat
 // ============================================================================
@@ -490,6 +695,23 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
   const items: ChatItem[] = [];
   const index = new Map<string, number>();
   const claimOwner = new Map<string, string>();
+  type AgentSnapshot = {
+    status?: "running" | "idle" | "done";
+    phase?: string;
+    round?: number;
+    note?: string;
+    lastAction?: string;
+    updatedAt: number;
+  };
+  type CoordTrail = {
+    ts: number;
+    kind: "attempt" | "lemma" | "critique" | "patch" | "branch" | "rebracket" | "summary" | "parallel" | "status";
+    agent?: string;
+    body: string;
+  };
+  const agentSnapshots = new Map<string, AgentSnapshot>();
+  const coordTrail: CoordTrail[] = [];
+  const seenHashes = new Set<string>();
   let problemText = "";
   let latestSolution: { content: string; confidence: number; gaps?: ReadonlyArray<string> } | null = null;
   let runStatus: "running" | "failed" | "completed" | null = null;
@@ -501,7 +723,22 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
   let latestParallel: { phase: string; agents: ReadonlyArray<string>; round?: number } | null = null;
   const summaryChunks = new Map<string, string>();
 
+  const touchAgent = (agentId: string, patch: Partial<AgentSnapshot>, ts: number) => {
+    const prev = agentSnapshots.get(agentId) ?? { updatedAt: ts };
+    agentSnapshots.set(agentId, { ...prev, ...patch, updatedAt: Math.max(prev.updatedAt, ts) });
+  };
+
+  const pushTrail = (item: CoordTrail) => {
+    const key = `${item.kind}|${item.agent ?? ""}|${item.body}`;
+    const prev = coordTrail[coordTrail.length - 1];
+    if (prev && `${prev.kind}|${prev.agent ?? ""}|${prev.body}` === key) return;
+    coordTrail.push(item);
+  };
+
   for (const r of chain) {
+    if (seenHashes.has(r.hash)) continue;
+    seenHashes.add(r.hash);
+
     const e = r.body;
     lastEventLabel = e.type;
     lastEventTs = r.ts;
@@ -509,6 +746,7 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
       case "problem.set":
         problemText = e.problem;
         items.push({ id: r.id, role: "user", label: "You", content: e.problem });
+        pushTrail({ ts: r.ts, kind: "status", agent: "Orchestrator", body: "Run initialized with user problem." });
         break;
       case "attempt.proposed":
         claimOwner.set(e.claimId, e.agentId);
@@ -517,6 +755,13 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
           label: prettyAgent(e.agentId),
           content: e.content,
           kind: "attempt",
+        });
+        touchAgent(e.agentId, { lastAction: `Attempt #${e.claimId.slice(-4)}` }, r.ts);
+        pushTrail({
+          ts: r.ts,
+          kind: "attempt",
+          agent: prettyAgent(e.agentId),
+          body: `Proposed attempt #${e.claimId.slice(-4)}.`,
         });
         break;
       case "lemma.proposed":
@@ -527,6 +772,13 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
           content: e.content,
           kind: "lemma",
         });
+        touchAgent(e.agentId, { lastAction: `Lemma #${e.claimId.slice(-4)}` }, r.ts);
+        pushTrail({
+          ts: r.ts,
+          kind: "lemma",
+          agent: prettyAgent(e.agentId),
+          body: `Added lemma #${e.claimId.slice(-4)}.`,
+        });
         break;
       case "critique.raised":
         const targetCrit = claimOwner.get(e.targetClaimId);
@@ -535,6 +787,13 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
           label: `${prettyAgent(e.agentId)} → ${prettyAgent(targetCrit ?? "Claim")}`,
           content: e.content,
           kind: "critique",
+        });
+        touchAgent(e.agentId, { lastAction: `Critique on #${e.targetClaimId.slice(-4)}` }, r.ts);
+        pushTrail({
+          ts: r.ts,
+          kind: "critique",
+          agent: prettyAgent(e.agentId),
+          body: `Critiqued claim #${e.targetClaimId.slice(-4)}.`,
         });
         break;
       case "patch.applied":
@@ -545,6 +804,13 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
           content: e.content,
           kind: "patch",
         });
+        touchAgent(e.agentId, { lastAction: `Patch for #${e.targetClaimId.slice(-4)}` }, r.ts);
+        pushTrail({
+          ts: r.ts,
+          kind: "patch",
+          agent: prettyAgent(e.agentId),
+          body: `Patched claim #${e.targetClaimId.slice(-4)}.`,
+        });
         break;
       case "summary.made":
         upsertChat(items, index, e.claimId, {
@@ -554,23 +820,48 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
           kind: "summary",
         });
         summaryChunks.set(e.claimId, (summaryChunks.get(e.claimId) ?? "") + e.content);
+        touchAgent(e.agentId, { lastAction: `Summary ${e.bracket}` }, r.ts);
+        pushTrail({
+          ts: r.ts,
+          kind: "summary",
+          agent: prettyAgent(e.agentId),
+          body: `Merged branches using ${e.bracket}.`,
+        });
         break;
       case "solution.finalized":
         latestSolution = { content: e.content, confidence: e.confidence, gaps: e.gaps };
+        touchAgent(e.agentId, { status: "done", lastAction: `Finalized proof (${e.confidence.toFixed(2)})` }, r.ts);
+        pushTrail({
+          ts: r.ts,
+          kind: "summary",
+          agent: prettyAgent(e.agentId),
+          body: `Final proof emitted (confidence ${e.confidence.toFixed(2)}).`,
+        });
         break;
       case "run.status":
         runStatus = e.status;
         runNote = e.note;
+        pushTrail({
+          ts: r.ts,
+          kind: "status",
+          agent: "Orchestrator",
+          body: `Run marked ${e.status}${e.note ? ` (${e.note})` : ""}.`,
+        });
         break;
       case "phase.parallel":
         items.push({
           id: r.id,
           role: "system",
-          label: "Parallel",
+          label: "Parallel phase",
           content: `${e.phase} · ${e.agents.map(prettyAgent).join(", ")}${e.round ? ` (r${e.round})` : ""}`,
           kind: "parallel",
         });
         latestParallel = { phase: e.phase, agents: e.agents, round: e.round };
+        pushTrail({
+          ts: r.ts,
+          kind: "parallel",
+          body: `Parallel ${e.phase}${e.round ? ` r${e.round}` : ""}: ${e.agents.map(prettyAgent).join(", ")}.`,
+        });
         break;
       case "verification.report":
         items.push({
@@ -580,8 +871,28 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
           content: `Status: ${e.status.toUpperCase()}\n${e.content}`,
           kind: "summary",
         });
+        touchAgent(e.agentId, { lastAction: `Verification: ${e.status}` }, r.ts);
+        pushTrail({
+          ts: r.ts,
+          kind: "summary",
+          agent: prettyAgent(e.agentId),
+          body: `Verification status: ${e.status}.`,
+        });
         break;
       case "agent.status":
+        touchAgent(
+          e.agentId,
+          {
+            status: e.status,
+            phase: e.phase,
+            round: e.round,
+            note: e.note,
+            lastAction: e.status === "running"
+              ? `Working on ${e.phase ?? "task"}${e.round ? ` r${e.round}` : ""}`
+              : e.note ?? undefined,
+          },
+          r.ts
+        );
         if (e.status === "running") {
           items.push({
             id: r.id,
@@ -592,6 +903,12 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
           });
           runningAgent = e.agentId;
           runningPhase = `${e.phase ?? "working"}${e.round ? ` r${e.round}` : ""}`;
+          pushTrail({
+            ts: r.ts,
+            kind: "status",
+            agent: prettyAgent(e.agentId),
+            body: `Started ${e.phase ?? "task"}${e.round ? ` r${e.round}` : ""}.`,
+          });
         }
         break;
       case "rebracket.applied":
@@ -602,14 +919,29 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
           content: `Rebracket → ${e.bracket} (score ${e.score.toFixed(2)})`,
           kind: "rebracket",
         });
+        pushTrail({
+          ts: r.ts,
+          kind: "rebracket",
+          agent: "Orchestrator",
+          body: `Rebracketed to ${e.bracket} (score ${e.score.toFixed(2)}).`,
+        });
         break;
       case "branch.created":
+        const shortBranch = e.branchId.includes("/branches/")
+          ? e.branchId.split("/branches/").pop() ?? e.branchId
+          : e.branchId.split("/").pop() ?? e.branchId;
         items.push({
           id: r.id,
           role: "system",
           label: "System",
-          content: `Branch created: ${e.branchId} at r${e.forkAt}`,
+          content: `Branch created: ${shortBranch} at r${e.forkAt}`,
           kind: "branch",
+        });
+        pushTrail({
+          ts: r.ts,
+          kind: "branch",
+          agent: "Orchestrator",
+          body: `Created branch ${shortBranch} from step r${e.forkAt}.`,
         });
         break;
       default:
@@ -621,13 +953,7 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
     runStatus = "completed";
   }
 
-  const miniCards = items.filter((msg) => msg.role !== "user").map((msg) => {
-    const content = msg.content.trim() || "Thinking...";
-    return `<div class="mini-card kind-${msg.kind ?? "attempt"}" title="${esc(content)}">
-      <div class="mini-label">${esc(msg.label)}</div>
-      <div class="mini-body">${esc(truncate(content, 160))}</div>
-    </div>`;
-  }).join("");
+  const contextRows = contextWindowRows(chain);
 
   const resultStatus = runStatus === "failed"
     ? "Failed"
@@ -664,6 +990,45 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
             : "Streaming receipts...";
   const gaps = latestSolution?.gaps?.length ? latestSolution.gaps.map((g) => `<li>${esc(g)}</li>`).join("") : "";
   const gapsHtml = gaps ? `<div class="result-gaps"><div class="result-meta">Gaps</div><ul>${gaps}</ul></div>` : "";
+  const contextCount = chain
+    .filter((r) => r.body.type === "prompt.context")
+    .filter((r, idx, arr) => arr.findIndex((x) => x.hash === r.hash) === idx)
+    .length;
+  const coordCount = coordTrail.length;
+  const nowLabel = parallelLabel
+    || (runningPhase && runningAgent ? `${prettyAgent(runningAgent)} · ${runningPhase}` : "")
+    || (lastEventLabel ? `Last: ${lastEventLabel}` : "Waiting for first receipt");
+  const clockLabel = lastEventTs ? new Date(lastEventTs).toLocaleTimeString() : "—";
+  const streamModeLabel = runStatus === "running"
+    ? "Lanes and trail update after each completed receipt. Token-by-token model streaming is currently disabled."
+    : "Showing receipt replay for this run slice.";
+
+  const laneRows: ReadonlyArray<FrameworkLaneRow> = [...agentSnapshots.entries()]
+    .sort((a, b) => {
+      const aRunning = a[1].status === "running" ? 1 : 0;
+      const bRunning = b[1].status === "running" ? 1 : 0;
+      if (aRunning !== bRunning) return bRunning - aRunning;
+      return b[1].updatedAt - a[1].updatedAt;
+    })
+    .map(([agentId, snapshot]) => {
+      const phase = snapshot.phase ? `${prettyPhase(snapshot.phase)}${snapshot.round ? ` r${snapshot.round}` : ""}` : "Waiting";
+      const status = snapshot.status ?? "idle";
+      const action = snapshot.lastAction ?? snapshot.note ?? "Waiting for assignment.";
+      return {
+        agent: prettyAgent(agentId),
+        phase,
+        status,
+        action,
+      };
+    });
+
+  const trailRows: ReadonlyArray<FrameworkTrailRow> = coordTrail.slice(-14).map((entry, idx, arr) => ({
+    step: arr.length - idx,
+    kind: entry.kind,
+    agent: entry.agent ?? "System",
+    body: entry.body,
+    ts: entry.ts,
+  }));
 
   return `<div class="chat-stack">
     ${problemText ? `<div class="chat-row user">
@@ -673,7 +1038,7 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
 
     <div class="result-card">
       <div class="result-head">
-        <div class="result-title">Final proof</div>
+        <div class="result-title">Merged proof</div>
         <div class="result-pill">${esc(resultStatus)}</div>
       </div>
       <div class="result-meta">${esc(resultMeta)}</div>
@@ -681,16 +1046,28 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
       ${gapsHtml}
     </div>
 
-    <section class="coordination">
-      <div class="coord-head">Coordination feed</div>
-      <div class="coord-strip">
-        ${miniCards || `<div class="empty">No coordination receipts yet.</div>`}
-      </div>
-    </section>
+    ${frameworkCoordinationHtml({
+      palette: "theorem",
+      metricsTitle: "Coordination status",
+      clockLabel,
+      metrics: [
+        { key: "Run", value: resultStatus },
+        { key: "Now", value: nowLabel },
+        { key: "Coord receipts", value: String(coordCount) },
+        { key: "Prompt slices", value: String(contextCount) },
+      ],
+      contextTitle: "What Each Agent Saw",
+      contextSubtitle: "Prompt/context snapshots sent to each agent before they generated a step.",
+      contextNote: "Exact receipt-backed prompt slices (problem + memory + claim context). System prompt omitted.",
+      contextRows,
+      boardTitle: "How Multi-Agent Coordination Happened",
+      boardSubtitle: `${streamModeLabel} Lanes show current agent status and action. Trail shows ordered coordination receipts.`,
+      lanes: laneRows,
+      trail: trailRows,
+    })}
   </div>
   <style>
     .chat-stack { display: grid; gap: 18px; }
-    .chat { display: grid; gap: 14px; }
     .chat-row { display: grid; gap: 6px; }
     .chat-row.user { justify-items: end; }
     .chat-label { font-size: 11px; color: rgba(255,255,255,0.55); }
@@ -757,40 +1134,6 @@ export const theoremChatHtml = (chain: Chain<TheoremEvent>): string => {
       border-radius: 6px;
     }
     .result-gaps ul { margin: 6px 0 0 16px; padding: 0; color: rgba(255,255,255,0.7); font-size: 12px; }
-    .coordination { display: grid; gap: 10px; }
-    .coord-head {
-      font-size: 12px;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: rgba(255,255,255,0.55);
-    }
-    .coord-strip {
-      display: grid;
-      grid-auto-flow: column;
-      grid-auto-columns: minmax(220px, 1fr);
-      gap: 10px;
-      overflow-x: auto;
-      padding-bottom: 6px;
-    }
-    .mini-card {
-      border-radius: 12px;
-      border: 1px solid rgba(255,255,255,0.08);
-      background: rgba(18,20,28,0.65);
-      padding: 10px 12px;
-      display: grid;
-      gap: 6px;
-      min-height: 88px;
-    }
-    .mini-card.kind-attempt { border-color: rgba(107,220,255,0.25); }
-    .mini-card.kind-lemma { border-color: rgba(110,243,160,0.25); }
-    .mini-card.kind-critique { border-color: rgba(255,107,107,0.3); }
-    .mini-card.kind-patch { border-color: rgba(195,139,255,0.3); }
-    .mini-card.kind-branch { border-color: rgba(255,211,106,0.3); }
-    .mini-card.kind-summary { border-color: rgba(107,220,255,0.45); }
-    .mini-card.kind-parallel { border-color: rgba(255,211,106,0.55); }
-    .mini-card.kind-rebracket { border-color: rgba(110,243,160,0.4); }
-    .mini-label { font-size: 11px; color: rgba(255,255,255,0.7); }
-    .mini-body { font-size: 12px; color: rgba(255,255,255,0.85); line-height: 1.45; white-space: pre-wrap; }
   </style>`;
 };
 
@@ -881,15 +1224,153 @@ const activityRows = (
   return (rows + extras) || `<div class="empty">No agents yet.</div>`;
 };
 
+const collabFeedHtml = (
+  chain: Chain<TheoremEvent>,
+  team: ReadonlyArray<TeamMember>
+): string => {
+  const nameFor = (agentId?: string): string => {
+    if (!agentId) return "System";
+    const member = team.find((t) => t.id === agentId);
+    return member?.name ?? prettyAgent(agentId);
+  };
+
+  type FeedItem = { ts: number; agent: string; kind: string; body: string; stream: string };
+  const items: FeedItem[] = [];
+
+  for (const r of chain) {
+    const e = r.body;
+    switch (e.type) {
+      case "problem.set":
+        items.push({ ts: r.ts, agent: "Orchestrator", kind: "Brief", body: e.problem, stream: r.stream });
+        break;
+      case "problem.appended":
+        items.push({ ts: r.ts, agent: "Orchestrator", kind: "Context", body: e.append, stream: r.stream });
+        break;
+      case "attempt.proposed":
+        items.push({ ts: r.ts, agent: nameFor(e.agentId), kind: "Attempt", body: e.content, stream: r.stream });
+        break;
+      case "lemma.proposed":
+        items.push({ ts: r.ts, agent: nameFor(e.agentId), kind: "Lemma", body: e.content, stream: r.stream });
+        break;
+      case "critique.raised":
+        items.push({ ts: r.ts, agent: nameFor(e.agentId), kind: "Critique", body: e.content, stream: r.stream });
+        break;
+      case "patch.applied":
+        items.push({ ts: r.ts, agent: nameFor(e.agentId), kind: "Patch", body: e.content, stream: r.stream });
+        break;
+      case "summary.made":
+        items.push({ ts: r.ts, agent: nameFor(e.agentId), kind: "Summary", body: e.content, stream: r.stream });
+        break;
+      case "verification.report":
+        items.push({ ts: r.ts, agent: nameFor(e.agentId), kind: "Verify", body: e.content, stream: r.stream });
+        break;
+      case "solution.finalized":
+        items.push({ ts: r.ts, agent: nameFor(e.agentId), kind: "Final", body: e.content, stream: r.stream });
+        break;
+      default:
+        break;
+    }
+  }
+
+  const recent = items.slice(-8).reverse();
+  if (recent.length === 0) return `<div class="empty">No collaboration yet.</div>`;
+
+  return recent.map((item, idx) => {
+    const isBranch = item.stream.includes("/branches/");
+    const body = truncate(item.body.trim(), 220);
+    return `<div class="feed-item${idx === 0 ? " latest" : ""}">
+      <div class="feed-meta">
+        <div class="feed-agent">${esc(item.agent)}</div>
+        <div class="feed-tags">
+          <span class="feed-kind">${esc(item.kind)}</span>
+          ${isBranch ? `<span class="feed-branch">branch</span>` : ""}
+        </div>
+      </div>
+      <div class="feed-body">${esc(body || "…")}</div>
+    </div>`;
+  }).join("");
+};
+
+const isTheoremPromptContext = (
+  event: TheoremEvent
+): event is Extract<TheoremEvent, { type: "prompt.context" }> =>
+  event.type === "prompt.context";
+
+const contextWindowRows = (chain: Chain<TheoremEvent>): ReadonlyArray<FrameworkContextRow> => {
+  const claimOwner = new Map<string, string>();
+  chain.forEach((r) => {
+    const e = r.body;
+    if (e.type === "attempt.proposed" || e.type === "lemma.proposed") {
+      claimOwner.set(e.claimId, e.agentId);
+    }
+  });
+
+  const dedupedPromptEvents = chain
+    .filter((r) => r.body.type === "prompt.context")
+    .filter((r, idx, arr) => arr.findIndex((x) => x.hash === r.hash) === idx) as Array<{
+      ts: number;
+      body: Extract<TheoremEvent, { type: "prompt.context" }>;
+    }>;
+  const recent = dedupedPromptEvents.slice(-8).reverse();
+
+  return recent.map((row, idx) => {
+    const e = row.body;
+    const agentLabel = e.agentId ? prettyAgent(e.agentId) : "System";
+    const title = e.title ?? `${prettyPhase(e.phase)} prompt`;
+    const targetAgent = e.targetClaimId ? claimOwner.get(e.targetClaimId) : undefined;
+    const metaParts = [
+      agentLabel,
+      e.round ? `r${e.round}` : "",
+      e.claimId ? `#${e.claimId.slice(-4)}` : "",
+    ].filter(Boolean);
+    const targetLine = targetAgent
+      ? `Target: ${prettyAgent(targetAgent)}`
+      : e.targetClaimId ? `Target: #${e.targetClaimId.slice(-4)}` : "";
+    const body = truncate(e.content.trim() || "No prompt content.", 420);
+    return {
+      step: recent.length - idx,
+      title,
+      meta: metaParts.join(" · "),
+      target: targetLine || undefined,
+      content: body,
+      ts: row.ts,
+    };
+  });
+};
+
+const memoryPulseHtml = (chain: Chain<TheoremEvent>): string => {
+  const memoryEvent = [...chain].reverse().find((r) => r.body.type === "memory.slice") as
+    | { body: Extract<TheoremEvent, { type: "memory.slice" }> }
+    | undefined;
+  if (!memoryEvent) return `<div class="empty">Memory not built yet.</div>`;
+
+  const e = memoryEvent.body;
+  const items = (e.items ?? []).slice(0, 8);
+  const bracketNote = e.bracket ? ` · ${esc(e.bracket)}` : "";
+  const itemRows = items.map((item) => {
+    const label = item.kind.replace(/\./g, " ");
+    const claim = item.claimId ? `#${item.claimId.slice(-4)}` : "";
+    return `<span class="memory-pill">${esc(label)} ${esc(claim)}</span>`;
+  }).join("");
+  return `
+    <div class="memory-meta">Phase ${esc(e.phase)}${bracketNote} · ${e.itemCount} items · ${e.chars} chars</div>
+    <div class="memory-grid">${itemRows || `<span class="memory-pill">No items</span>`}</div>
+  `;
+};
+
 export const theoremSideHtml = (
   state: TheoremState,
   chain: Chain<TheoremEvent>,
   at: number | null | undefined,
   total: number,
-  stream: string,
+  indexStream: string,
   runId?: string,
-  team: ReadonlyArray<TeamMember> = []
+  team: ReadonlyArray<TeamMember> = [],
+  chainStream?: string,
+  branchStream?: string,
+  activityChain?: Chain<TheoremEvent>
 ): string => {
+  const activitySource = activityChain ?? chain;
   const summaryEvents = chain.filter((r) => r.body.type === "summary.made") as Array<{ body: Extract<TheoremEvent, { type: "summary.made" }> }>;
   const rebracketEvents = chain.filter((r) => r.body.type === "rebracket.applied") as Array<{ body: Extract<TheoremEvent, { type: "rebracket.applied" }> }>;
   const latestRebracket = rebracketEvents[rebracketEvents.length - 1]?.body;
@@ -901,10 +1382,19 @@ export const theoremSideHtml = (
   const summary = latestSummaryEvent
     ? { bracket: latestSummaryEvent.bracket, content: summaryText }
     : latestSummary(state);
-  const branches = state.branches.map((b) => `<div class="branch-item">${esc(b.id)} - r${b.forkAt}</div>`).join("");
-  const branchOptions = [stream, ...state.branches.map((b) => b.id)]
-    .filter((v, i, arr) => arr.indexOf(v) === i)
-    .map((name) => `<option value="${esc(name)}"${name === stream ? " selected" : ""}>${esc(name)}</option>`)
+  const runStream = runId ? `${indexStream}/runs/${runId}` : indexStream;
+  const branchPrefix = `${runStream}/branches/`;
+  const branchLabel = (b: { id: string; forkAt: number }): string =>
+    b.id.startsWith(branchPrefix) ? b.id.slice(branchPrefix.length) : b.id;
+  const branches = state.branches
+    .map((b) => `<div class="branch-item" title="${esc(b.id)}">${esc(branchLabel(b))} - r${b.forkAt}</div>`)
+    .join("");
+  const branchOptions = [
+    { value: "", label: "Main run" },
+    ...state.branches.map((b) => ({ value: b.id, label: branchLabel(b) })),
+  ]
+    .filter((opt, i, arr) => arr.findIndex((x) => x.value === opt.value) === i)
+    .map((opt) => `<option value="${esc(opt.value)}"${opt.value === (branchStream ?? "") ? " selected" : ""}>${esc(opt.label)}</option>`)
     .join("");
   const receipts = [...chain].reverse().slice(0, 30).map((r) => {
     return `<div class="json-item">
@@ -916,7 +1406,8 @@ export const theoremSideHtml = (
   const maxAt = total;
   const currentAt = at === null || at === undefined ? maxAt : Math.max(0, Math.min(at, maxAt));
   const effectiveRun = runId ?? state.runId ?? "";
-  const isBranch = stream.includes(":");
+  const isBranch = Boolean(branchStream);
+  const activeChainStream = chainStream ?? runStream;
   const bracketText = latestRebracket?.bracket ?? summary?.bracket ?? (state.solution ? "(bracket pending)" : "((A o B) o C)");
   const noteText = latestRebracket
     ? (latestRebracket.note ?? `Rotation score ${latestRebracket.score.toFixed(2)}`)
@@ -927,24 +1418,26 @@ export const theoremSideHtml = (
         : "Waiting for summary";
   const rebrackets = chain.filter((r) => r.body.type === "rebracket.applied") as Array<{ body: Extract<TheoremEvent, { type: "rebracket.applied" }> }>;
   const appliedRotations = rebrackets.filter((r) => /rotation applied/i.test(r.body.note ?? "")).length;
-  const verifySlice = (slice: Chain<TheoremEvent>): { ok: boolean; reason?: string } => {
+  const streamNames = [...new Set(chain.map((r) => r.stream))];
+  const verifyPerStream = (slice: Chain<TheoremEvent>): { ok: boolean; reason?: string } => {
     if (slice.length === 0) return { ok: true };
-    if (slice[0].hash !== computeHash(slice[0])) return { ok: false, reason: "hash mismatch" };
-    let prev = slice[0].hash;
-    for (let i = 1; i < slice.length; i += 1) {
-      const r = slice[i];
-      if (r.prev !== prev) return { ok: false, reason: "broken prev" };
-      if (r.hash !== computeHash(r)) return { ok: false, reason: "hash mismatch" };
-      prev = r.hash;
+    for (const stream of streamNames) {
+      const streamSlice = slice.filter((r) => r.stream === stream);
+      if (streamSlice.length === 0) continue;
+      const result = verify(streamSlice);
+      if (!result.ok) return { ok: false, reason: `${stream}: ${result.reason}` };
     }
     return { ok: true };
   };
-  const integrity = verify(chain);
+  const integrity = streamNames.length <= 1 ? verify(chain) : verifyPerStream(chain);
   const integrityLabel = integrity.ok
-    ? "ok"
-    : verifySlice(chain).ok
-      ? "ok (slice)"
-      : "broken";
+    ? streamNames.length <= 1
+      ? "ok"
+      : `ok (${streamNames.length} streams)`
+    : streamNames.length <= 1
+      ? "broken"
+      : `broken (${integrity.reason ?? "invalid"})`;
+  const memoryPulse = memoryPulseHtml(activitySource);
   const configMetrics = state.config
     ? [
         `Workflow: ${state.config.workflowId}@${state.config.workflowVersion}`,
@@ -956,9 +1449,26 @@ export const theoremSideHtml = (
         `Branch threshold: ${state.config.branchThreshold}`,
       ]
     : [];
+  const statusLabel = state.status.slice(0, 1).toUpperCase() + state.status.slice(1);
+  const verificationStatus = state.verification?.status ?? "pending";
+  const statusItems = [
+    `Run: ${statusLabel}`,
+    state.statusNote ? `Note: ${state.statusNote}` : "",
+    `Verification: ${verificationStatus}`,
+    state.solution ? `Solution confidence: ${state.solution.confidence.toFixed(2)}` : "Solution confidence: —",
+  ].filter(Boolean);
+  const streamItems = [
+    `Index: ${indexStream}`,
+    `Run: ${runStream}`,
+    `View: ${activeChainStream}${isBranch ? " (branch)" : ""}`,
+    `Branches: ${state.branches.length}`,
+  ];
+  const rebracketPolicy = isBranch
+    ? "Branch view follows rebracket events emitted on the main run."
+    : "Decider: orchestrator each round. Ranking: causal score, parallel tie-break, stability, lexical.";
   const metrics = [
     ...configMetrics,
-    `Stream: ${stream}${isBranch ? " (branch)" : ""}`,
+    `Receipts: ${chain.length}`,
     `Attempts: ${Object.keys(state.attempts).length}`,
     `Critiques: ${Object.keys(state.critiques).length}`,
     `Patches: ${Object.keys(state.patches).length}`,
@@ -974,41 +1484,46 @@ export const theoremSideHtml = (
 
   return `<div class="side-stack">
     <section class="side-card">
-      <h2>Rebracket</h2>
-      <div class="stream-pill">${esc(isBranch ? "Branch stream" : "Main stream")}</div>
-      <div class="bracket">${esc(bracketText)}</div>
-      <div class="bracket-note">${esc(noteText)}</div>
+      <h2>Status</h2>
+      <div class="meta-list">${statusItems.map((item) => `<div class="meta-item">${esc(item)}</div>`).join("")}</div>
     </section>
 
     <section class="side-card">
-      <h2>Branches</h2>
+      <h2>Streams</h2>
+      <div class="stream-pill">${esc(isBranch ? "Branch view" : "Run view")}</div>
       <div class="branch-selector">
         <label>
-          <span>View stream</span>
-          <select onchange="window.location.search = '?stream=' + this.value + '&run=${encodeURIComponent(effectiveRun)}&at=${encodeURIComponent(String(at ?? ""))}'">
-            ${branchOptions || `<option value="${esc(stream)}">${esc(stream)}</option>`}
+          <span>View branch</span>
+          <select onchange="(function(sel){ const params = new URLSearchParams(window.location.search); params.set('stream', '${esc(indexStream)}'); params.set('run', '${esc(effectiveRun)}'); if (sel.value) params.set('branch', sel.value); else params.delete('branch'); params.set('at', '${esc(String(at ?? ""))}'); window.location.search = '?' + params.toString(); })(this)">
+            ${branchOptions || `<option value="">Main run</option>`}
           </select>
         </label>
       </div>
-      <div class="branch-list">${branches || `<div class="empty">No branches</div>`}</div>
+      <div class="metric-list compact">${streamItems.map((item) => `<div class="metric-item">${esc(item)}</div>`).join("")}</div>
+      <div class="branch-list">${branches || `<div class="empty">No branch streams yet.</div>`}</div>
     </section>
 
     <section class="side-card">
-      <h2>Activity</h2>
-      <div class="activity-list">${activityRows(chain, team, state.agentStatus, state.status)}</div>
+      <h2>Team</h2>
+      <div class="activity-list">${activityRows(activitySource, team, state.agentStatus, state.status)}</div>
     </section>
 
-     <section class="side-card">
+    <section class="side-card">
+      <h2>Rebracket</h2>
+      <div class="bracket">${esc(bracketText)}</div>
+      <div class="bracket-note">${esc(noteText)}</div>
+      <div class="policy-note">${esc(rebracketPolicy)}</div>
+    </section>
+
+    <section class="side-card">
+      <h2>Shared Memory</h2>
+      <div class="memory-panel">${memoryPulse}</div>
+    </section>
+
+    <section class="side-card">
       <h2>Metrics</h2>
       <div class="metric-list">${metrics.map((m) => `<div class="metric-item">${esc(m)}</div>`).join("")}</div>
       <div class="metric-note">Heuristic only. Use formal proof to verify correctness.</div>
-    </section>
-
-    <section class="side-card">
-      <h2>Time travel</h2>
-      <div class="time-meta">Step ${currentAt} / ${maxAt}</div>
-      <input type="range" min="0" max="${maxAt}" value="${currentAt}"
-        onchange="window.location.search = '?stream=${encodeURIComponent(stream)}&run=${encodeURIComponent(effectiveRun)}&at=' + this.value" />
     </section>
 
     <section class="side-card">
@@ -1018,8 +1533,68 @@ export const theoremSideHtml = (
   </div>
   <style>
     .side-stack { display: grid; gap: 16px; }
-    .side-card { background: rgba(16,18,24,0.85); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 14px; }
+    .side-card { background: rgba(16,18,24,0.85); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 14px; min-width: 0; }
     .side-card h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; color: rgba(255,255,255,0.55); }
+    .feed-list { display: grid; gap: 10px; }
+    .feed-item {
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: linear-gradient(140deg, rgba(20,24,36,0.85), rgba(16,18,24,0.6));
+      padding: 10px 12px;
+      display: grid;
+      gap: 6px;
+      position: relative;
+      animation: feedIn 0.4s ease;
+    }
+    .feed-item.latest { box-shadow: 0 0 0 1px rgba(107,220,255,0.25), 0 0 24px rgba(107,220,255,0.1); }
+    .feed-item.latest::after {
+      content: "";
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(107,220,255,0.9);
+      box-shadow: 0 0 10px rgba(107,220,255,0.6);
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    .feed-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .feed-agent { font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.9); }
+    .feed-tags { display: inline-flex; gap: 6px; }
+    .feed-kind, .feed-branch {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.18);
+      color: rgba(255,255,255,0.65);
+    }
+    .feed-branch {
+      border-color: rgba(255,211,106,0.4);
+      color: rgba(255,211,106,0.9);
+    }
+    .feed-body {
+      font-size: 12px;
+      color: rgba(255,255,255,0.82);
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 4;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .memory-panel { display: grid; gap: 8px; }
+    .memory-meta { font-size: 11px; color: rgba(255,255,255,0.65); }
+    .memory-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+    .memory-pill {
+      font-size: 10px;
+      border-radius: 999px;
+      padding: 4px 8px;
+      border: 1px solid rgba(107,220,255,0.25);
+      color: rgba(107,220,255,0.85);
+      background: rgba(107,220,255,0.08);
+    }
     .bracket { font-family: "IBM Plex Mono", monospace; font-size: 12px; padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,0.04); }
     .stream-pill {
       display: inline-flex;
@@ -1035,8 +1610,8 @@ export const theoremSideHtml = (
       margin-bottom: 8px;
     }
     .bracket-note { font-size: 11px; color: rgba(255,255,255,0.6); margin-top: 8px; }
-    .branch-list { display: grid; gap: 8px; }
-    .branch-item { font-size: 11px; color: rgba(255,255,255,0.7); }
+    .branch-list { display: grid; gap: 8px; min-width: 0; }
+    .branch-item { font-size: 11px; color: rgba(255,255,255,0.7); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .branch-selector { margin-bottom: 10px; }
     .branch-selector label { display: grid; gap: 6px; font-size: 11px; color: rgba(255,255,255,0.6); }
     .branch-selector select {
@@ -1048,9 +1623,29 @@ export const theoremSideHtml = (
       color: rgba(255,255,255,0.9);
       font-size: 12px;
     }
+    .meta-list { display: grid; gap: 6px; }
+    .meta-item {
+      font-size: 11px;
+      color: rgba(255,255,255,0.8);
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px;
+      padding: 6px 8px;
+      overflow-wrap: anywhere;
+    }
     .metric-list { display: grid; gap: 6px; }
-    .metric-item { font-size: 11px; color: rgba(255,255,255,0.72); }
+    .metric-list.compact { margin-bottom: 10px; }
+    .metric-item {
+      font-size: 11px;
+      color: rgba(255,255,255,0.72);
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px;
+      padding: 6px 8px;
+      overflow-wrap: anywhere;
+    }
     .metric-note { margin-top: 8px; font-size: 10px; color: rgba(255,255,255,0.45); }
+    .policy-note { margin-top: 8px; font-size: 10px; color: rgba(255,255,255,0.55); line-height: 1.45; }
     .activity-list { display: grid; gap: 10px; }
     .activity-row { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); background: rgba(18,20,28,0.6); }
     .activity-row.active { border-color: rgba(107,220,255,0.35); box-shadow: 0 0 0 1px rgba(107,220,255,0.2) inset; }
@@ -1065,5 +1660,14 @@ export const theoremSideHtml = (
     .json-item pre { margin: 0; font-size: 10px; color: rgba(255,255,255,0.65); white-space: pre-wrap; }
     .time-meta { font-size: 11px; color: rgba(255,255,255,0.6); margin-bottom: 8px; }
     input[type="range"] { width: 100%; }
+    @keyframes feedIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes pulse {
+      0% { transform: scale(1); opacity: 0.6; }
+      50% { transform: scale(1.6); opacity: 1; }
+      100% { transform: scale(1); opacity: 0.6; }
+    }
   </style>`;
 };

@@ -3,7 +3,7 @@
 // ============================================================================
 
 export const THEOREM_WORKFLOW_ID = "theorem-guild";
-export const THEOREM_WORKFLOW_VERSION = "0.2";
+export const THEOREM_WORKFLOW_VERSION = "0.3";
 
 export const THEOREM_TEAM = [
   { id: "orchestrator", name: "Orchestrator" },

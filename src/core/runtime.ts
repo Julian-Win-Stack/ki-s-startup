@@ -12,7 +12,19 @@
 
 import type { Chain, Decide, Reducer, View, Branch } from "./types.js";
 import type { Store, BranchStore } from "./store.js";
-import { receipt, fold, verify, head } from "./chain.js";
+import { receipt, fold, verify } from "./chain.js";
+import { foldWithCheckpoint, memoryCheckpointStore, type CheckpointStore } from "./checkpoint.js";
+
+export type RuntimeStateOptions = {
+  readonly fromCheckpoint?: boolean;
+};
+
+export type RuntimeCreateOptions<State> = {
+  readonly checkpoints?: {
+    readonly interval?: number;
+    readonly store?: CheckpointStore<State>;
+  };
+};
 
 // ============================================================================
 // Runtime Type
@@ -23,10 +35,10 @@ export type Runtime<Cmd, Event, State> = {
   readonly execute: (stream: string, cmd: Cmd) => Promise<Event[]>;
   
   // Get current state (full replay)
-  readonly state: (stream: string) => Promise<State>;
+  readonly state: (stream: string, options?: RuntimeStateOptions) => Promise<State>;
   
   // Get state at a specific point (time travel)
-  readonly stateAt: (stream: string, n: number) => Promise<State>;
+  readonly stateAt: (stream: string, n: number, options?: RuntimeStateOptions) => Promise<State>;
   
   // Get the chain
   readonly chain: (stream: string) => Promise<Chain<Event>>;
@@ -62,64 +74,154 @@ export const createRuntime = <Cmd, Event, State>(
   branchStore: BranchStore,
   decide: Decide<Cmd, Event>,
   reducer: Reducer<State, Event>,
-  initial: State
+  initial: State,
+  options: RuntimeCreateOptions<State> = {}
 ): Runtime<Cmd, Event, State> => {
-  
+  type EmitLikeCommand = {
+    readonly eventId?: string;
+    readonly expectedPrev?: string;
+  };
+
   const getChain = (stream: string) => store.read(stream);
   const getChainAt = (stream: string, n: number) => store.take(stream, n);
-  
-  const getState = async (stream: string) => {
-    const chain = await getChain(stream);
-    return fold(chain, reducer, initial);
-  };
-  
-  const getStateAt = async (stream: string, n: number) => {
-    const chain = await getChainAt(stream, n);
-    return fold(chain, reducer, initial);
-  };
-  
-  const execute = async (stream: string, cmd: Cmd): Promise<Event[]> => {
-    const events = decide(cmd);
-    let prev = (await store.head(stream))?.hash;
-    
-    for (const event of events) {
-      const r = receipt(stream, prev, event);
-      await store.append(r);
-      prev = r.hash;
+  const checkpointStore = options.checkpoints?.store ?? memoryCheckpointStore<State>();
+  const checkpointInterval = Math.max(1, options.checkpoints?.interval ?? 1000);
+  const streamLocks = new Map<string, Promise<void>>();
+
+  const enqueueStream = async <T>(stream: string, op: () => Promise<T>): Promise<T> => {
+    const previous = streamLocks.get(stream) ?? Promise.resolve();
+    let release: (() => void) | undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const gate = previous.then(() => current);
+    streamLocks.set(stream, gate);
+
+    await previous;
+    try {
+      return await op();
+    } finally {
+      if (release) release();
+      if (streamLocks.get(stream) === gate) {
+        streamLocks.delete(stream);
+      }
     }
-    
-    return events;
   };
-  
-  const fork = async (stream: string, at: number, newName: string): Promise<Branch> => {
-    // Get receipts up to fork point from parent
-    const parentChain = await getChainAt(stream, at);
-    
-    // Copy receipts to new stream (re-link to form new chain)
-    let prev: string | undefined;
-    for (const r of parentChain) {
-      const newReceipt = receipt(newName, prev, r.body as Event, r.ts);
-      await store.append(newReceipt);
-      prev = newReceipt.hash;
-    }
-    
-    // Save branch metadata
-    const branch: Branch = {
-      name: newName,
-      parent: stream,
-      forkAt: at,
-      createdAt: Date.now(),
+
+  const withStreamLocks = <T>(streams: ReadonlyArray<string>, op: () => Promise<T>): Promise<T> => {
+    const ordered = [...new Set(streams)].sort();
+
+    const runLocked = (index: number): Promise<T> => {
+      if (index >= ordered.length) return op();
+      return enqueueStream(ordered[index], () => runLocked(index + 1));
     };
-    await branchStore.save(branch);
-    
-    // Ensure parent branch exists in metadata
-    const parentBranch = await branchStore.get(stream);
-    if (!parentBranch) {
-      await branchStore.save({ name: stream, createdAt: Date.now() });
-    }
-    
-    return branch;
+
+    return runLocked(0);
   };
+
+  const getState = async (stream: string, _options?: RuntimeStateOptions) => {
+    const chain = await getChain(stream);
+    if (_options?.fromCheckpoint) {
+      return foldWithCheckpoint(stream, chain, reducer, initial, {
+        interval: checkpointInterval,
+        checkpoint: checkpointStore,
+      });
+    }
+    return fold(chain, reducer, initial);
+  };
+
+  const getStateAt = async (stream: string, n: number, _options?: RuntimeStateOptions) => {
+    if (n === 0) return initial;
+    const chain = await getChainAt(stream, n);
+    if (_options?.fromCheckpoint) {
+      return foldWithCheckpoint(stream, chain, reducer, initial, {
+        interval: checkpointInterval,
+        checkpoint: checkpointStore,
+      });
+    }
+    return fold(chain, reducer, initial);
+  };
+
+  const asEmitLike = (cmd: Cmd): EmitLikeCommand | undefined => {
+    if (!cmd || typeof cmd !== "object") return undefined;
+    const value = cmd as EmitLikeCommand;
+    if (typeof value.eventId === "string" || typeof value.expectedPrev === "string") return value;
+    return undefined;
+  };
+
+  const alreadyApplied = <B>(
+    chain: Chain<B>,
+    eventId: string
+  ): boolean => chain.some((r) => {
+    const hint = r.hints?.eventId;
+    if (typeof hint !== "string") return false;
+    return hint === eventId || hint.startsWith(`${eventId}#`);
+  });
+
+  const execute = async (stream: string, cmd: Cmd): Promise<Event[]> =>
+    withStreamLocks([stream], async () => {
+      const emitLike = asEmitLike(cmd);
+      const eventId = emitLike?.eventId;
+      const expectedPrev = emitLike?.expectedPrev;
+      const chain = eventId ? await store.read(stream) : undefined;
+
+      if (eventId && chain && alreadyApplied(chain, eventId)) {
+        return [];
+      }
+
+      const head = chain ? chain[chain.length - 1] : await store.head(stream);
+      if (typeof expectedPrev === "string" && expectedPrev !== (head?.hash ?? undefined)) {
+        throw new Error(`Expected prev hash ${expectedPrev} but head is ${head?.hash ?? "undefined"}`);
+      }
+
+      const events = decide(cmd);
+      let prev = head?.hash;
+
+      for (let idx = 0; idx < events.length; idx += 1) {
+        const event = events[idx];
+        const eventHint =
+          eventId === undefined
+            ? undefined
+            : events.length === 1
+              ? eventId
+              : `${eventId}#${idx}`;
+        const r = receipt(stream, prev, event, Date.now(), eventHint ? { eventId: eventHint } : undefined);
+        await store.append(r);
+        prev = r.hash;
+      }
+      return events;
+    });
+  
+  const fork = async (stream: string, at: number, newName: string): Promise<Branch> =>
+    withStreamLocks([stream, newName], async () => {
+      // Get receipts up to fork point from parent.
+      const parentChain = await getChainAt(stream, at);
+      
+      // Copy receipts to new stream (re-link to form new chain).
+      let prev: string | undefined;
+      for (const r of parentChain) {
+        const newReceipt = receipt(newName, prev, r.body, r.ts);
+        await store.append(newReceipt);
+        prev = newReceipt.hash;
+      }
+      
+      // Save branch metadata.
+      const branch: Branch = {
+        name: newName,
+        parent: stream,
+        forkAt: at,
+        createdAt: Date.now(),
+      };
+      await branchStore.save(branch);
+      
+      // Ensure parent branch exists in metadata.
+      const parentBranch = await branchStore.get(stream);
+      if (!parentBranch) {
+        await branchStore.save({ name: stream, createdAt: Date.now() });
+      }
+
+      return branch;
+    });
   
   return {
     execute,

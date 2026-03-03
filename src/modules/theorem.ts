@@ -7,11 +7,24 @@ import type { Decide, Reducer } from "../core/types.js";
 export type AgentId = string;
 export type ClaimId = string;
 
+export type MemorySliceItem = {
+  readonly kind: TheoremEvent["type"];
+  readonly claimId?: ClaimId;
+  readonly targetClaimId?: ClaimId;
+  readonly agentId?: AgentId;
+};
+
 export type TheoremEvent =
   | {
       readonly type: "problem.set";
       readonly runId: string;
       readonly problem: string;
+      readonly agentId?: AgentId;
+    }
+  | {
+      readonly type: "problem.appended";
+      readonly runId: string;
+      readonly append: string;
       readonly agentId?: AgentId;
     }
   | {
@@ -38,7 +51,7 @@ export type TheoremEvent =
     }
   | {
       readonly type: "attempt.proposed";
-      readonly runId?: string;
+      readonly runId: string;
       readonly claimId: ClaimId;
       readonly agentId: AgentId;
       readonly content: string;
@@ -46,7 +59,7 @@ export type TheoremEvent =
     }
   | {
       readonly type: "lemma.proposed";
-      readonly runId?: string;
+      readonly runId: string;
       readonly claimId: ClaimId;
       readonly agentId: AgentId;
       readonly content: string;
@@ -54,7 +67,7 @@ export type TheoremEvent =
     }
   | {
       readonly type: "critique.raised";
-      readonly runId?: string;
+      readonly runId: string;
       readonly claimId: ClaimId;
       readonly agentId: AgentId;
       readonly targetClaimId: ClaimId;
@@ -63,7 +76,7 @@ export type TheoremEvent =
     }
   | {
       readonly type: "patch.applied";
-      readonly runId?: string;
+      readonly runId: string;
       readonly claimId: ClaimId;
       readonly agentId: AgentId;
       readonly targetClaimId: ClaimId;
@@ -72,14 +85,14 @@ export type TheoremEvent =
     }
   | {
       readonly type: "branch.created";
-      readonly runId?: string;
+      readonly runId: string;
       readonly branchId: string;
       readonly forkAt: number;
       readonly note?: string;
     }
   | {
       readonly type: "summary.made";
-      readonly runId?: string;
+      readonly runId: string;
       readonly claimId: ClaimId;
       readonly agentId: AgentId;
       readonly bracket: string;
@@ -92,6 +105,45 @@ export type TheoremEvent =
       readonly phase: "attempt" | "critique" | "patch";
       readonly agents: ReadonlyArray<AgentId>;
       readonly round?: number;
+    }
+  | {
+      readonly type: "prompt.context";
+      readonly runId: string;
+      readonly agentId?: AgentId;
+      readonly phase: "attempt" | "lemma" | "critique" | "patch" | "merge" | "verify" | "final" | "revise" | "orchestrate";
+      readonly title?: string;
+      readonly content: string;
+      readonly round?: number;
+      readonly claimId?: ClaimId;
+      readonly targetClaimId?: ClaimId;
+    }
+  | {
+      readonly type: "orchestrator.decision";
+      readonly runId: string;
+      readonly agentId?: AgentId;
+      readonly round?: number;
+      readonly action: "continue" | "done";
+      readonly reason?: string;
+      readonly skipLemma?: boolean;
+      readonly skipCritique?: boolean;
+      readonly skipPatch?: boolean;
+      readonly skipMerge?: boolean;
+      readonly focus?: Readonly<Record<string, string>>;
+      readonly raw?: string;
+    }
+  | {
+      readonly type: "memory.slice";
+      readonly runId: string;
+      readonly agentId?: AgentId;
+      readonly phase: "attempt" | "lemma" | "critique" | "patch" | "merge";
+      readonly window: number;
+      readonly bracket?: string;
+      readonly maxChars: number;
+      readonly chars: number;
+      readonly itemCount: number;
+      readonly items?: ReadonlyArray<MemorySliceItem>;
+      readonly truncated?: boolean;
+      readonly targetClaimId?: ClaimId;
     }
   | {
       readonly type: "agent.status";
@@ -119,7 +171,7 @@ export type TheoremEvent =
     }
   | {
       readonly type: "solution.finalized";
-      readonly runId?: string;
+      readonly runId: string;
       readonly agentId: AgentId;
       readonly content: string;
       readonly confidence: number;
@@ -129,6 +181,8 @@ export type TheoremEvent =
 export type TheoremCmd = {
   readonly type: "emit";
   readonly event: TheoremEvent;
+  readonly eventId: string;
+  readonly expectedPrev?: string;
 };
 
 export type ClaimRecord = {
@@ -263,6 +317,13 @@ export const reduce: Reducer<TheoremState, TheoremEvent> = (state, event, ts) =>
         problem: event.problem,
         status: "running",
       };
+    case "problem.appended": {
+      const append = event.append.trim();
+      if (!append) return state;
+      const base = state.problem.trim();
+      const problem = base ? `${base}\n\n${append}` : append;
+      return { ...state, problem };
+    }
     case "run.configured":
       return {
         ...state,

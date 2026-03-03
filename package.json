@@ -6,9 +6,18 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "new:agent": "node scripts/new-agent.mjs",
+    "test:smoke": "tsx --test --test-concurrency=1 tests/smoke/*.test.ts",
+    "test:perf": "tsx --test --test-concurrency=1 tests/perf/*.bench.ts",
+    "check:no-any": "if rg -n \"as any\\\\b|<any>|:\\\\s*any\\\\b|Runtime<any\\\\s*,\" src/core src/engine src/agents tests; then echo \"explicit any found\"; exit 1; fi",
+    "verify": "npm run build && npm run check:no-any && npm run test:smoke"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@oblivionocean/minigfm": "^1.0.7",
+    "dotenv": "^17.2.3",
+    "openai": "^6.16.0"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsx": "^4.0.0",

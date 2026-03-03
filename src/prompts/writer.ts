@@ -1,5 +1,5 @@
 // ============================================================================
-// Theorem Guild prompt templates (loaded from JSON files)
+// Writer Guild prompt templates (loaded from JSON files)
 // ============================================================================
 
 import fs from "node:fs";
@@ -7,7 +7,7 @@ import path from "node:path";
 
 import { hashPrompts } from "./hash.js";
 
-export type TheoremPromptConfig = {
+export type WriterPromptConfig = {
   readonly system: Record<string, string>;
   readonly user: Record<string, string>;
 };
@@ -24,36 +24,36 @@ const mergeDeep = (base: Record<string, any>, override: Record<string, any>) => 
   return out;
 };
 
-const emptyPrompts: TheoremPromptConfig = { system: {}, user: {} };
+const emptyPrompts: WriterPromptConfig = { system: {}, user: {} };
 
-const readJson = (file: string): TheoremPromptConfig =>
-  JSON.parse(fs.readFileSync(file, "utf-8")) as TheoremPromptConfig;
+const readJson = (file: string): WriterPromptConfig =>
+  JSON.parse(fs.readFileSync(file, "utf-8")) as WriterPromptConfig;
 
-export const loadTheoremPrompts = (): TheoremPromptConfig => {
-  const baseFile = path.join(process.cwd(), "prompts", "theorem.prompts.json");
-  const overrideFile = process.env.THEOREM_PROMPTS_PATH;
+export const loadWriterPrompts = (): WriterPromptConfig => {
+  const baseFile = path.join(process.cwd(), "prompts", "writer.prompts.json");
+  const overrideFile = process.env.WRITER_PROMPTS_PATH;
 
-  let base: TheoremPromptConfig = emptyPrompts;
+  let base: WriterPromptConfig = emptyPrompts;
   if (fs.existsSync(baseFile)) {
     try {
       base = readJson(baseFile);
     } catch {
-      console.warn(`[theorem] Invalid prompt JSON at ${baseFile}`);
+      console.warn(`[writer] Invalid prompt JSON at ${baseFile}`);
     }
   } else if (!overrideFile) {
-    console.warn(`[theorem] Missing prompt file ${baseFile}`);
+    console.warn(`[writer] Missing prompt file ${baseFile}`);
   }
 
   if (overrideFile) {
     if (fs.existsSync(overrideFile)) {
       try {
         const override = readJson(overrideFile);
-        return mergeDeep(base, override) as TheoremPromptConfig;
+        return mergeDeep(base, override) as WriterPromptConfig;
       } catch {
-        console.warn(`[theorem] Invalid prompt JSON at ${overrideFile}`);
+        console.warn(`[writer] Invalid prompt JSON at ${overrideFile}`);
       }
     } else {
-      console.warn(`[theorem] Override prompt file not found: ${overrideFile}`);
+      console.warn(`[writer] Override prompt file not found: ${overrideFile}`);
     }
   }
 
@@ -63,4 +63,4 @@ export const loadTheoremPrompts = (): TheoremPromptConfig => {
 export const renderPrompt = (template: string, vars: Record<string, string>): string =>
   template.replace(/\{\{(\w+)\}\}/g, (_m, key) => vars[key] ?? "");
 
-export const hashTheoremPrompts = (prompts: TheoremPromptConfig): string => hashPrompts(prompts);
+export const hashWriterPrompts = (prompts: WriterPromptConfig): string => hashPrompts(prompts);

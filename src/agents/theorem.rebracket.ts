@@ -1,11 +1,14 @@
 // ============================================================================
 // Theorem Guild rebracketing engine
+// Merge order is chosen from the Tamari lattice of binary bracketings.
+// Each bracket acts like a merge "lens" over the pod tree.
 // ============================================================================
 
 import type { Chain } from "../core/types.js";
 import type { TheoremEvent } from "../modules/theorem.js";
 
 export type BracketTree = string | [BracketTree, BracketTree];
+export type MergeLens = { bracket: string; tree: BracketTree };
 
 export const THEOREM_PODS = [
   { id: "A", label: "Explorer A", agents: ["explorer_a"] },
@@ -14,13 +17,15 @@ export const THEOREM_PODS = [
   { id: "D", label: "Critic Pod", agents: ["lemma_miner", "skeptic", "verifier", "synthesizer"] },
 ];
 
-export const BRACKETS: Array<{ bracket: string; tree: BracketTree }> = [
+export const MERGE_LENSES: ReadonlyArray<MergeLens> = [
   { bracket: "(((A o B) o C) o D)", tree: [[["A", "B"], "C"], "D"] },
   { bracket: "((A o (B o C)) o D)", tree: [["A", ["B", "C"]], "D"] },
   { bracket: "((A o B) o (C o D))", tree: [["A", "B"], ["C", "D"]] },
   { bracket: "(A o ((B o C) o D))", tree: ["A", [["B", "C"], "D"]] },
   { bracket: "(A o (B o (C o D)))", tree: ["A", ["B", ["C", "D"]]] },
 ];
+
+export const BRACKETS = MERGE_LENSES;
 
 export const podByAgent = new Map<string, string>(
   THEOREM_PODS.flatMap((pod) => pod.agents.map((agent) => [agent, pod.id] as const))
@@ -62,11 +67,36 @@ const scoreBracket = (tree: BracketTree, weights: Map<string, number>): number =
   return score;
 };
 
+type ParallelStats = {
+  readonly leaves: number;
+  readonly potential: number;
+};
+
+const parallelStats = (tree: BracketTree): ParallelStats => {
+  if (typeof tree === "string") {
+    return { leaves: 1, potential: 0 };
+  }
+
+  const left = parallelStats(tree[0]);
+  const right = parallelStats(tree[1]);
+  const leaves = left.leaves + right.leaves;
+  const ratio = Math.min(left.leaves, right.leaves) / Math.max(left.leaves, right.leaves);
+
+  // Balanced internal nodes are easier to merge in parallel.
+  const local = leaves >= 4 ? ratio : 0;
+  return {
+    leaves,
+    potential: left.potential + right.potential + local,
+  };
+};
+
+const parallelMergePotential = (tree: BracketTree): number => parallelStats(tree).potential;
+
 export const bracketString = (tree: BracketTree): string =>
   typeof tree === "string" ? tree : `(${bracketString(tree[0])} o ${bracketString(tree[1])})`;
 
 export const treeForBracket = (bracket: string): BracketTree =>
-  BRACKETS.find((b) => b.bracket === bracket)?.tree ?? BRACKETS[0].tree;
+  MERGE_LENSES.find((b) => b.bracket === bracket)?.tree ?? MERGE_LENSES[0].tree;
 
 export const collectLeaves = (tree: BracketTree, out: string[] = []): string[] => {
   if (typeof tree === "string") {
@@ -78,13 +108,25 @@ export const collectLeaves = (tree: BracketTree, out: string[] = []): string[] =
   return out;
 };
 
+export const podProximity = (bracket: string, a: string, b: string): number => {
+  if (a === b) return 4;
+  const tree = treeForBracket(bracket);
+  const depth = lcaDepth(tree, a, b, 0);
+  return Math.max(0, depth + 1);
+};
+
 export const computeWeights = (chain: Chain<TheoremEvent>): Map<string, number> => {
   const weights = new Map<string, number>();
   const claimOwner = new Map<string, string>();
 
   for (const r of chain) {
     const e = r.body;
-    if (e.type === "attempt.proposed" || e.type === "lemma.proposed") {
+    if (
+      e.type === "attempt.proposed"
+      || e.type === "lemma.proposed"
+      || e.type === "critique.raised"
+      || e.type === "patch.applied"
+    ) {
       claimOwner.set(e.claimId, e.agentId);
     }
   }
@@ -104,7 +146,20 @@ export const computeWeights = (chain: Chain<TheoremEvent>): Map<string, number> 
       bump(e.agentId, claimOwner.get(e.targetClaimId), 2);
     }
     if (e.type === "summary.made") {
-      bump(e.agentId, claimOwner.get(e.claimId), 1);
+      const uses = Array.isArray(e.uses) ? e.uses : [];
+      const pods = [...new Set(
+        uses
+          .map((claimId) => claimOwner.get(claimId))
+          .filter((agentId): agentId is string => Boolean(agentId))
+          .map((agentId) => podByAgent.get(agentId))
+          .filter((pod): pod is string => Boolean(pod))
+      )];
+      for (let i = 0; i < pods.length; i += 1) {
+        for (let j = i + 1; j < pods.length; j += 1) {
+          const key = pairKey(pods[i], pods[j]);
+          weights.set(key, (weights.get(key) ?? 0) + 1);
+        }
+      }
     }
   }
 
@@ -113,20 +168,54 @@ export const computeWeights = (chain: Chain<TheoremEvent>): Map<string, number> 
 
 export const pickBestBracket = (chain: Chain<TheoremEvent>, current?: string) => {
   const weights = computeWeights(chain);
-  let best = BRACKETS[0];
+  let best = MERGE_LENSES[0];
   let bestScore = scoreBracket(best.tree, weights);
+  let bestParallel = parallelMergePotential(best.tree);
+  let bestReason: "causal" | "parallel" | "stability" | "lexical" = "causal";
+  if (current && best.bracket === current) {
+    bestReason = "stability";
+  }
 
-  for (const candidate of BRACKETS.slice(1)) {
+  const betterCandidate = (candidate: MergeLens, score: number, parallel: number) => {
+    if (score > bestScore) return { better: true, reason: "causal" as const };
+    if (score < bestScore) return { better: false, reason: "causal" as const };
+
+    if (parallel > bestParallel) return { better: true, reason: "parallel" as const };
+    if (parallel < bestParallel) return { better: false, reason: "parallel" as const };
+
+    const candidateStable = current ? candidate.bracket === current : false;
+    const bestStable = current ? best.bracket === current : false;
+    if (candidateStable && !bestStable) return { better: true, reason: "stability" as const };
+    if (!candidateStable && bestStable) return { better: false, reason: "stability" as const };
+
+    if (candidate.bracket < best.bracket) return { better: true, reason: "lexical" as const };
+    return { better: false, reason: "lexical" as const };
+  };
+
+  for (const candidate of MERGE_LENSES.slice(1)) {
     const score = scoreBracket(candidate.tree, weights);
-    if (score > bestScore) {
+    const parallel = parallelMergePotential(candidate.tree);
+    const decision = betterCandidate(candidate, score, parallel);
+    if (decision.better) {
       best = candidate;
       bestScore = score;
+      bestParallel = parallel;
+      bestReason = decision.reason;
     }
   }
 
+  const reasonText =
+    bestReason === "causal"
+      ? "causal score"
+      : bestReason === "parallel"
+        ? "parallel merge potential tie-break"
+        : bestReason === "stability"
+          ? "current bracket stability tie-break"
+          : "deterministic lexical tie-break";
+
   const note = current && current !== best.bracket
-    ? `Rotation applied (${current} -> ${best.bracket})`
-    : `Rotation stable at ${best.bracket}`;
+    ? `Rotation applied (${current} -> ${best.bracket}) via ${reasonText}`
+    : `Rotation stable at ${best.bracket} (${reasonText})`;
 
   return { bracket: best.bracket, score: bestScore, note };
 };

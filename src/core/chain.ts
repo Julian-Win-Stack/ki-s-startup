@@ -42,10 +42,16 @@ export const computeHash = <B>(r: Omit<Receipt<B>, "hash">): Hash =>
 
 const makeId = (ts: number): string => `${ts.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-export const receipt = <B>(stream: string, prev: Hash | undefined, body: B, ts = Date.now()): Receipt<B> => {
+export const receipt = <B>(
+  stream: string,
+  prev: Hash | undefined,
+  body: B,
+  ts = Date.now(),
+  hints?: Record<string, unknown>
+): Receipt<B> => {
   const id = makeId(ts);
   const base = { id, ts, stream, prev, body };
-  return { ...base, hash: computeHash(base) };
+  return { ...base, hash: computeHash(base), hints };
 };
 
 // ============================================================================

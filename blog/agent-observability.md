@@ -342,4 +342,4 @@ The simplest answer I’ve found is a chain of receipts.
 
 One data structure. Everything else is a view.
 
-Check out this repo for implementation of a todo app https://github.com/skishore23/reciept
+Check out this repo for implementation of a todo app https://github.com/skishore23/receipt
