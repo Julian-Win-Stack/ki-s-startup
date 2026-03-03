@@ -95,8 +95,43 @@ export const receiptShell = (opts: {
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script src="https://unpkg.com/htmx-ext-sse@2.2.1/sse.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <script>
+    (function () {
+      const renderMath = function (root) {
+        const target = root instanceof HTMLElement ? root : document.body;
+        const renderMathInElement = window.renderMathInElement;
+        if (typeof renderMathInElement !== "function") return;
+        target.querySelectorAll(".chat-bubble, .result-body, .summary-body").forEach(function (node) {
+          if (!(node instanceof HTMLElement)) return;
+          try {
+            renderMathInElement(node, {
+              delimiters: [
+                { left: "$$", right: "$$", display: true },
+                { left: "\\\\[", right: "\\\\]", display: true },
+                { left: "$", right: "$", display: false },
+                { left: "\\\\(", right: "\\\\)", display: false },
+              ],
+              throwOnError: false,
+            });
+          } catch (_err) {}
+        });
+      };
+
+      window.receiptRenderMath = renderMath;
+      document.addEventListener("DOMContentLoaded", function () {
+        renderMath(document.body);
+      });
+      document.addEventListener("htmx:afterSwap", function (evt) {
+        const target = evt && evt.target instanceof HTMLElement ? evt.target : document.body;
+        renderMath(target);
+      });
+    })();
+  </script>
   <style>
     :root {
       --bg: #0a0b0f;

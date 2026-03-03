@@ -32,11 +32,8 @@ const prettyAgent = (id: string): string =>
 const prettyPhase = (phase?: string): string =>
   phase ? phase.slice(0, 1).toUpperCase() + phase.slice(1) : "Context";
 
-const stripTexText = (line: string): string =>
-  line.replace(/\\text\{([^}]*)\}/g, (_m, inner) => inner);
-
 const renderInlineMath = (line: string): string =>
-  esc(stripTexText(line)).replace(/\\\((.+?)\\\)/g, (_m, inner) => `<span class="math-inline">${inner}</span>`);
+  esc(line).replace(/\\\((.+?)\\\)/g, (_m, inner) => `<span class="math-inline">${inner}</span>`);
 
 const renderProof = (raw: string): string => {
   const trimmed = raw.trim();
@@ -76,7 +73,7 @@ const renderProof = (raw: string): string => {
       continue;
     }
     if (inMath) {
-      mathLines.push(stripTexText(line));
+      mathLines.push(line);
       continue;
     }
 
@@ -146,8 +143,68 @@ export const theoremShell = (
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script src="https://unpkg.com/htmx-ext-sse@2.2.1/sse.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <script>
+    (function () {
+      const renderMath = function (root) {
+        const target = root instanceof HTMLElement ? root : document.body;
+        const katex = window.katex;
+        if (!katex) return;
+
+        target.querySelectorAll(".math-inline").forEach(function (node) {
+          if (!(node instanceof HTMLElement)) return;
+          if (node.dataset.katexDone === "1") return;
+          const expr = (node.textContent || "").trim();
+          if (!expr) return;
+          try {
+            katex.render(expr, node, { throwOnError: false, displayMode: false });
+            node.dataset.katexDone = "1";
+          } catch (_err) {}
+        });
+
+        target.querySelectorAll(".math-block").forEach(function (node) {
+          if (!(node instanceof HTMLElement)) return;
+          if (node.dataset.katexDone === "1") return;
+          const expr = (node.textContent || "").trim();
+          if (!expr) return;
+          try {
+            katex.render(expr, node, { throwOnError: false, displayMode: true });
+            node.dataset.katexDone = "1";
+          } catch (_err) {}
+        });
+
+        const renderMathInElement = window.renderMathInElement;
+        if (typeof renderMathInElement !== "function") return;
+        target.querySelectorAll(".result-body, .chat-bubble").forEach(function (node) {
+          if (!(node instanceof HTMLElement)) return;
+          try {
+            renderMathInElement(node, {
+              delimiters: [
+                { left: "$$", right: "$$", display: true },
+                { left: "\\\\[", right: "\\\\]", display: true },
+                { left: "$", right: "$", display: false },
+                { left: "\\\\(", right: "\\\\)", display: false },
+              ],
+              throwOnError: false,
+            });
+          } catch (_err) {}
+        });
+      };
+
+      window.receiptRenderMath = renderMath;
+      document.addEventListener("DOMContentLoaded", function () {
+        renderMath(document.body);
+      });
+      document.addEventListener("htmx:afterSwap", function (evt) {
+        const target = evt && evt.target instanceof HTMLElement ? evt.target : document.body;
+        renderMath(target);
+      });
+    })();
+  </script>
   <style>
     :root {
       --bg: #0a0b0f;
