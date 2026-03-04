@@ -5,7 +5,7 @@
 import type { Runtime } from "../core/runtime.js";
 import type { WriterCmd, WriterEvent, WriterState } from "../modules/writer.js";
 import { renderPrompt, type WriterPromptConfig } from "../prompts/writer.js";
-import { createQueuedEmitter, type EmitFn, type RunLifecycle, type WorkflowSpec } from "../engine/runtime/workflow.js";
+import { clampNumber, parseFormNum, type AgentRunCommand, type AgentRunControl, createQueuedEmitter, type EmitFn, type RunLifecycle, type WorkflowSpec } from "../engine/runtime/workflow.js";
 import { runReceiptPlanner, type CapabilitySpec, type PlanSpec } from "../engine/runtime/planner.js";
 import { defineReceiptAgent, runReceiptAgent } from "../engine/runtime/receipt-runtime.js";
 import { WRITER_WORKFLOW_ID, WRITER_WORKFLOW_VERSION, WRITER_TEAM, WRITER_EXAMPLES } from "./writer.constants.js";
@@ -20,12 +20,12 @@ export type WriterRunConfig = {
   readonly maxParallel: number;
 };
 
+export type WriterRunCommand = AgentRunCommand;
+export type WriterRunControl = AgentRunControl;
+
 export const WRITER_DEFAULT_CONFIG: WriterRunConfig = {
   maxParallel: 3,
 };
-
-const clampNumber = (value: number, min: number, max: number): number =>
-  Math.max(min, Math.min(max, value));
 
 export const normalizeWriterConfig = (input: Partial<WriterRunConfig>): WriterRunConfig => ({
   maxParallel: clampNumber(
@@ -35,17 +35,10 @@ export const normalizeWriterConfig = (input: Partial<WriterRunConfig>): WriterRu
   ),
 });
 
-export const parseWriterConfig = (form: Record<string, string>): WriterRunConfig => {
-  const parseNum = (value: string | undefined): number | undefined => {
-    if (value === undefined) return undefined;
-    const n = Number(value);
-    return Number.isFinite(n) ? n : undefined;
-  };
-
-  return normalizeWriterConfig({
-    maxParallel: parseNum(form.parallel),
+export const parseWriterConfig = (form: Record<string, string>): WriterRunConfig =>
+  normalizeWriterConfig({
+    maxParallel: parseFormNum(form.parallel),
   });
-};
 
 type WriterWorkflowConfig = WriterRunConfig & {
   readonly problem: string;
@@ -61,6 +54,7 @@ type WriterWorkflowDeps = {
   readonly apiReady: boolean;
   readonly apiNote?: string;
   readonly emitIndex: (event: WriterEvent) => Promise<void>;
+  readonly control?: WriterRunControl;
 };
 
 export type WriterRunInput = {
@@ -79,6 +73,7 @@ export type WriterRunInput = {
   readonly apiNote?: string;
   readonly broadcast?: () => void;
   readonly now?: () => number;
+  readonly control?: WriterRunControl;
 };
 
 // ============================================================================
@@ -121,9 +116,9 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
   version: WRITER_WORKFLOW_VERSION,
   lifecycle: WRITER_LIFECYCLE,
   run: async (ctx, config) => {
-    const { runtime, prompts, llmText, apiReady, apiNote } = ctx;
+    const { runtime, prompts, llmText: llmRaw, apiReady, apiNote, control } = ctx;
     const { maxParallel } = config;
-    const problemText = (ctx.resume ? (ctx.state?.problem || config.problem) : (config.problem || ctx.state?.problem || "")).trim();
+    let problemText = (ctx.resume ? (ctx.state?.problem || config.problem) : (config.problem || ctx.state?.problem || "")).trim();
     const runId = ctx.runId;
 
     const stepBranchEmitters = new Map<string, EmitFn<WriterEvent>>();
@@ -162,6 +157,166 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
       }
     };
 
+    const isContextOverflow = (err: unknown): boolean => {
+      const message = err instanceof Error ? err.message : String(err);
+      return /context|token|maximum context|input too large|prompt too long/i.test(message);
+    };
+
+    const softTrim = (text: string, headChars: number, tailChars: number): string => {
+      if (text.length <= headChars + tailChars + 16) return text;
+      return `${text.slice(0, headChars)}\n\n[... trimmed ...]\n\n${text.slice(-tailChars)}`;
+    };
+
+    const compactPrompt = (text: string, targetChars: number): string => {
+      if (text.length <= targetChars) return text;
+      const lines = text.split("\n").filter((line) => line.trim().length > 0);
+      const head = lines.slice(0, 20).join("\n");
+      const tail = lines.slice(-12).join("\n");
+      const merged = `${head}\n\n[... compacted context ...]\n\n${tail}`.trim();
+      if (merged.length <= targetChars) return merged;
+      return softTrim(merged, Math.floor(targetChars * 0.6), Math.floor(targetChars * 0.3));
+    };
+
+    const applyContextPolicy = async (stage: string, user: string, agentId?: string, stepId?: string): Promise<string> => {
+      const HARD_THRESHOLD = 45_000;
+      const SOFT_THRESHOLD = 10_000;
+      const COMPACT_THRESHOLD = 16_000;
+      let next = user;
+      if (next.length > HARD_THRESHOLD) {
+        const before = next.length;
+        next = "[Context pruned due to size. Produce concise output.]";
+        await emit({
+          type: "context.pruned",
+          runId,
+          agentId,
+          stepId,
+          stage,
+          mode: "hard",
+          before,
+          after: next.length,
+          note: "hard clear applied",
+        });
+      } else if (next.length > SOFT_THRESHOLD) {
+        const before = next.length;
+        next = softTrim(next, 3_500, 2_800);
+        await emit({
+          type: "context.pruned",
+          runId,
+          agentId,
+          stepId,
+          stage,
+          mode: "soft",
+          before,
+          after: next.length,
+          note: "soft trim applied",
+        });
+      }
+      if (next.length > COMPACT_THRESHOLD) {
+        const before = next.length;
+        next = compactPrompt(next, 8_000);
+        await emit({
+          type: "context.compacted",
+          runId,
+          agentId,
+          stepId,
+          stage,
+          reason: "threshold",
+          before,
+          after: next.length,
+          note: "pre-call compaction",
+        });
+      }
+      return next;
+    };
+
+    const callLlm = async (opts: {
+      readonly system?: string;
+      readonly user: string;
+      readonly stage: string;
+      readonly agentId?: string;
+      readonly stepId?: string;
+    }): Promise<string> => {
+      if (await checkAbort(`${opts.stage}.before_llm`)) {
+        throw new Error(`canceled at ${opts.stage}.before_llm`);
+      }
+      const pruned = await applyContextPolicy(opts.stage, opts.user, opts.agentId, opts.stepId);
+      try {
+        const out = await llmRaw({ system: opts.system, user: pruned });
+        if (await checkAbort(`${opts.stage}.after_llm`)) {
+          throw new Error(`canceled at ${opts.stage}.after_llm`);
+        }
+        return out;
+      } catch (err) {
+        if (!isContextOverflow(err)) throw err;
+        const compacted = compactPrompt(pruned, 6_000);
+        await emit({
+          type: "context.compacted",
+          runId,
+          agentId: opts.agentId,
+          stepId: opts.stepId,
+          stage: opts.stage,
+          reason: "overflow",
+          before: pruned.length,
+          after: compacted.length,
+          note: "retry after overflow",
+        });
+        await emit({
+          type: "overflow.recovered",
+          runId,
+          agentId: opts.agentId,
+          stepId: opts.stepId,
+          stage: opts.stage,
+          note: "recovered by compacting prompt and retrying once",
+        });
+        const out = await llmRaw({ system: opts.system, user: compacted });
+        if (await checkAbort(`${opts.stage}.after_overflow_retry`)) {
+          throw new Error(`canceled at ${opts.stage}.after_overflow_retry`);
+        }
+        return out;
+      }
+    };
+
+    const applyControlCommands = async (): Promise<void> => {
+      if (!control?.pullCommands) return;
+      const commands = await control.pullCommands();
+      for (const command of commands) {
+        const payload = command.payload ?? {};
+        if (typeof payload.problem === "string" && payload.problem.trim().length > 0) {
+          problemText = payload.problem.trim();
+          await emit({
+            type: "state.patch",
+            runId,
+            stepId: "problem",
+            patch: { problem: problemText },
+          });
+          continue;
+        }
+        if (typeof payload.note === "string" && payload.note.trim().length > 0) {
+          problemText = `${problemText}\n\nFollow-up:\n${payload.note}`.trim();
+          await emit({
+            type: "state.patch",
+            runId,
+            stepId: "problem",
+            patch: { problem: problemText },
+          });
+        }
+      }
+    };
+
+    const checkAbort = async (stage: string): Promise<boolean> => {
+      if (!control?.checkAbort) return false;
+      const aborted = await control.checkAbort();
+      if (!aborted) return false;
+      await emit({
+        type: "run.status",
+        runId,
+        status: "failed",
+        agentId: "orchestrator",
+        note: `canceled at ${stage}`,
+      });
+      return true;
+    };
+
     if (!apiReady) {
       await emit({
         type: "run.status",
@@ -179,6 +334,9 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
       });
       return;
     }
+
+    await applyControlCommands();
+    if (await checkAbort("bootstrap")) return;
 
     type PromptContextEvent = Extract<WriterEvent, { type: "prompt.context" }>;
     const emitPromptContext = async (payload: Omit<PromptContextEvent, "type" | "runId">) => {
@@ -204,7 +362,13 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
             title: "Research A prompt",
             content: user,
           });
-          const text = await llmText({ system: prompts.system.researcher_a ?? "", user });
+          const text = await callLlm({
+            system: prompts.system.researcher_a ?? "",
+            user,
+            stage: "research",
+            agentId: "researcher_a",
+            stepId: "research.a",
+          });
           return { "research.a": text.trim() || "No research output." };
         },
       },
@@ -221,7 +385,13 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
             title: "Research B prompt",
             content: user,
           });
-          const text = await llmText({ system: prompts.system.researcher_b ?? "", user });
+          const text = await callLlm({
+            system: prompts.system.researcher_b ?? "",
+            user,
+            stage: "research",
+            agentId: "researcher_b",
+            stepId: "research.b",
+          });
           return { "research.b": text.trim() || "No research output." };
         },
       },
@@ -238,7 +408,13 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
             title: "Research C prompt",
             content: user,
           });
-          const text = await llmText({ system: prompts.system.researcher_c ?? "", user });
+          const text = await callLlm({
+            system: prompts.system.researcher_c ?? "",
+            user,
+            stage: "research",
+            agentId: "researcher_c",
+            stepId: "research.c",
+          });
           return { "research.c": text.trim() || "No research output." };
         },
       },
@@ -262,7 +438,13 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
             title: "Outline prompt",
             content: user,
           });
-          const text = await llmText({ system: prompts.system.architect ?? "", user });
+          const text = await callLlm({
+            system: prompts.system.architect ?? "",
+            user,
+            stage: "outline",
+            agentId: "architect",
+            stepId: "outline",
+          });
           return { outline: text.trim() || "No outline produced." };
         },
       },
@@ -287,7 +469,13 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
             title: "Draft prompt",
             content: user,
           });
-          const text = await llmText({ system: prompts.system.drafter ?? "", user });
+          const text = await callLlm({
+            system: prompts.system.drafter ?? "",
+            user,
+            stage: "draft",
+            agentId: "drafter",
+            stepId: "draft",
+          });
           return { draft: text.trim() || "No draft produced." };
         },
       },
@@ -304,7 +492,13 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
             title: "Logic critique prompt",
             content: user,
           });
-          const text = await llmText({ system: prompts.system.critic_logic ?? "", user });
+          const text = await callLlm({
+            system: prompts.system.critic_logic ?? "",
+            user,
+            stage: "critic",
+            agentId: "critic_logic",
+            stepId: "critique.logic",
+          });
           return { "critique.logic": text.trim() || "No critique." };
         },
       },
@@ -321,7 +515,13 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
             title: "Style critique prompt",
             content: user,
           });
-          const text = await llmText({ system: prompts.system.critic_style ?? "", user });
+          const text = await callLlm({
+            system: prompts.system.critic_style ?? "",
+            user,
+            stage: "critic",
+            agentId: "critic_style",
+            stepId: "critique.style",
+          });
           return { "critique.style": text.trim() || "No critique." };
         },
       },
@@ -342,7 +542,13 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
             title: "Revision prompt",
             content: user,
           });
-          const text = await llmText({ system: prompts.system.editor ?? "", user });
+          const text = await callLlm({
+            system: prompts.system.editor ?? "",
+            user,
+            stage: "edit",
+            agentId: "editor",
+            stepId: "edit",
+          });
           return { revision: text.trim() || "No revision produced." };
         },
       },
@@ -359,7 +565,13 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
             title: "Final prompt",
             content: user,
           });
-          const text = await llmText({ system: prompts.system.synthesizer ?? "", user });
+          const text = await callLlm({
+            system: prompts.system.synthesizer ?? "",
+            user,
+            stage: "synthesize",
+            agentId: "synthesizer",
+            stepId: "synthesize",
+          });
           return { final: text.trim() || "No final output." };
         },
       },
@@ -373,7 +585,10 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
       id: WRITER_WORKFLOW_ID,
       version: WRITER_WORKFLOW_VERSION,
       capabilities,
-      goals: ["final"],
+      goal: (outputs) => ({
+        done: outputs["final"] !== undefined,
+        blocked: outputs["final"] === undefined ? "final output not yet produced" : undefined,
+      }),
     };
 
     const plannerState = await runReceiptPlanner({
@@ -386,6 +601,7 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
       defaultTimeoutMs: Number(process.env.PLANNER_STEP_TIMEOUT_MS ?? 90000),
       retryFailed: Boolean(ctx.resume),
     });
+    if (await checkAbort("planner")) return;
 
     if (plannerState.status === "failed") {
       await emit({
@@ -480,6 +696,7 @@ export const runWriterGuild = async (input: WriterRunInput): Promise<void> => {
         apiReady: input.apiReady,
         apiNote: input.apiNote,
         emitIndex,
+        control: input.control,
       },
       config: { ...input.config, problem: input.problem },
     });

@@ -1,11 +1,4 @@
-// ============================================================================
-// Theorem Guild stream naming helpers
-//
-// Runs live in their own stream for clean receipts; the base stream is the index.
-// ============================================================================
+import { runStream, branchStream } from "../engine/runtime/workflow.js";
 
-export const theoremRunStream = (base: string, runId: string): string =>
-  `${base}/runs/${runId}`;
-
-export const theoremBranchStream = (runStream: string, branchId: string): string =>
-  `${runStream}/branches/${branchId}`;
+export const theoremRunStream = runStream;
+export const theoremBranchStream = branchStream;

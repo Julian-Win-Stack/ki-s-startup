@@ -34,6 +34,7 @@ import type { RunAgentManifest } from "../framework/manifest.js";
 import type { RuntimeOp } from "../framework/translators.js";
 import { executeRuntimeOps } from "../framework/translators.js";
 import { SseHub } from "../framework/sse-hub.js";
+import type { EnqueueJobInput } from "../adapters/jsonl-queue.js";
 
 type WriterManifestDeps = {
   readonly runtime: Runtime<WriterCmd, WriterEvent, WriterState>;
@@ -43,6 +44,7 @@ type WriterManifestDeps = {
   readonly promptPath: string;
   readonly model: string;
   readonly sse: SseHub;
+  readonly enqueueJob: (job: EnqueueJobInput) => Promise<void>;
 };
 
 type WriterRunStartIntent = {
@@ -55,15 +57,6 @@ type WriterRunStartIntent = {
   readonly append?: string;
   readonly resolvedProblem: string;
   readonly config: ReturnType<typeof parseWriterConfig>;
-  readonly prompts: Parameters<typeof runWriterGuild>[0]["prompts"];
-  readonly llmText: (opts: LlmTextOptions) => Promise<string>;
-  readonly model: string;
-  readonly promptHash: string;
-  readonly promptPath: string;
-  readonly apiReady: boolean;
-  readonly apiNote?: string;
-  readonly runtime: Runtime<WriterCmd, WriterEvent, WriterState>;
-  readonly sse: SseHub;
   readonly resumeRequested: boolean;
 };
 
@@ -78,6 +71,8 @@ export const translateWriterRunStartIntent = (
   const ops: RuntimeOp<WriterCmd>[] = [];
   let runStreamOverride: string | undefined;
   let forkedBranch: string | undefined;
+  const queuedProblem = intent.append ? `${intent.resolvedProblem}\n\n${intent.append}` : intent.resolvedProblem;
+  const queueJobId = `writer_${intent.runId}_${Date.now().toString(36)}`;
 
   if (intent.resumeRequested && intent.sourceChain.length > 0) {
     const forkSlice = intent.at === null ? intent.sourceChain : sliceWriterChainByStep(intent.sourceChain, intent.at);
@@ -102,50 +97,35 @@ export const translateWriterRunStartIntent = (
   }
 
   ops.push({
-    type: "start_run",
-    launcher: () => {
-      void runWriterGuild({
+    type: "enqueue_job",
+    job: {
+      jobId: queueJobId,
+      agentId: "writer",
+      lane: "collect",
+      sessionKey: `writer:${intent.stream}`,
+      singletonMode: "cancel",
+      maxAttempts: 2,
+      payload: {
+        kind: "writer.run",
         stream: intent.stream,
         runId: intent.runId,
         runStream: runStreamOverride,
-        problem: intent.append ? `${intent.resolvedProblem}\n\n${intent.append}` : intent.resolvedProblem,
+        problem: queuedProblem,
         config: intent.config,
-        runtime: intent.runtime,
-        prompts: intent.prompts,
-        llmText: (opts) => intent.llmText({
-          ...opts,
-          onDelta: async (delta) => {
-            if (!delta) return;
-            intent.sse.publishData(
-              "writer",
-              intent.stream,
-              "writer-token",
-              JSON.stringify({ runId: intent.runId, delta })
-            );
-          },
-        }),
-        model: intent.model,
-        promptHash: intent.promptHash,
-        promptPath: intent.promptPath,
-        apiReady: intent.apiReady,
-        apiNote: intent.apiNote,
-        broadcast: () => {
-          intent.sse.publish("writer", intent.stream);
-          intent.sse.publish("receipt");
-        },
-      });
+      },
     },
   });
 
   const redirectParams = new URLSearchParams({ stream: intent.stream, run: intent.runId });
   if (forkedBranch) redirectParams.set("branch", forkedBranch);
+  redirectParams.set("job", queueJobId);
   ops.push({ type: "redirect", header: "HX-Redirect", url: `/writer?${redirectParams.toString()}` });
 
   return ops;
 };
 
 export const createWriterManifest = (deps: WriterManifestDeps): RunAgentManifest => {
-  const { runtime, llmText, prompts, promptHash, promptPath, model, sse } = deps;
+  const { runtime, enqueueJob, llmText, prompts, promptHash, promptPath, model, sse } = deps;
 
   const loadWriterRunChain = async (
     baseStream: string,
@@ -438,15 +418,6 @@ export const createWriterManifest = (deps: WriterManifestDeps): RunAgentManifest
           append,
           resolvedProblem,
           config,
-          runtime,
-          llmText,
-          prompts,
-          model,
-          promptHash,
-          promptPath,
-          apiReady,
-          apiNote,
-          sse,
           resumeRequested: Boolean(runParam?.trim().length),
         });
 
@@ -457,8 +428,11 @@ export const createWriterManifest = (deps: WriterManifestDeps): RunAgentManifest
           emit: async (op) => {
             await runtime.execute(op.stream, op.cmd);
           },
-          startRun: async (op) => {
-            await op.launcher();
+          startRun: async () => {},
+          enqueueJob: async (op) => {
+            await enqueueJob(op.job);
+            sse.publish("jobs", op.job.jobId);
+            sse.publish("receipt");
           },
           broadcast: async (op) => {
             sse.publish(op.topic, op.stream);

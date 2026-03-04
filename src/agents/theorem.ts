@@ -7,7 +7,7 @@ import type { TheoremCmd, TheoremEvent, TheoremState } from "../modules/theorem.
 import { reduce as reduceTheorem, initial as initialTheorem } from "../modules/theorem.js";
 import { renderPrompt, type TheoremPromptConfig } from "../prompts/theorem.js";
 
-import { createQueuedEmitter, type EmitFn, type RunLifecycle, type WorkflowSpec } from "../engine/runtime/workflow.js";
+import { clampNumber, parseFormNum, type AgentRunCommand, type AgentRunControl, createQueuedEmitter, type EmitFn, type RunLifecycle, type WorkflowSpec } from "../engine/runtime/workflow.js";
 import { defineReceiptAgent, runReceiptAgent } from "../engine/runtime/receipt-runtime.js";
 import {
   THEOREM_WORKFLOW_ID,
@@ -33,14 +33,6 @@ import {
 import { evaluateRoundRebracketEvidence } from "./theorem.evidence.js";
 import {
   callWithStructuredRetries,
-  fallbackAttemptPayload,
-  fallbackCritiquePayload,
-  fallbackLemmaPayload,
-  fallbackMergePayload,
-  fallbackOrchestratorDecision,
-  fallbackPatchPayload,
-  fallbackProofPayload,
-  fallbackVerifyPayload,
   formatAttemptPayload,
   formatCritiquePayload,
   formatLemmaPayload,
@@ -72,15 +64,15 @@ export type TheoremRunConfig = {
   readonly branchThreshold: number;
 };
 
+export type TheoremRunCommand = AgentRunCommand;
+export type TheoremRunControl = AgentRunControl;
+
 export const THEOREM_DEFAULT_CONFIG: TheoremRunConfig = {
   rounds: 2,
   maxDepth: 2,
   memoryWindow: 60,
   branchThreshold: 2,
 };
-
-const clampNumber = (value: number, min: number, max: number): number =>
-  Math.max(min, Math.min(max, value));
 
 export const normalizeTheoremConfig = (input: Partial<TheoremRunConfig>): TheoremRunConfig => ({
   rounds: clampNumber(
@@ -105,20 +97,13 @@ export const normalizeTheoremConfig = (input: Partial<TheoremRunConfig>): Theore
   ),
 });
 
-export const parseTheoremConfig = (form: Record<string, string>): TheoremRunConfig => {
-  const parseNum = (value: string | undefined): number | undefined => {
-    if (value === undefined) return undefined;
-    const n = Number(value);
-    return Number.isFinite(n) ? n : undefined;
-  };
-
-  return normalizeTheoremConfig({
-    rounds: parseNum(form.rounds),
-    maxDepth: parseNum(form.depth),
-    memoryWindow: parseNum(form.memory),
-    branchThreshold: parseNum(form.branch),
+export const parseTheoremConfig = (form: Record<string, string>): TheoremRunConfig =>
+  normalizeTheoremConfig({
+    rounds: parseFormNum(form.rounds),
+    maxDepth: parseFormNum(form.depth),
+    memoryWindow: parseFormNum(form.memory),
+    branchThreshold: parseFormNum(form.branch),
   });
-};
 
 type TheoremWorkflowConfig = TheoremRunConfig & {
   readonly problem: string;
@@ -134,6 +119,7 @@ type TheoremWorkflowDeps = {
   readonly apiReady: boolean;
   readonly apiNote?: string;
   readonly emitIndex: (event: TheoremEvent) => Promise<void>;
+  readonly control?: TheoremRunControl;
 };
 
 export type TheoremRunInput = {
@@ -152,6 +138,7 @@ export type TheoremRunInput = {
   readonly apiNote?: string;
   readonly broadcast?: () => void;
   readonly now?: () => number;
+  readonly control?: TheoremRunControl;
 };
 
 // ============================================================================
@@ -181,7 +168,7 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
   version: THEOREM_WORKFLOW_VERSION,
   lifecycle: THEOREM_LIFECYCLE,
   run: async (ctx, config) => {
-    const { runtime, prompts, llmText, apiReady, apiNote } = ctx;
+    const { runtime, prompts, llmText: llmRaw, apiReady, apiNote, control } = ctx;
     const { rounds, maxDepth, memoryWindow, branchThreshold, problem: inputProblem } = config;
     const runId = ctx.runId;
 
@@ -259,6 +246,158 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
       }
     };
 
+    const isContextOverflow = (err: unknown): boolean => {
+      const message = err instanceof Error ? err.message : String(err);
+      return /context|token|maximum context|input too large|prompt too long/i.test(message);
+    };
+
+    const softTrim = (text: string, headChars: number, tailChars: number): string => {
+      if (text.length <= headChars + tailChars + 16) return text;
+      return `${text.slice(0, headChars)}\n\n[... trimmed ...]\n\n${text.slice(-tailChars)}`;
+    };
+
+    const compactPrompt = (text: string, targetChars: number): string => {
+      if (text.length <= targetChars) return text;
+      const lines = text.split("\n").filter((line) => line.trim().length > 0);
+      const head = lines.slice(0, 24).join("\n");
+      const tail = lines.slice(-16).join("\n");
+      const merged = `${head}\n\n[... compacted context ...]\n\n${tail}`.trim();
+      if (merged.length <= targetChars) return merged;
+      return softTrim(merged, Math.floor(targetChars * 0.6), Math.floor(targetChars * 0.3));
+    };
+
+    const applyContextPolicy = async (stage: string, user: string): Promise<string> => {
+      const HARD_THRESHOLD = 50_000;
+      const SOFT_THRESHOLD = 12_000;
+      const COMPACT_THRESHOLD = 18_000;
+      let next = user;
+      if (next.length > HARD_THRESHOLD) {
+        const before = next.length;
+        next = "[Context pruned due to size. Use concise reasoning and finish with best effort.]";
+        await emit({
+          type: "context.pruned",
+          runId,
+          agentId: "orchestrator",
+          stage,
+          mode: "hard",
+          before,
+          after: next.length,
+          note: "hard clear applied",
+        });
+      } else if (next.length > SOFT_THRESHOLD) {
+        const before = next.length;
+        next = softTrim(next, 4_000, 3_000);
+        await emit({
+          type: "context.pruned",
+          runId,
+          agentId: "orchestrator",
+          stage,
+          mode: "soft",
+          before,
+          after: next.length,
+          note: "soft trim applied",
+        });
+      }
+      if (next.length > COMPACT_THRESHOLD) {
+        const before = next.length;
+        next = compactPrompt(next, 10_000);
+        await emit({
+          type: "context.compacted",
+          runId,
+          agentId: "orchestrator",
+          stage,
+          reason: "threshold",
+          before,
+          after: next.length,
+          note: "pre-call compaction",
+        });
+      }
+      return next;
+    };
+
+    const llmText = async (opts: { system?: string; user: string }): Promise<string> => {
+      const stage = "agent-loop";
+      if (await checkAbort(`${stage}.before_llm`)) {
+        throw new Error(`canceled at ${stage}.before_llm`);
+      }
+      const pruned = await applyContextPolicy(stage, opts.user);
+      try {
+        const out = await llmRaw({ system: opts.system, user: pruned });
+        if (await checkAbort(`${stage}.after_llm`)) {
+          throw new Error(`canceled at ${stage}.after_llm`);
+        }
+        return out;
+      } catch (err) {
+        if (!isContextOverflow(err)) throw err;
+        const compacted = compactPrompt(pruned, 7_000);
+        await emit({
+          type: "context.compacted",
+          runId,
+          agentId: "orchestrator",
+          stage,
+          reason: "overflow",
+          before: pruned.length,
+          after: compacted.length,
+          note: "retry after overflow",
+        });
+        await emit({
+          type: "overflow.recovered",
+          runId,
+          agentId: "orchestrator",
+          stage,
+          note: "recovered by compacting prompt and retrying once",
+        });
+        const out = await llmRaw({ system: opts.system, user: compacted });
+        if (await checkAbort(`${stage}.after_overflow_retry`)) {
+          throw new Error(`canceled at ${stage}.after_overflow_retry`);
+        }
+        return out;
+      }
+    };
+
+    const checkAbort = async (stage: string): Promise<boolean> => {
+      if (!control?.checkAbort) return false;
+      const aborted = await control.checkAbort();
+      if (!aborted) return false;
+      await emit({
+        type: "run.status",
+        runId,
+        status: "failed",
+        agentId: "orchestrator",
+        note: `canceled at ${stage}`,
+      });
+      return true;
+    };
+
+    const applyControlCommands = async (): Promise<void> => {
+      if (!control?.pullCommands) return;
+      const commands = await control.pullCommands();
+      for (const command of commands) {
+        const payload = command.payload ?? {};
+        if (typeof payload.problem === "string" && payload.problem.trim().length > 0) {
+          const nextProblem = payload.problem.trim();
+          problemText = nextProblem;
+          await emit({
+            type: "problem.set",
+            runId,
+            agentId: "orchestrator",
+            problem: problemText,
+          });
+          continue;
+        }
+        if (typeof payload.note === "string" && payload.note.trim().length > 0) {
+          const append = `Follow-up:\n${payload.note.trim()}`;
+          problemText = `${problemText}\n\n${append}`.trim();
+          await emit({
+            type: "problem.appended",
+            runId,
+            agentId: "orchestrator",
+            append,
+          });
+        }
+      }
+    };
+
     const loadCombinedChain = async () => {
       const mainChain = await runtime.chain(ctx.stream);
       if (agentBranchStreams.size === 0) return mainChain;
@@ -281,7 +420,7 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
 
     const existingChain = await runtime.chain(ctx.stream);
     const resume = Boolean(ctx.resume);
-    const problemText = (resume ? (ctx.state?.problem || inputProblem) : (inputProblem || ctx.state?.problem || "")).trim();
+    let problemText = (resume ? (ctx.state?.problem || inputProblem) : (inputProblem || ctx.state?.problem || "")).trim();
 
     if (!problemText) {
       await emit({
@@ -312,6 +451,9 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
       });
       return;
     }
+
+    await applyControlCommands();
+    if (await checkAbort("bootstrap")) return;
 
     const forkPoint = (await runtime.chain(ctx.stream)).length;
     for (const agentId of agentIds) {
@@ -351,7 +493,6 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
         system,
         user: prompt,
         parse: parseOrchestratorDecision,
-        fallback: fallbackOrchestratorDecision,
         retries: structuredRetries,
       });
       return { decision: parsed.value, raw: parsed.raw.trim() };
@@ -404,6 +545,8 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
     if (startRound > rounds && !skipRounds) return;
 
     for (let round = startRound; round <= rounds; round += 1) {
+      await applyControlCommands();
+      if (await checkAbort(`round-${round}`)) return;
       await emit({
         type: "run.status",
         runId,
@@ -420,12 +563,23 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
         chain: typeof runSliceBefore,
         targetClaimId?: string
       ) => {
-        const slice = buildMemorySlice(chain, {
+        const started = Date.now();
+        const input = {
           phase,
           window: memoryWindow,
           maxChars: memoryBudget(memoryWindow, phase),
           targetClaimId,
           bracket: currentBracket,
+        };
+        const slice = buildMemorySlice(chain, input);
+        await emit({
+          type: "tool.called",
+          runId,
+          agentId: "orchestrator",
+          tool: "memory.summarize",
+          input,
+          summary: `chars:${slice.text.length};items:${slice.items.length};truncated:${slice.truncated ? "1" : "0"}`,
+          durationMs: Date.now() - started,
         });
         if (slice.truncated) memoryTruncated = true;
         if (slice.text || slice.items.length > 0) {
@@ -482,7 +636,6 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
           system: prompts.system[agent.id] ?? "",
           user: prompt,
           parse: parseAttemptPayload,
-          fallback: fallbackAttemptPayload,
           retries: structuredRetries,
         });
         const content = formatAttemptPayload(attemptResult.value);
@@ -497,6 +650,7 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
         await agentStatus(agent.id, "done", "attempt", round);
         return { id: attemptId, agentId: agent.id, content };
       }));
+      if (await checkAbort(`round-${round}-attempts`)) return;
 
       const attemptText = roundAttempts.map((a) => `# ${a.agentId}\n${a.content}`).join("\n\n");
 
@@ -545,6 +699,7 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
           raw,
         });
       }
+      if (await checkAbort(`round-${round}-orchestrate`)) return;
 
       const lemmaId = claimId(`lemma_r${round}`);
       let lemmaOutput = "";
@@ -569,7 +724,6 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
           system: prompts.system.lemma_miner ?? "",
           user: lemmaPrompt,
           parse: parseLemmaPayload,
-          fallback: fallbackLemmaPayload,
           retries: structuredRetries,
         });
         lemmaOutput = formatLemmaPayload(lemmaResult.value);
@@ -582,6 +736,7 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
         });
         await agentStatus("lemma_miner", "done", "lemma", round);
       }
+      if (await checkAbort(`round-${round}-lemma`)) return;
 
       const patches: Array<{ id: string; targetId: string; content: string }> = [];
 
@@ -618,7 +773,6 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
                 system: prompts.system.skeptic ?? "",
                 user: critiquePrompt,
                 parse: parseCritiquePayload,
-                fallback: fallbackCritiquePayload,
                 retries: structuredRetries,
               });
               const critiqueContent = formatCritiquePayload(critiqueResult.value);
@@ -635,6 +789,7 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
             await agentStatus("skeptic", "done", "critique", round);
             return results;
           })();
+      if (await checkAbort(`round-${round}-critique`)) return;
 
       if (!skipPatch) {
         await emit({
@@ -672,7 +827,6 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
             system: prompts.system.verifier ?? "",
             user: patchPrompt,
             parse: parsePatchPayload,
-            fallback: fallbackPatchPayload,
             retries: structuredRetries,
           });
           const patchContent = formatPatchPayload(patchResult.value);
@@ -688,6 +842,7 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
         }));
         await agentStatus("verifier", "done", "patch", round);
       }
+      if (await checkAbort(`round-${round}-patch`)) return;
 
       const chainAfterCrit = await loadCombinedChain();
       const runSliceAfterCrit = sliceTheoremChain(chainAfterCrit, runId);
@@ -749,7 +904,6 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
           system: prompts.system.synthesizer ?? "",
           user: mergePrompt,
           parse: parseMergePayload,
-          fallback: fallbackMergePayload,
           retries: structuredRetries,
         });
         const content = formatMergePayload(merged.value);
@@ -793,7 +947,6 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
           system: prompts.system.synthesizer ?? "",
           user: mergePrompt,
           parse: parseMergePayload,
-          fallback: fallbackMergePayload,
           retries: structuredRetries,
         });
         const content = formatMergePayload(merged.value);
@@ -825,6 +978,7 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
         const merged = await solveNode(tree, maxDepth);
         summaryText = merged.text;
       }
+      if (await checkAbort(`round-${round}-merge`)) return;
 
       const chainAfterRound = await loadCombinedChain();
       const runSlice = sliceTheoremChain(chainAfterRound, runId);
@@ -853,6 +1007,8 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
 
       if (stopAfterRound) break;
     }
+
+    if (await checkAbort("finalize")) return;
 
     const endMarker = "END_OF_PROOF";
     const finalId = claimId("solution");
@@ -888,7 +1044,6 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
         system: verifierSys,
         user: verifyPrompt,
         parse: parseVerifyPayload,
-        fallback: fallbackVerifyPayload,
         retries: structuredRetries,
       });
       const verifyOutput = formatVerifyPayload(verifyResult.value);
@@ -937,7 +1092,6 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
         system: synth,
         user: candidatePrompt,
         parse: parseProofPayload,
-        fallback: fallbackProofPayload,
         retries: structuredRetries,
       });
       const proofText = formatProofPayload(finalResult.value);
@@ -984,7 +1138,6 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
         system: synth,
         user: revisePrompt,
         parse: parseProofPayload,
-        fallback: fallbackProofPayload,
         retries: structuredRetries,
       });
       await agentStatus("synthesizer", "done", "revise", rounds);
@@ -1080,6 +1233,7 @@ export const runTheoremGuild = async (input: TheoremRunInput): Promise<void> => 
         apiReady: input.apiReady,
         apiNote: input.apiNote,
         emitIndex,
+        control: input.control,
       },
       config: { ...input.config, problem: input.problem },
     });

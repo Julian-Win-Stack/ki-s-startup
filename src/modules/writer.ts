@@ -51,6 +51,46 @@ export type WriterEvent =
       readonly title?: string;
       readonly content: string;
     }
+  | {
+      readonly type: "context.pruned";
+      readonly runId: string;
+      readonly agentId?: string;
+      readonly stepId?: string;
+      readonly stage: string;
+      readonly mode: "soft" | "hard";
+      readonly before: number;
+      readonly after: number;
+      readonly note?: string;
+    }
+  | {
+      readonly type: "context.compacted";
+      readonly runId: string;
+      readonly agentId?: string;
+      readonly stepId?: string;
+      readonly stage: string;
+      readonly reason: "threshold" | "overflow";
+      readonly before: number;
+      readonly after: number;
+      readonly note?: string;
+    }
+  | {
+      readonly type: "overflow.recovered";
+      readonly runId: string;
+      readonly agentId?: string;
+      readonly stepId?: string;
+      readonly stage: string;
+      readonly note?: string;
+    }
+  | {
+      readonly type: "subagent.merged";
+      readonly runId: string;
+      readonly agentId?: string;
+      readonly stepId?: string;
+      readonly subJobId: string;
+      readonly subRunId: string;
+      readonly task: string;
+      readonly summary: string;
+    }
   | PlannerEvent;
 
 export type WriterCmd = {
@@ -75,7 +115,11 @@ export type WriterState = {
     readonly updatedAt: number;
   };
   readonly planner: PlannerState;
-  readonly solution?: { content: string; confidence: number; updatedAt: number };
+  readonly solution?: {
+    readonly content: string;
+    readonly confidence: number;
+    readonly updatedAt: number;
+  };
 };
 
 export const initial: WriterState = {
@@ -148,7 +192,15 @@ export const reduce: Reducer<WriterState, WriterEvent> = (state, event, ts) => {
           updatedAt: ts,
         },
       };
-    default:
+    case "prompt.context":
+    case "context.pruned":
+    case "context.compacted":
+    case "overflow.recovered":
+    case "subagent.merged":
       return state;
+    default: {
+      const _exhaustive: never = event;
+      return _exhaustive;
+    }
   }
 };

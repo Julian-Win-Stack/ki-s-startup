@@ -24,9 +24,7 @@ import { evaluateRoundRebracketEvidence } from "../../src/agents/theorem.evidenc
 import { loadTheoremPrompts } from "../../src/prompts/theorem.ts";
 import {
   callWithStructuredRetries,
-  fallbackOrchestratorDecision,
   parseVerifyPayload,
-  fallbackVerifyPayload,
 } from "../../src/agents/theorem.structured.ts";
 
 const mkReceipt = (body: TheoremEvent, ts: number): Chain<TheoremEvent>[number] => ({
@@ -48,7 +46,6 @@ test("theorem: structured retry recovers valid JSON on retry", async () => {
     },
     user: "verify",
     parse: parseVerifyPayload,
-    fallback: fallbackVerifyPayload,
     retries: 1,
   });
 
@@ -58,9 +55,17 @@ test("theorem: structured retry recovers valid JSON on retry", async () => {
   assert.equal(calls, 2);
 });
 
-test("theorem: fallback orchestrator decision detects done token", () => {
-  const decision = fallbackOrchestratorDecision("Looks complete; done.");
-  assert.equal(decision.action, "done");
+test("theorem: structured retry throws when parsing never succeeds", async () => {
+  await assert.rejects(
+    () =>
+      callWithStructuredRetries({
+        llmText: async () => "still not json",
+        user: "verify",
+        parse: parseVerifyPayload,
+        retries: 1,
+      }),
+    /structured parse failed/
+  );
 });
 
 test("theorem: round evidence gates rebracketing with branchThreshold", () => {

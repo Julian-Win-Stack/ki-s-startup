@@ -36,11 +36,14 @@ export const loadPromptConfig = <T extends Record<string, unknown>>(opts: {
   if (fs.existsSync(baseFile)) {
     try {
       base = readJson<T>(baseFile);
-    } catch {
-      console.warn(`[${opts.tag}] Invalid prompt JSON at ${baseFile}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`[${opts.tag}] Invalid prompt JSON at ${baseFile}: ${message}`);
     }
   } else if (!overrideFile) {
-    console.warn(`[${opts.tag}] Missing prompt file ${baseFile}`);
+    throw new Error(`[${opts.tag}] Missing prompt file ${baseFile}`);
+  } else {
+    console.warn(`[${opts.tag}] Missing base prompt file ${baseFile}; using override only`);
   }
 
   if (overrideFile) {
@@ -48,11 +51,12 @@ export const loadPromptConfig = <T extends Record<string, unknown>>(opts: {
       try {
         const override = readJson<Record<string, unknown>>(overrideFile);
         return mergeDeep(base, override);
-      } catch {
-        console.warn(`[${opts.tag}] Invalid prompt JSON at ${overrideFile}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`[${opts.tag}] Invalid prompt JSON at ${overrideFile}: ${message}`);
       }
     } else {
-      console.warn(`[${opts.tag}] Override prompt file not found: ${overrideFile}`);
+      throw new Error(`[${opts.tag}] Override prompt file not found: ${overrideFile}`);
     }
   }
 
@@ -60,4 +64,8 @@ export const loadPromptConfig = <T extends Record<string, unknown>>(opts: {
 };
 
 export const renderPrompt = (template: string, vars: Record<string, string>): string =>
-  template.replace(/\{\{(\w+)\}\}/g, (_m, key) => vars[key] ?? "");
+  template.replace(/\{\{(\w+)\}\}/g, (_m, key) => {
+    const value = vars[key];
+    if (value === undefined) throw new Error(`Missing template variable: {{${key}}}`);
+    return value;
+  });

@@ -7,21 +7,13 @@ import { verify } from "../core/chain.js";
 import type { TheoremEvent, TheoremState } from "../modules/theorem.js";
 import type { TheoremRunSummary } from "../agents/theorem.js";
 import {
+  esc,
+  truncate,
   frameworkCoordinationHtml,
   type FrameworkContextRow,
   type FrameworkLaneRow,
   type FrameworkTrailRow,
 } from "./agent-framework.js";
-
-const esc = (s: string): string =>
-  s.replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-
-const truncate = (s: string, max: number): string =>
-  s.length <= max ? s : s.slice(0, max - 3) + "...";
 
 const prettyAgent = (id: string): string =>
   id

@@ -51,10 +51,13 @@ export const validatePlan = <Ctx>(
     }
   }
 
-  for (const goal of plan.goals) {
-    if (!providerByOutput.has(goal) && !initialKeys.has(goal)) {
-      errors.push(`Goal "${goal}" has no provider`);
-    }
+  const allOutputs = new Set<string>();
+  for (const cap of plan.capabilities) {
+    for (const output of cap.provides) allOutputs.add(output);
+  }
+  for (const key of initialKeys) allOutputs.add(key);
+  if (allOutputs.size === 0 && plan.capabilities.length > 0) {
+    errors.push("Plan capabilities produce no outputs");
   }
 
   const incoming = new Map<string, Set<string>>();
@@ -98,9 +101,6 @@ export const validatePlan = <Ctx>(
 
   if (plan.capabilities.length === 0) {
     warnings.push("Plan has no capabilities");
-  }
-  if (plan.goals.length === 0) {
-    warnings.push("Plan has no goals");
   }
 
   return {

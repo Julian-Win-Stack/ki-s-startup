@@ -18,7 +18,10 @@ test("runtime: plan validation rejects cycles and duplicate providers", () => {
   const plan: PlanSpec<{}> = {
     id: "demo",
     version: "1",
-    goals: ["final"],
+    goal: (outputs) => ({
+      done: outputs["final"] !== undefined,
+      blocked: outputs["final"] === undefined ? "final output not yet produced" : undefined,
+    }),
     capabilities: [
       {
         id: "a",

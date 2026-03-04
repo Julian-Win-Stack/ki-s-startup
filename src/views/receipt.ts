@@ -4,6 +4,7 @@
 
 import { MiniGFM } from "@oblivionocean/minigfm";
 import type { ReceiptFileInfo } from "../adapters/receipt-tools.js";
+import { esc } from "./agent-framework.js";
 
 export type ReceiptInspectorTool = {
   readonly name: string;
@@ -48,13 +49,6 @@ export type ReceiptChatItem = {
   readonly kind?: "analyze" | "improve" | "timeline" | "qa";
   readonly groupId?: string;
 };
-
-const esc = (s: string): string =>
-  s.replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 
 const formatBytes = (n: number): string => {
   if (n < 1024) return `${n} B`;

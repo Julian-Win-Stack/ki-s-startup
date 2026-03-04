@@ -183,18 +183,6 @@ export const parseOrchestratorDecision = (raw: string): ParsedOrchestratorDecisi
   };
 };
 
-export const fallbackOrchestratorDecision = (raw: string): ParsedOrchestratorDecision => {
-  const done = /\bdone\b/i.test(raw) || /\bstop\b/i.test(raw);
-  return {
-    action: done ? "done" : "continue",
-    reason: done ? "Inferred done from unstructured output." : "Fallback to continue.",
-    skipLemma: false,
-    skipCritique: false,
-    skipPatch: false,
-    skipMerge: false,
-  };
-};
-
 export const parseAttemptPayload = (raw: string): AttemptPayload | undefined => {
   const obj = parseJsonObject(raw);
   if (!obj) return undefined;
@@ -206,12 +194,6 @@ export const parseAttemptPayload = (raw: string): AttemptPayload | undefined => 
     gaps: asStringArray(obj.gaps),
   };
 };
-
-export const fallbackAttemptPayload = (raw: string): AttemptPayload => ({
-  attempt: raw.trim() || "No output.",
-  lemmas: [],
-  gaps: [],
-});
 
 export const formatAttemptPayload = (payload: AttemptPayload): string => {
   const lines: string[] = [
@@ -245,10 +227,6 @@ export const parseLemmaPayload = (raw: string): LemmaPayload | undefined => {
   return { lemmas };
 };
 
-export const fallbackLemmaPayload = (raw: string): LemmaPayload => ({
-  lemmas: [{ label: "L1", statement: raw.trim() || "No lemmas produced." }],
-});
-
 export const formatLemmaPayload = (payload: LemmaPayload): string =>
   payload.lemmas
     .map((lemma) => `${lemma.label}: ${lemma.statement}${lemma.usage ? ` (use: ${lemma.usage})` : ""}`)
@@ -279,14 +257,6 @@ export const parseCritiquePayload = (raw: string): CritiquePayload | undefined =
   return { issues, summary };
 };
 
-export const fallbackCritiquePayload = (raw: string): CritiquePayload => {
-  const text = raw.trim();
-  if (!text || /no issues found/i.test(text)) return { issues: [] };
-  return {
-    issues: [{ detail: text }],
-  };
-};
-
 export const formatCritiquePayload = (payload: CritiquePayload): string => {
   if (payload.issues.length === 0) return payload.summary ?? "No issues found.";
   const lines = payload.issues.map((issue) => {
@@ -306,11 +276,6 @@ export const parsePatchPayload = (raw: string): PatchPayload | undefined => {
     remainingGaps: asStringArray(obj.remaining_gaps ?? obj.remainingGaps),
   };
 };
-
-export const fallbackPatchPayload = (raw: string): PatchPayload => ({
-  patch: raw.trim() || "No patch.",
-  remainingGaps: [],
-});
 
 export const formatPatchPayload = (payload: PatchPayload): string => {
   if (payload.remainingGaps.length === 0) return payload.patch;
@@ -333,11 +298,6 @@ export const parseMergePayload = (raw: string): MergePayload | undefined => {
   };
 };
 
-export const fallbackMergePayload = (raw: string): MergePayload => ({
-  summary: raw.trim() || "No summary.",
-  gaps: [],
-});
-
 export const formatMergePayload = (payload: MergePayload): string => {
   if (payload.gaps.length === 0) return payload.summary;
   return [
@@ -354,16 +314,6 @@ export const parseVerifyPayload = (raw: string): VerifyPayload | undefined => {
   const status = normalizeStatus(asString(obj.status));
   if (!status) return undefined;
   const notes = asStringArray(obj.notes);
-  return { status, notes };
-};
-
-export const fallbackVerifyPayload = (raw: string): VerifyPayload => {
-  const statusLine = raw.split("\n").find((line) => line.toLowerCase().startsWith("status:"));
-  const statusText = statusLine ? statusLine.replace(/status:/i, "").trim() : "";
-  const status = normalizeStatus(statusText) ?? "needs";
-  const notesLine = raw.split("\n").find((line) => line.toLowerCase().startsWith("notes:"));
-  const note = notesLine ? notesLine.replace(/notes:/i, "").trim() : raw.trim();
-  const notes = note ? [note] : ["Verifier returned unstructured output."];
   return { status, notes };
 };
 
@@ -390,11 +340,6 @@ export const parseProofPayload = (raw: string): ProofPayload | undefined => {
   };
 };
 
-export const fallbackProofPayload = (raw: string): ProofPayload => ({
-  proof: raw.trim() || "No proof produced.",
-  gaps: [],
-});
-
 export const formatProofPayload = (payload: ProofPayload): string => {
   const lines: string[] = [payload.proof.trim()];
   if (payload.answer && !/^\s*answer:/im.test(payload.proof)) {
@@ -418,7 +363,6 @@ export const callWithStructuredRetries = async <T>(opts: {
   readonly system?: string;
   readonly user: string;
   readonly parse: (raw: string) => T | undefined;
-  readonly fallback: (raw: string) => T;
   readonly retries?: number;
   readonly repairInstruction?: string;
 }): Promise<StructuredCallResult<T>> => {
@@ -443,10 +387,5 @@ export const callWithStructuredRetries = async <T>(opts: {
     }
   }
 
-  return {
-    value: opts.fallback(raw),
-    raw,
-    parsed: false,
-    attempts: retries + 1,
-  };
+  throw new Error(`structured parse failed after ${retries + 1} attempts: ${raw}`);
 };

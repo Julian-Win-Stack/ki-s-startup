@@ -25,6 +25,7 @@ import { html, parseInspectorDepth, parseLimit, parseOrder, text, toFormRecord }
 import { receiptInspectFormSchema } from "../framework/schemas.js";
 import type { InspectorAgentManifest } from "../framework/manifest.js";
 import { SseHub } from "../framework/sse-hub.js";
+import type { EnqueueJobInput } from "../adapters/jsonl-queue.js";
 
 type InspectorManifestDeps = {
   readonly runtime: Runtime<InspectorCmd, InspectorEvent, InspectorState>;
@@ -35,6 +36,7 @@ type InspectorManifestDeps = {
   readonly promptPath: string;
   readonly model: string;
   readonly sse: SseHub;
+  readonly enqueueJob: (job: EnqueueJobInput) => Promise<void>;
 };
 
 const formatInspectorAgentName = (agentName?: string, mode?: InspectorMode): string => {
@@ -261,7 +263,7 @@ const buildReceiptChatItems = (
 };
 
 export const createInspectorManifest = (deps: InspectorManifestDeps): InspectorAgentManifest => {
-  const { runtime, dataDir, llmText, prompts, promptHash, promptPath, model, sse } = deps;
+  const { runtime, dataDir, llmText, prompts, promptHash, promptPath, model, sse, enqueueJob } = deps;
 
   return {
     id: "receipt-inspector",
@@ -393,47 +395,35 @@ export const createInspectorManifest = (deps: InspectorManifestDeps): InspectorA
 
         for (const agent of INSPECTOR_TEAM) {
           const runId = `${groupId}_${agent.id}`;
-          void runReceiptInspector({
-            stream: "inspector",
-            runId,
-            groupId,
-            agentId: agent.id,
-            agentName: agent.name,
-            source: { kind: "file", name: selected.name },
-            dataDir,
-            order,
-            limit,
-            question,
-            mode: agent.mode,
-            depth,
-            runtime,
-            prompts,
-            llmText: (opts) => llmText({
-              ...opts,
-              onDelta: async (delta) => {
-                if (!delta) return;
-                sse.publishData(
-                  "receipt",
-                  undefined,
-                  "receipt-token",
-                  JSON.stringify({ groupId, runId, agentId: agent.id, file: selected.name, delta })
-                );
-              },
-            }),
-            model,
-            promptHash,
-            promptPath,
-            apiReady,
-            apiNote,
-            tools: {
-              readFile: readReceiptFile,
-              sliceRecords: sliceReceiptRecords,
-              buildContext: buildReceiptContext,
-              buildTimeline: buildReceiptTimeline,
+          const jobId = `inspector_${runId}_${Date.now().toString(36)}`;
+          await enqueueJob({
+            jobId,
+            agentId: "inspector",
+            lane: "collect",
+            sessionKey: `inspector:${selected.name}:${agent.id}`,
+            singletonMode: "cancel",
+            maxAttempts: 2,
+            payload: {
+              kind: "inspector.run",
+              stream: "inspector",
+              runId,
+              groupId,
+              agentId: agent.id,
+              agentName: agent.name,
+              source: { kind: "file", name: selected.name },
+              order,
+              limit,
+              question,
+              mode: agent.mode,
+              depth,
+              apiReady,
+              apiNote,
             },
-            broadcast: () => sse.publish("receipt"),
           });
+          sse.publish("jobs", jobId);
         }
+
+        sse.publish("receipt");
 
         return html("", { "HX-Trigger": "receipt-refresh" });
         }

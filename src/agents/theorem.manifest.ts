@@ -32,6 +32,7 @@ import type { RunAgentManifest } from "../framework/manifest.js";
 import type { RuntimeOp } from "../framework/translators.js";
 import { executeRuntimeOps } from "../framework/translators.js";
 import { SseHub } from "../framework/sse-hub.js";
+import type { EnqueueJobInput } from "../adapters/jsonl-queue.js";
 
 type TheoremManifestDeps = {
   readonly runtime: Runtime<TheoremCmd, TheoremEvent, TheoremState>;
@@ -41,6 +42,7 @@ type TheoremManifestDeps = {
   readonly promptPath: string;
   readonly model: string;
   readonly sse: SseHub;
+  readonly enqueueJob: (job: EnqueueJobInput) => Promise<void>;
 };
 
 type TheoremRunStartIntent = {
@@ -53,15 +55,6 @@ type TheoremRunStartIntent = {
   readonly append?: string;
   readonly resolvedProblem: string;
   readonly config: ReturnType<typeof parseTheoremConfig>;
-  readonly prompts: Parameters<typeof runTheoremGuild>[0]["prompts"];
-  readonly llmText: (opts: LlmTextOptions) => Promise<string>;
-  readonly model: string;
-  readonly promptHash: string;
-  readonly promptPath: string;
-  readonly apiReady: boolean;
-  readonly apiNote?: string;
-  readonly runtime: Runtime<TheoremCmd, TheoremEvent, TheoremState>;
-  readonly sse: SseHub;
   readonly resumeRequested: boolean;
 };
 
@@ -79,6 +72,8 @@ export const translateTheoremRunStartIntent = (
   const ops: RuntimeOp<TheoremCmd>[] = [];
   let runStreamOverride: string | undefined;
   let forkedBranch: string | undefined;
+  const queuedProblem = intent.append ? `${intent.resolvedProblem}\n\n${intent.append}` : intent.resolvedProblem;
+  const queueJobId = `theorem_${intent.runId}_${Date.now().toString(36)}`;
 
   if (intent.resumeRequested && intent.sourceChain.length > 0) {
     const forkSlice = intent.at === null ? intent.sourceChain : sliceTheoremChainByStep(intent.sourceChain, intent.at);
@@ -124,50 +119,35 @@ export const translateTheoremRunStartIntent = (
   }
 
   ops.push({
-    type: "start_run",
-    launcher: () => {
-      void runTheoremGuild({
+    type: "enqueue_job",
+    job: {
+      jobId: queueJobId,
+      agentId: "theorem",
+      lane: "collect",
+      sessionKey: `theorem:${intent.stream}`,
+      singletonMode: "cancel",
+      maxAttempts: 2,
+      payload: {
+        kind: "theorem.run",
         stream: intent.stream,
         runId: intent.runId,
         runStream: runStreamOverride,
-        problem: intent.append ? `${intent.resolvedProblem}\n\n${intent.append}` : intent.resolvedProblem,
+        problem: queuedProblem,
         config: intent.config,
-        runtime: intent.runtime,
-        prompts: intent.prompts,
-        llmText: (opts) => intent.llmText({
-          ...opts,
-          onDelta: async (delta) => {
-            if (!delta) return;
-            intent.sse.publishData(
-              "theorem",
-              intent.stream,
-              "theorem-token",
-              JSON.stringify({ runId: intent.runId, delta })
-            );
-          },
-        }),
-        model: intent.model,
-        promptHash: intent.promptHash,
-        promptPath: intent.promptPath,
-        apiReady: intent.apiReady,
-        apiNote: intent.apiNote,
-        broadcast: () => {
-          intent.sse.publish("theorem", intent.stream);
-          intent.sse.publish("receipt");
-        },
-      });
+      },
     },
   });
 
   const redirectParams = new URLSearchParams({ stream: intent.stream, run: intent.runId });
   if (forkedBranch) redirectParams.set("branch", forkedBranch);
+  redirectParams.set("job", queueJobId);
   ops.push({ type: "redirect", header: "HX-Redirect", url: `/theorem?${redirectParams.toString()}` });
 
   return ops;
 };
 
 export const createTheoremManifest = (deps: TheoremManifestDeps): RunAgentManifest => {
-  const { runtime, llmText, prompts, promptHash, promptPath, model, sse } = deps;
+  const { runtime, enqueueJob, llmText, prompts, promptHash, promptPath, model, sse } = deps;
 
   const loadTheoremRunChain = async (
     baseStream: string,
@@ -503,15 +483,6 @@ export const createTheoremManifest = (deps: TheoremManifestDeps): RunAgentManife
           append,
           resolvedProblem,
           config,
-          runtime,
-          llmText,
-          prompts,
-          model,
-          promptHash,
-          promptPath,
-          apiReady,
-          apiNote,
-          sse,
           resumeRequested: Boolean(runParam?.trim().length),
         });
 
@@ -522,8 +493,11 @@ export const createTheoremManifest = (deps: TheoremManifestDeps): RunAgentManife
           emit: async (op) => {
             await runtime.execute(op.stream, op.cmd);
           },
-          startRun: async (op) => {
-            await op.launcher();
+          startRun: async () => {},
+          enqueueJob: async (op) => {
+            await enqueueJob(op.job);
+            sse.publish("jobs", op.job.jobId);
+            sse.publish("receipt");
           },
           broadcast: async (op) => {
             sse.publish(op.topic, op.stream);

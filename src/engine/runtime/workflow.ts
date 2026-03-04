@@ -10,6 +10,50 @@ import type { Chain, Reducer } from "../../core/types.js";
 
 type RunStatus = "idle" | "running" | "failed" | "completed";
 
+// ============================================================================
+// Shared agent primitives
+// ============================================================================
+
+export const clampNumber = (value: number, min: number, max: number): number =>
+  Math.max(min, Math.min(max, value));
+
+export const parseFormNum = (value: string | undefined): number | undefined => {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+export type AgentRunCommand = {
+  readonly command: "steer" | "follow_up";
+  readonly payload?: Record<string, unknown>;
+};
+
+export type AgentRunControl = {
+  readonly checkAbort?: () => Promise<boolean>;
+  readonly pullCommands?: () => Promise<ReadonlyArray<AgentRunCommand>>;
+};
+
+export const getLatestRunId = <Event extends { readonly type: string; readonly runId?: string }>(
+  chain: Chain<Event>,
+  startType = "problem.set"
+): string | undefined => {
+  for (let i = chain.length - 1; i >= 0; i -= 1) {
+    const event = chain[i].body;
+    if (event.type === startType && event.runId) return event.runId;
+  }
+  return undefined;
+};
+
+export const runStream = (base: string, runId: string): string =>
+  `${base}/runs/${runId}`;
+
+export const branchStream = (base: string, branchId: string): string =>
+  `${base}/branches/${branchId}`;
+
+// ============================================================================
+// Workflow types
+// ============================================================================
+
 export type RunEvent = {
   readonly type: string;
   readonly runId?: string;

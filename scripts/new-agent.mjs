@@ -132,7 +132,7 @@ const SPEC = defineReceiptAgent<${pascal}Cmd, ${pascal}Deps, ${pascal}Event, ${p
     id: WORKFLOW_ID,
     version: WORKFLOW_VERSION,
     capabilities: [],
-    goals: [],
+    goal: () => ({ done: false }),
   },
   run: async (ctx, config) => {
     const final = await ctx.llmText({ user: config.problem });

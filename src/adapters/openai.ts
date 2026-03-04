@@ -88,6 +88,20 @@ function getClient(): OpenAI {
 }
 
 // ============================================================================
+// Embeddings
+// ============================================================================
+
+export const embed = async (texts: ReadonlyArray<string>): Promise<ReadonlyArray<ReadonlyArray<number>>> => {
+  return withRateLimitRetry(async () => {
+    const response = await getClient().embeddings.create({
+      model: "text-embedding-3-small",
+      input: texts as string[],
+    });
+    return response.data.map((d) => d.embedding);
+  });
+};
+
+// ============================================================================
 // Text Generation
 // ============================================================================
 

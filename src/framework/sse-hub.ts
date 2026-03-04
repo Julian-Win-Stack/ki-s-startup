@@ -1,4 +1,4 @@
-type Topic = "theorem" | "writer" | "receipt";
+export type Topic = "theorem" | "writer" | "agent" | "receipt" | "jobs";
 
 type SseClient = {
   readonly send: (event: string, data: string) => void;
@@ -8,7 +8,9 @@ type SseClient = {
 const topicEvent: Record<Topic, string> = {
   theorem: "theorem-refresh",
   writer: "writer-refresh",
+  agent: "agent-refresh",
   receipt: "receipt-refresh",
+  jobs: "job-refresh",
 };
 
 const topicKey = (topic: Topic, stream?: string): string =>

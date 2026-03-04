@@ -12,27 +12,61 @@ import { serve } from "@hono/node-server";
 
 import { jsonlStore, jsonBranchStore } from "./adapters/jsonl.js";
 import { jsonlIndexedStore } from "./adapters/jsonl-indexed.js";
+import { jsonlQueue, type EnqueueJobInput } from "./adapters/jsonl-queue.js";
+import {
+  createMemoryTools,
+  decideMemory,
+  initialMemoryState,
+  reduceMemory,
+  type MemoryCmd,
+  type MemoryEvent,
+  type MemoryState,
+} from "./adapters/memory-tools.js";
+import { createDelegationTools } from "./adapters/delegation.js";
+import { createHeartbeat, type HeartbeatSpec } from "./adapters/heartbeat.js";
 import { createRuntime } from "./core/runtime.js";
 import type { TodoEvent } from "./modules/todo.js";
 import { decide, reduce, initial } from "./modules/todo.js";
+import type { JobCmd, JobEvent, JobState } from "./modules/job.js";
+import { decide as decideJob, reduce as reduceJob, initial as initialJob } from "./modules/job.js";
+import type { SelfImprovementCmd, SelfImprovementEvent, SelfImprovementState } from "./modules/self-improvement.js";
+import {
+  decide as decideSelfImprovement,
+  reduce as reduceSelfImprovement,
+  initial as initialSelfImprovement,
+} from "./modules/self-improvement.js";
 import type { InspectorEvent } from "./modules/inspector.js";
 import { decide as decideInspector, reduce as reduceInspector, initial as initialInspector } from "./modules/inspector.js";
 import type { TheoremEvent } from "./modules/theorem.js";
 import { decide as decideTheorem, reduce as reduceTheorem, initial as initialTheorem } from "./modules/theorem.js";
 import type { WriterEvent } from "./modules/writer.js";
 import { decide as decideWriter, reduce as reduceWriter, initial as initialWriter } from "./modules/writer.js";
-import { llmText } from "./adapters/openai.js";
+import type { AgentEvent } from "./modules/agent.js";
+import { decide as decideAgent, reduce as reduceAgent, initial as initialAgent } from "./modules/agent.js";
+import { llmText, embed } from "./adapters/openai.js";
 import { loadTheoremPrompts, hashTheoremPrompts } from "./prompts/theorem.js";
 import { loadWriterPrompts, hashWriterPrompts } from "./prompts/writer.js";
 import { loadInspectorPrompts, hashInspectorPrompts } from "./prompts/inspector.js";
+import { loadAgentPrompts, hashAgentPrompts } from "./prompts/agent.js";
+import { runTheoremGuild, normalizeTheoremConfig } from "./agents/theorem.js";
+import { runWriterGuild, normalizeWriterConfig } from "./agents/writer.js";
+import { runAgent, normalizeAgentConfig } from "./agents/agent.js";
+import { theoremRunStream } from "./agents/theorem.streams.js";
+import { writerRunStream } from "./agents/writer.streams.js";
+import { agentRunStream } from "./agents/agent.streams.js";
+import { runReceiptInspector } from "./agents/inspector.js";
+import { listReceiptFiles, readReceiptFile, sliceReceiptRecords, buildReceiptContext, buildReceiptTimeline } from "./adapters/receipt-tools.js";
 import { createAgentRegistry } from "./framework/registry.js";
 import { compileRoutes } from "./framework/route-compiler.js";
 import { SseHub } from "./framework/sse-hub.js";
-import { text } from "./framework/http.js";
+import { makeEventId, text } from "./framework/http.js";
 import { createTodoManifest } from "./agents/todo.manifest.js";
 import { createTheoremManifest } from "./agents/theorem.manifest.js";
 import { createWriterManifest } from "./agents/writer.manifest.js";
 import { createInspectorManifest } from "./agents/inspector.manifest.js";
+import { createAgentManifest } from "./agents/agent.manifest.js";
+import { JobWorker, type JobHandler, type JobExecutionContext } from "./engine/runtime/job-worker.js";
+import { evaluateImprovementProposal } from "./engine/runtime/improvement-harness.js";
 
 // ============================================================================
 // Config
@@ -71,6 +105,15 @@ const writerRuntime = createRuntime(
   initialWriter
 );
 
+const agentStore = makeStore<AgentEvent>();
+const agentRuntime = createRuntime(
+  agentStore,
+  branchStore,
+  decideAgent,
+  reduceAgent,
+  initialAgent
+);
+
 const inspectorStore = makeStore<InspectorEvent>();
 const inspectorRuntime = createRuntime(
   inspectorStore,
@@ -78,6 +121,33 @@ const inspectorRuntime = createRuntime(
   decideInspector,
   reduceInspector,
   initialInspector
+);
+
+const jobStore = makeStore<JobEvent>();
+const jobRuntime = createRuntime<JobCmd, JobEvent, JobState>(
+  jobStore,
+  branchStore,
+  decideJob,
+  reduceJob,
+  initialJob
+);
+
+const selfImprovementStore = makeStore<SelfImprovementEvent>();
+const selfImprovementRuntime = createRuntime<SelfImprovementCmd, SelfImprovementEvent, SelfImprovementState>(
+  selfImprovementStore,
+  branchStore,
+  decideSelfImprovement,
+  reduceSelfImprovement,
+  initialSelfImprovement
+);
+
+const memoryStore = makeStore<MemoryEvent>();
+const memoryRuntime = createRuntime<MemoryCmd, MemoryEvent, MemoryState>(
+  memoryStore,
+  branchStore,
+  decideMemory,
+  reduceMemory,
+  initialMemoryState
 );
 
 // ============================================================================
@@ -99,11 +169,495 @@ const INSPECTOR_PROMPTS_HASH = hashInspectorPrompts(INSPECTOR_PROMPTS);
 const INSPECTOR_PROMPTS_PATH = process.env.INSPECTOR_PROMPTS_PATH ?? "prompts/inspector.prompts.json";
 const INSPECTOR_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2";
 
+const AGENT_PROMPTS = loadAgentPrompts();
+const AGENT_PROMPTS_HASH = hashAgentPrompts(AGENT_PROMPTS);
+const AGENT_PROMPTS_PATH = process.env.AGENT_PROMPTS_PATH ?? "prompts/agent.prompts.json";
+const AGENT_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2";
+
+const JOB_STREAM = "jobs";
+const IMPROVEMENT_STREAM = "improvement";
+const jobWorkerId = process.env.JOB_WORKER_ID ?? `worker_${process.pid}`;
+const jobPollMs = Number(process.env.JOB_POLL_MS ?? 250);
+const jobLeaseMs = Number(process.env.JOB_LEASE_MS ?? 30_000);
+const subJobWaitMsRaw = Number(process.env.SUBJOB_WAIT_MS ?? 1_500);
+const subJobWaitMs = Number.isFinite(subJobWaitMsRaw)
+  ? Math.max(0, Math.min(Math.floor(subJobWaitMsRaw), 30_000))
+  : 1_500;
+const subJobPollMsRaw = Number(process.env.SUBJOB_WAIT_POLL_MS ?? 250);
+const subJobPollMs = Number.isFinite(subJobPollMsRaw)
+  ? Math.max(20, Math.min(Math.floor(subJobPollMsRaw), 2_000))
+  : 250;
+const subJobJoinWaitMsRaw = Number(process.env.SUBJOB_JOIN_WAIT_MS ?? 180_000);
+const subJobJoinWaitMs = Number.isFinite(subJobJoinWaitMsRaw)
+  ? Math.max(0, Math.min(Math.floor(subJobJoinWaitMsRaw), 600_000))
+  : 180_000;
+
+const sse = new SseHub();
+const memoryTools = createMemoryTools({
+  dir: DATA_DIR,
+  runtime: memoryRuntime,
+  embed: process.env.OPENAI_API_KEY ? embed : undefined,
+});
+const eventId = (stream: string): string => makeEventId(stream);
+
+const queue = jsonlQueue({
+  runtime: jobRuntime,
+  stream: JOB_STREAM,
+  onJobChange: async (jobIds) => {
+    for (const jobId of jobIds) {
+      sse.publish("jobs", jobId);
+    }
+    sse.publish("receipt");
+  },
+});
+
+const enqueueJob = async (job: EnqueueJobInput): Promise<void> => {
+  const created = await queue.enqueue(job);
+  sse.publish("jobs", created.id);
+};
+
+const createRunControl = (jobId: string) => ({
+  checkAbort: async (): Promise<boolean> => {
+    const job = await queue.getJob(jobId);
+    if (!job) return false;
+    if (job.status === "canceled") return true;
+    if (job.abortRequested) return true;
+    const abortCommands = await queue.consumeCommands(jobId, ["abort"]);
+    return abortCommands.length > 0;
+  },
+  pullCommands: async (): Promise<ReadonlyArray<{ command: "steer" | "follow_up"; payload?: Record<string, unknown> }>> => {
+    const commands = await queue.consumeCommands(jobId, ["steer", "follow_up"]);
+    return commands
+      .filter((cmd): cmd is typeof cmd & { command: "steer" | "follow_up" } =>
+        cmd.command === "steer" || cmd.command === "follow_up"
+      )
+      .map((cmd) => ({ command: cmd.command, payload: cmd.payload }));
+  },
+});
+
+// ============================================================================
+// Agent Runner Factory
+// ============================================================================
+
+type AgentRunControl = {
+  readonly checkAbort?: () => Promise<boolean>;
+  readonly pullCommands?: () => Promise<ReadonlyArray<{ command: "steer" | "follow_up"; payload?: Record<string, unknown> }>>;
+};
+
+type AgentRunner = (payload: Record<string, unknown>, control?: AgentRunControl) => Promise<void>;
+
+const extractRunPayload = (payload: Record<string, unknown>, defaultStream: string) => ({
+  stream: typeof payload.stream === "string" && payload.stream.trim() ? payload.stream : defaultStream,
+  runId: typeof payload.runId === "string" && payload.runId.trim()
+    ? payload.runId
+    : `run_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+  runStream: typeof payload.runStream === "string" && payload.runStream.trim().length > 0
+    ? payload.runStream
+    : undefined,
+  problem: typeof payload.problem === "string" ? payload.problem : "",
+});
+
+const apiStatus = () => {
+  const apiReady = Boolean(process.env.OPENAI_API_KEY);
+  return { apiReady, apiNote: apiReady ? undefined : "OPENAI_API_KEY not set" } as const;
+};
+
+type AgentRunnerSpec = {
+  readonly defaultStream: string;
+  readonly sseTopic: "theorem" | "writer" | "agent";
+  readonly sseTokenEvent: string;
+  readonly normalizeConfig: (input: Record<string, unknown>) => unknown;
+  readonly runtime: unknown;
+  readonly prompts: unknown;
+  readonly model: string;
+  readonly promptHash: string;
+  readonly promptPath: string;
+  readonly runFn: (input: Record<string, unknown>) => Promise<void>;
+  readonly extras?: Record<string, unknown>;
+};
+
+const createAgentRunner = (spec: AgentRunnerSpec): AgentRunner =>
+  async (payload, control) => {
+    const { stream, runId, runStream, problem } = extractRunPayload(payload, spec.defaultStream);
+    const configInput = typeof payload.config === "object" && payload.config
+      ? payload.config as Record<string, unknown> : {};
+    const config = spec.normalizeConfig(configInput);
+    const { apiReady, apiNote } = apiStatus();
+    await spec.runFn({
+      stream, runId, runStream, problem, config,
+      runtime: spec.runtime, prompts: spec.prompts,
+      llmText: (opts: Record<string, unknown>) => llmText({
+        ...(opts as { system?: string; user: string }),
+        onDelta: async (delta) => {
+          if (!delta) return;
+          sse.publishData(spec.sseTopic, stream, spec.sseTokenEvent, JSON.stringify({ runId, delta }));
+        },
+      }),
+      model: spec.model, promptHash: spec.promptHash, promptPath: spec.promptPath,
+      apiReady, apiNote, control,
+      broadcast: () => { sse.publish(spec.sseTopic, stream); sse.publish("receipt"); },
+      ...(spec.extras ?? {}),
+    });
+  };
+
+const theoremRunner = createAgentRunner({
+  defaultStream: "theorem", sseTopic: "theorem", sseTokenEvent: "theorem-token",
+  normalizeConfig: normalizeTheoremConfig, runtime: theoremRuntime,
+  prompts: THEOREM_PROMPTS, model: THEOREM_MODEL,
+  promptHash: THEOREM_PROMPTS_HASH, promptPath: THEOREM_PROMPTS_PATH,
+  runFn: runTheoremGuild as (input: Record<string, unknown>) => Promise<void>,
+});
+
+const writerRunner = createAgentRunner({
+  defaultStream: "writer", sseTopic: "writer", sseTokenEvent: "writer-token",
+  normalizeConfig: normalizeWriterConfig, runtime: writerRuntime,
+  prompts: WRITER_PROMPTS, model: WRITER_MODEL,
+  promptHash: WRITER_PROMPTS_HASH, promptPath: WRITER_PROMPTS_PATH,
+  runFn: runWriterGuild as (input: Record<string, unknown>) => Promise<void>,
+});
+
+const delegationTools = createDelegationTools({
+  enqueue: async (opts) => {
+    const created = await queue.enqueue({
+      agentId: opts.agentId,
+      payload: opts.payload,
+      lane: "collect",
+      singletonMode: "allow",
+      maxAttempts: 2,
+    });
+    sse.publish("jobs", created.id);
+    return { id: created.id };
+  },
+  waitForJob: async (jobId, timeoutMs) => {
+    const job = await queue.waitForJob(jobId, timeoutMs, subJobPollMs);
+    if (!job) throw new Error(`job ${jobId} not found`);
+    return { id: job.id, status: job.status, result: job.result, lastError: job.lastError };
+  },
+  getJob: async (jobId) => {
+    const job = await queue.getJob(jobId);
+    if (!job) throw new Error(`job ${jobId} not found`);
+    return { id: job.id, status: job.status, result: job.result, lastError: job.lastError };
+  },
+  dataDir: DATA_DIR,
+});
+
+const agentRunner = createAgentRunner({
+  defaultStream: "agent", sseTopic: "agent", sseTokenEvent: "agent-token",
+  normalizeConfig: normalizeAgentConfig, runtime: agentRuntime,
+  prompts: AGENT_PROMPTS, model: AGENT_MODEL,
+  promptHash: AGENT_PROMPTS_HASH, promptPath: AGENT_PROMPTS_PATH,
+  runFn: runAgent as (input: Record<string, unknown>) => Promise<void>,
+  extras: { memoryTools, delegationTools, workspaceRoot: process.cwd() },
+});
+
+const inspectorRunner = async (payload: Record<string, unknown>): Promise<void> => {
+  const runId = typeof payload.runId === "string" && payload.runId.trim()
+    ? payload.runId
+    : `inspect_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const groupId = typeof payload.groupId === "string" ? payload.groupId : undefined;
+  const agentId = typeof payload.agentId === "string" ? payload.agentId : undefined;
+  const agentName = typeof payload.agentName === "string" ? payload.agentName : undefined;
+  const sourceName = typeof payload.source === "object" && payload.source && typeof (payload.source as Record<string, unknown>).name === "string"
+    ? String((payload.source as Record<string, unknown>).name)
+    : "";
+  const mode = typeof payload.mode === "string"
+    && ["analyze", "improve", "timeline", "qa"].includes(payload.mode)
+    ? payload.mode as "analyze" | "improve" | "timeline" | "qa"
+    : "analyze";
+  const order = payload.order === "asc" ? "asc" : "desc";
+  const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit)
+    ? Math.max(10, Math.min(Math.floor(payload.limit), 5000))
+    : 200;
+  const depth = typeof payload.depth === "number" && Number.isFinite(payload.depth)
+    ? Math.max(1, Math.min(Math.floor(payload.depth), 3))
+    : 2;
+  const question = typeof payload.question === "string" && payload.question.trim() ? payload.question : "Analyze this run.";
+  const apiReady = typeof payload.apiReady === "boolean" ? payload.apiReady : Boolean(process.env.OPENAI_API_KEY);
+  const apiNote = typeof payload.apiNote === "string" ? payload.apiNote : (apiReady ? undefined : "OPENAI_API_KEY not set");
+  if (!sourceName) throw new Error("inspector source file required");
+
+  await runReceiptInspector({
+    stream: "inspector",
+    runId,
+    groupId,
+    agentId,
+    agentName,
+    source: { kind: "file", name: sourceName },
+    dataDir: DATA_DIR,
+    order,
+    limit,
+    question,
+    mode,
+    depth,
+    runtime: inspectorRuntime,
+    prompts: INSPECTOR_PROMPTS,
+    llmText: (opts) => llmText({
+      ...opts,
+      onDelta: async (delta) => {
+        if (!delta) return;
+        sse.publishData(
+          "receipt",
+          undefined,
+          "receipt-token",
+          JSON.stringify({ groupId, runId, agentId, file: sourceName, delta })
+        );
+      },
+    }),
+    model: INSPECTOR_MODEL,
+    promptHash: INSPECTOR_PROMPTS_HASH,
+    promptPath: INSPECTOR_PROMPTS_PATH,
+    apiReady,
+    apiNote,
+    tools: {
+      readFile: readReceiptFile,
+      sliceRecords: sliceReceiptRecords,
+      buildContext: buildReceiptContext,
+      buildTimeline: buildReceiptTimeline,
+    },
+    broadcast: () => sse.publish("receipt"),
+  });
+};
+
+const parseDelegateTask = (payload: Record<string, unknown> | undefined): { task: string; agentId?: string } | undefined => {
+  if (!payload || typeof payload !== "object") return undefined;
+  const candidate = payload.delegate_task;
+  if (!candidate || typeof candidate !== "object") return undefined;
+  const rec = candidate as Record<string, unknown>;
+  const task = typeof rec.task === "string" ? rec.task.trim() : "";
+  if (!task) return undefined;
+  const agentId = typeof rec.agentId === "string" && rec.agentId.trim().length > 0 ? rec.agentId.trim() : undefined;
+  return { task, agentId };
+};
+
+type SubJobSummary = {
+  readonly summary: string;
+  readonly done: boolean;
+};
+
+const summarizeSubJob = async (jobId: string, timeoutMs = subJobWaitMs): Promise<SubJobSummary> => {
+  const done = await queue.waitForJob(jobId, timeoutMs, subJobPollMs);
+  if (!done) return { summary: `sub-agent status: missing (${jobId})`, done: true };
+  if (done.status === "completed") return { summary: JSON.stringify(done.result ?? { status: done.status }), done: true };
+  if (done.status === "queued" || done.status === "leased" || done.status === "running") {
+    return { summary: `sub-agent status: pending (${done.status}; job ${jobId})`, done: false };
+  }
+  return { summary: `sub-agent status: ${done.status}`, done: true };
+};
+
+const scheduleSubJobJoin = (opts: {
+  readonly parentJobId: string;
+  readonly subJobId: string;
+  readonly subRunId: string;
+  readonly emitMerged: (summary: string) => Promise<void>;
+}) => {
+  void (async () => {
+    const settled = await summarizeSubJob(opts.subJobId, subJobJoinWaitMs);
+    if (!settled.done) return;
+
+    await opts.emitMerged(settled.summary);
+    sse.publish("receipt");
+
+    const parent = await queue.getJob(opts.parentJobId);
+    if (!parent) return;
+    if (parent.status === "queued" || parent.status === "leased" || parent.status === "running") {
+      await queue.queueCommand({
+        jobId: opts.parentJobId,
+        command: "follow_up",
+        payload: { note: `Sub-agent summary (${opts.subRunId}):\n${settled.summary}` },
+        by: "subagent-join",
+      });
+      sse.publish("jobs", opts.parentJobId);
+    }
+  })().catch((err) => {
+    console.error("sub-agent join failed", err);
+  });
+};
+
+// ============================================================================
+// Worker Handler Factory
+// ============================================================================
+
+type WorkerHandlerSpec = {
+  readonly defaultStream: string;
+  readonly defaultAgentId: string;
+  readonly kind: string;
+  readonly defaultSubConfig: Record<string, unknown>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readonly runtime: { execute: (stream: string, cmd: any) => Promise<unknown> };
+  readonly runStreamFn: (base: string, runId: string) => string;
+  readonly runner: AgentRunner;
+  readonly mergeEventExtras?: Record<string, unknown>;
+};
+
+const mergeCommands = (
+  merged: Record<string, unknown>,
+  commands: ReadonlyArray<{ command: string; payload?: Record<string, unknown> }>,
+) => {
+  for (const cmd of commands) {
+    if (cmd.command === "steer" && cmd.payload) {
+      if (typeof cmd.payload.problem === "string") merged.problem = cmd.payload.problem;
+      if (typeof cmd.payload.config === "object" && cmd.payload.config) {
+        merged.config = { ...(merged.config as Record<string, unknown> | undefined), ...(cmd.payload.config as Record<string, unknown>) };
+      }
+    }
+    if (cmd.command === "follow_up" && typeof cmd.payload?.note === "string") {
+      const base = typeof merged.problem === "string" ? merged.problem : "";
+      merged.problem = `${base}\n\nFollow-up:\n${cmd.payload.note}`.trim();
+    }
+  }
+};
+
+const handleDelegates = async (
+  spec: WorkerHandlerSpec,
+  job: { readonly id: string; readonly payload: Record<string, unknown> },
+  merged: Record<string, unknown>,
+  commands: ReadonlyArray<{ command: string; payload?: Record<string, unknown> }>,
+) => {
+  if (Boolean(merged.isSubAgent)) return;
+  for (const cmd of commands) {
+    if (cmd.command !== "follow_up") continue;
+    const delegate = parseDelegateTask(cmd.payload as Record<string, unknown> | undefined);
+    if (!delegate) continue;
+
+    const parentStream = String(merged.stream);
+    const parentRunId = String(merged.runId);
+    const subRunId = `${parentRunId}_sub_${Date.now().toString(36)}`;
+    const subStream = `${parentStream}/sub/${subRunId}`;
+
+    const subJob = await queue.enqueue({
+      agentId: delegate.agentId ?? spec.defaultAgentId,
+      lane: "follow_up",
+      sessionKey: `subagent:${job.id}:${subRunId}`,
+      singletonMode: "allow",
+      maxAttempts: 1,
+      payload: {
+        kind: spec.kind,
+        stream: subStream, runId: subRunId,
+        problem: delegate.task,
+        config: spec.defaultSubConfig,
+        isSubAgent: true,
+      },
+    });
+
+    const summaryNow = await summarizeSubJob(subJob.id);
+    const base = typeof merged.problem === "string" ? merged.problem : "";
+    merged.problem = `${base}\n\nSub-agent summary (${subRunId}):\n${summaryNow.summary}`.trim();
+
+    const rs = typeof merged.runStream === "string" && merged.runStream.trim().length > 0
+      ? merged.runStream
+      : spec.runStreamFn(parentStream, parentRunId);
+
+    const mergedEvent = {
+      type: "subagent.merged", runId: parentRunId, agentId: "orchestrator",
+      subJobId: subJob.id, subRunId, task: delegate.task,
+      ...(spec.mergeEventExtras ?? {}),
+    };
+
+    const emitMerged = async (summary: string) => {
+      await spec.runtime.execute(rs, {
+        type: "emit", eventId: makeEventId(rs),
+        event: { ...mergedEvent, summary },
+      });
+    };
+
+    await emitMerged(summaryNow.summary);
+    sse.publish("receipt");
+
+    if (!summaryNow.done) {
+      scheduleSubJobJoin({ parentJobId: job.id, subJobId: subJob.id, subRunId, emitMerged });
+    }
+  }
+};
+
+const createWorkerHandler = (spec: WorkerHandlerSpec): JobHandler =>
+  async (job, ctx) => {
+    const commands = await ctx.pullCommands(["steer", "follow_up"]);
+    const merged = { ...job.payload } as Record<string, unknown>;
+    if (typeof merged.stream !== "string" || !merged.stream.trim()) merged.stream = spec.defaultStream;
+    if (typeof merged.runId !== "string" || !merged.runId.trim()) {
+      merged.runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    }
+    mergeCommands(merged, commands);
+    await handleDelegates(spec, job, merged, commands);
+    await spec.runner(merged, createRunControl(job.id));
+    return { ok: true, result: { runId: merged.runId as string | undefined, stream: merged.stream as string | undefined } };
+  };
+
+const worker = new JobWorker({
+  queue,
+  workerId: jobWorkerId,
+  pollMs: jobPollMs,
+  leaseMs: jobLeaseMs,
+  concurrency: Math.max(1, Number(process.env.JOB_CONCURRENCY ?? 2)),
+  handlers: {
+    theorem: createWorkerHandler({
+      defaultStream: "theorem", defaultAgentId: "theorem", kind: "theorem.run",
+      defaultSubConfig: { rounds: 1, maxDepth: 1, memoryWindow: 40, branchThreshold: 2 },
+      runtime: theoremRuntime, runStreamFn: theoremRunStream, runner: theoremRunner,
+    }),
+    writer: createWorkerHandler({
+      defaultStream: "writer", defaultAgentId: "writer", kind: "writer.run",
+      defaultSubConfig: { maxParallel: 1 },
+      runtime: writerRuntime, runStreamFn: writerRunStream, runner: writerRunner,
+      mergeEventExtras: { stepId: "delegate_task" },
+    }),
+    agent: createWorkerHandler({
+      defaultStream: "agent", defaultAgentId: "agent", kind: "agent.run",
+      defaultSubConfig: { maxIterations: 3, maxToolOutputChars: 2500, memoryScope: "agent", workspace: "." },
+      runtime: agentRuntime, runStreamFn: agentRunStream, runner: agentRunner,
+    }),
+    inspector: async (job, ctx) => {
+      await ctx.pullCommands(["steer", "follow_up"]);
+      await inspectorRunner(job.payload);
+      return { ok: true, result: { runId: job.payload.runId as string | undefined, stream: "inspector" } };
+    },
+  },
+});
+worker.start();
+
+// ============================================================================
+// Heartbeat
+// ============================================================================
+
+const parseHeartbeatSpecs = (): ReadonlyArray<HeartbeatSpec> => {
+  const specs: HeartbeatSpec[] = [];
+  for (const [key, value] of Object.entries(process.env)) {
+    const match = key.match(/^HEARTBEAT_(\w+)_INTERVAL_MS$/);
+    if (!match || !value) continue;
+    const agentId = match[1].toLowerCase();
+    const intervalMs = Number(value);
+    if (!Number.isFinite(intervalMs) || intervalMs < 1_000) continue;
+    specs.push({
+      id: `heartbeat:${agentId}`,
+      agentId,
+      intervalMs,
+      payload: { kind: `${agentId}.heartbeat` },
+    });
+  }
+  return specs;
+};
+
+const heartbeats = parseHeartbeatSpecs().map((spec) =>
+  createHeartbeat(spec, {
+    enqueue: async (opts) => {
+      const created = await queue.enqueue({
+        agentId: opts.agentId,
+        payload: opts.payload,
+        lane: "collect",
+        singletonMode: "cancel",
+        sessionKey: `heartbeat:${opts.agentId}`,
+        maxAttempts: 1,
+      });
+      sse.publish("jobs", created.id);
+      return { id: created.id };
+    },
+  })
+);
+for (const hb of heartbeats) hb.start();
+
 // ============================================================================
 // Manifest Registry + Routes
 // ============================================================================
-
-const sse = new SseHub();
 
 const registry = createAgentRegistry([
   createTodoManifest({ runtime, sse }),
@@ -115,6 +669,7 @@ const registry = createAgentRegistry([
     promptPath: THEOREM_PROMPTS_PATH,
     model: THEOREM_MODEL,
     sse,
+    enqueueJob,
   }),
   createWriterManifest({
     runtime: writerRuntime,
@@ -124,6 +679,16 @@ const registry = createAgentRegistry([
     promptPath: WRITER_PROMPTS_PATH,
     model: WRITER_MODEL,
     sse,
+    enqueueJob,
+  }),
+  createAgentManifest({
+    runtime: agentRuntime,
+    sse,
+    enqueueJob,
+    listJobs: queue.listJobs,
+    getJob: queue.getJob,
+    queueCommand: queue.queueCommand,
+    memoryTools,
   }),
   createInspectorManifest({
     runtime: inspectorRuntime,
@@ -134,17 +699,368 @@ const registry = createAgentRegistry([
     promptPath: INSPECTOR_PROMPTS_PATH,
     model: INSPECTOR_MODEL,
     sse,
+    enqueueJob,
   }),
 ]);
 
 const app = new Hono();
 
 app.onError((err) => {
+  if (err instanceof BadJsonError) return text(400, err.message);
   console.error(err);
   return text(500, "Server error");
 });
 
 compileRoutes(app, registry);
+
+const jsonResponse = (status: number, body: unknown): Response =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+
+class BadJsonError extends Error {
+  constructor(msg: string) { super(msg); }
+}
+
+const readJsonBody = async (req: Request): Promise<Record<string, unknown>> => {
+  const rawText = await req.text();
+  if (!rawText.trim()) return {};
+  let parsed: unknown;
+  try { parsed = JSON.parse(rawText); } catch {
+    throw new BadJsonError("Malformed JSON body");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new BadJsonError("Request body must be a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+};
+
+app.post("/agents/:id/jobs", async (c) => {
+  const agentId = c.req.param("id");
+  const body = await readJsonBody(c.req.raw);
+  const payload = (typeof body.payload === "object" && body.payload)
+    ? body.payload as Record<string, unknown>
+    : body;
+  const lane = body.lane === "steer" || body.lane === "follow_up" || body.lane === "collect"
+    ? body.lane
+    : "collect";
+  const jobId = typeof body.jobId === "string" ? body.jobId : undefined;
+  const maxAttempts = typeof body.maxAttempts === "number" && Number.isFinite(body.maxAttempts)
+    ? Math.max(1, Math.min(Math.floor(body.maxAttempts), 8))
+    : 2;
+  const singleton = (typeof body.singleton === "object" && body.singleton)
+    ? body.singleton as Record<string, unknown>
+    : undefined;
+  const sessionKey = typeof body.sessionKey === "string"
+    ? body.sessionKey
+    : (typeof singleton?.key === "string" ? singleton.key : undefined);
+  const singletonMode = body.singletonMode === "allow" || body.singletonMode === "cancel" || body.singletonMode === "steer"
+    ? body.singletonMode
+    : (singleton?.mode === "allow" || singleton?.mode === "cancel" || singleton?.mode === "steer"
+      ? singleton.mode
+      : "allow");
+
+  const job = await queue.enqueue({
+    jobId,
+    agentId,
+    lane,
+    sessionKey,
+    singletonMode,
+    payload,
+    maxAttempts,
+  });
+  sse.publish("jobs", job.id);
+  return jsonResponse(202, { ok: true, job });
+});
+
+app.post("/jobs/:id/steer", async (c) => {
+  const jobId = c.req.param("id");
+  const body = await readJsonBody(c.req.raw);
+  const payload = (typeof body.payload === "object" && body.payload)
+    ? body.payload as Record<string, unknown>
+    : body;
+  const queued = await queue.queueCommand({
+    jobId,
+    command: "steer",
+    payload,
+    by: typeof body.by === "string" ? body.by : undefined,
+  });
+  if (!queued) return text(404, "job not found");
+  sse.publish("jobs", jobId);
+  return jsonResponse(202, { ok: true, command: queued });
+});
+
+app.post("/jobs/:id/follow-up", async (c) => {
+  const jobId = c.req.param("id");
+  const body = await readJsonBody(c.req.raw);
+  const payload = (typeof body.payload === "object" && body.payload)
+    ? body.payload as Record<string, unknown>
+    : body;
+  const queued = await queue.queueCommand({
+    jobId,
+    command: "follow_up",
+    payload,
+    by: typeof body.by === "string" ? body.by : undefined,
+  });
+  if (!queued) return text(404, "job not found");
+  sse.publish("jobs", jobId);
+  return jsonResponse(202, { ok: true, command: queued });
+});
+
+app.post("/jobs/:id/abort", async (c) => {
+  const jobId = c.req.param("id");
+  const body = await readJsonBody(c.req.raw);
+  const reason = typeof body.reason === "string" ? body.reason : "abort requested";
+  const queued = await queue.queueCommand({
+    jobId,
+    command: "abort",
+    payload: { reason },
+    by: typeof body.by === "string" ? body.by : undefined,
+  });
+  if (!queued) return text(404, "job not found");
+  sse.publish("jobs", jobId);
+  return jsonResponse(202, { ok: true, command: queued });
+});
+
+app.get("/jobs/:id", async (c) => {
+  const job = await queue.getJob(c.req.param("id"));
+  if (!job) return text(404, "job not found");
+  return jsonResponse(200, job);
+});
+
+app.get("/jobs/:id/wait", async (c) => {
+  const timeoutMsRaw = Number(c.req.query("timeoutMs") ?? 15_000);
+  const timeoutMs = Number.isFinite(timeoutMsRaw) ? Math.max(0, Math.min(timeoutMsRaw, 120_000)) : 15_000;
+  const job = await queue.waitForJob(c.req.param("id"), timeoutMs, 200);
+  if (!job) return text(404, "job not found");
+  return jsonResponse(200, job);
+});
+
+app.get("/jobs/:id/events", async (c) => sse.subscribe("jobs", c.req.param("id"), c.req.raw.signal));
+
+app.get("/jobs", async (c) => {
+  const status = c.req.query("status");
+  const parsed = status === "queued"
+    || status === "leased"
+    || status === "running"
+    || status === "completed"
+    || status === "failed"
+    || status === "canceled"
+    ? status
+    : undefined;
+  const limitRaw = Number(c.req.query("limit") ?? 50);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(limitRaw, 500)) : 50;
+  const jobs = await queue.listJobs({ status: parsed, limit });
+  return jsonResponse(200, { jobs });
+});
+
+app.post("/memory/:scope/read", async (c) => {
+  const scope = c.req.param("scope");
+  const body = await readJsonBody(c.req.raw);
+  const limit = typeof body.limit === "number" ? body.limit : undefined;
+  const entries = await memoryTools.read({ scope, limit });
+  return jsonResponse(200, { entries });
+});
+
+app.post("/memory/:scope/search", async (c) => {
+  const scope = c.req.param("scope");
+  const body = await readJsonBody(c.req.raw);
+  const query = typeof body.query === "string" ? body.query : "";
+  const limit = typeof body.limit === "number" ? body.limit : undefined;
+  const entries = await memoryTools.search({ scope, query, limit });
+  return jsonResponse(200, { entries });
+});
+
+app.post("/memory/:scope/summarize", async (c) => {
+  const scope = c.req.param("scope");
+  const body = await readJsonBody(c.req.raw);
+  const query = typeof body.query === "string" ? body.query : undefined;
+  const limit = typeof body.limit === "number" ? body.limit : undefined;
+  const maxChars = typeof body.maxChars === "number" ? body.maxChars : undefined;
+  const result = await memoryTools.summarize({ scope, query, limit, maxChars });
+  return jsonResponse(200, result);
+});
+
+app.post("/memory/:scope/commit", async (c) => {
+  const scope = c.req.param("scope");
+  const body = await readJsonBody(c.req.raw);
+  const textValue = typeof body.text === "string" ? body.text : "";
+  if (!textValue.trim()) return text(400, "text required");
+  const tags = Array.isArray(body.tags)
+    ? body.tags.filter((tag): tag is string => typeof tag === "string")
+    : undefined;
+  const entry = await memoryTools.commit({
+    scope,
+    text: textValue,
+    tags,
+    meta: typeof body.meta === "object" && body.meta ? body.meta as Record<string, unknown> : undefined,
+  });
+  sse.publish("receipt");
+  return jsonResponse(201, { entry });
+});
+
+app.post("/memory/:scope/diff", async (c) => {
+  const scope = c.req.param("scope");
+  const body = await readJsonBody(c.req.raw);
+  const fromTs = typeof body.fromTs === "number" ? body.fromTs : Number.NaN;
+  if (!Number.isFinite(fromTs)) return text(400, "fromTs required");
+  const toTs = typeof body.toTs === "number" ? body.toTs : undefined;
+  const entries = await memoryTools.diff({ scope, fromTs, toTs });
+  return jsonResponse(200, { entries });
+});
+
+const proposalState = async () => selfImprovementRuntime.state(IMPROVEMENT_STREAM);
+
+app.post("/improvement/proposals", async (c) => {
+  const body = await readJsonBody(c.req.raw);
+  const artifactType = body.artifactType === "prompt_patch"
+    || body.artifactType === "policy_patch"
+    || body.artifactType === "harness_patch"
+    ? body.artifactType
+    : null;
+  if (!artifactType) return text(400, "artifactType required");
+  const target = typeof body.target === "string" ? body.target.trim() : "";
+  const patch = typeof body.patch === "string" ? body.patch : "";
+  if (!target) return text(400, "target required");
+  if (!patch.trim()) return text(400, "patch required");
+  const proposalId = typeof body.proposalId === "string" && body.proposalId.trim()
+    ? body.proposalId
+    : `proposal_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+
+  await selfImprovementRuntime.execute(IMPROVEMENT_STREAM, {
+    type: "emit",
+    eventId: eventId(IMPROVEMENT_STREAM),
+    event: {
+      type: "proposal.created",
+      proposalId,
+      artifactType,
+      target,
+      patch,
+      createdBy: typeof body.createdBy === "string" ? body.createdBy : undefined,
+    },
+  });
+  sse.publish("receipt");
+  return jsonResponse(201, { ok: true, proposalId });
+});
+
+app.post("/improvement/:id/validate", async (c) => {
+  const proposalId = c.req.param("id");
+  const body = await readJsonBody(c.req.raw);
+  const state = await proposalState();
+  const proposal = state.proposals[proposalId];
+  if (!proposal) return text(404, "proposal not found");
+  const harness = await evaluateImprovementProposal({
+    artifactType: proposal.artifactType,
+    target: proposal.target,
+    patch: proposal.patch,
+    cwd: process.cwd(),
+  });
+  const status = harness.status;
+  const report = harness.report;
+  await selfImprovementRuntime.execute(IMPROVEMENT_STREAM, {
+    type: "emit",
+    eventId: eventId(IMPROVEMENT_STREAM),
+    event: {
+      type: "proposal.validated",
+      proposalId,
+      status,
+      report,
+      validatedBy: typeof body.validatedBy === "string" ? body.validatedBy : undefined,
+    },
+  });
+  sse.publish("receipt");
+  return jsonResponse(200, {
+    ok: true,
+    proposalId,
+    status,
+    report,
+    checks: harness.checks,
+    requestedBy: typeof body.validatedBy === "string" ? body.validatedBy : undefined,
+  });
+});
+
+app.post("/improvement/:id/approve", async (c) => {
+  const proposalId = c.req.param("id");
+  const body = await readJsonBody(c.req.raw);
+  const state = await proposalState();
+  const proposal = state.proposals[proposalId];
+  if (!proposal) return text(404, "proposal not found");
+  if (proposal.status !== "validated" || proposal.validation?.status !== "passed") {
+    return text(409, "proposal must be validated and passed before approval");
+  }
+  await selfImprovementRuntime.execute(IMPROVEMENT_STREAM, {
+    type: "emit",
+    eventId: eventId(IMPROVEMENT_STREAM),
+    event: {
+      type: "proposal.approved",
+      proposalId,
+      approvedBy: typeof body.approvedBy === "string" ? body.approvedBy : undefined,
+      note: typeof body.note === "string" ? body.note : undefined,
+    },
+  });
+  sse.publish("receipt");
+  return jsonResponse(200, { ok: true, proposalId, status: "approved" });
+});
+
+app.post("/improvement/:id/apply", async (c) => {
+  const proposalId = c.req.param("id");
+  const body = await readJsonBody(c.req.raw);
+  const state = await proposalState();
+  const proposal = state.proposals[proposalId];
+  if (!proposal) return text(404, "proposal not found");
+  if (proposal.status !== "approved") return text(409, "proposal must be approved before apply");
+  await selfImprovementRuntime.execute(IMPROVEMENT_STREAM, {
+    type: "emit",
+    eventId: eventId(IMPROVEMENT_STREAM),
+    event: {
+      type: "proposal.applied",
+      proposalId,
+      appliedBy: typeof body.appliedBy === "string" ? body.appliedBy : undefined,
+      note: typeof body.note === "string" ? body.note : undefined,
+    },
+  });
+  sse.publish("receipt");
+  return jsonResponse(200, { ok: true, proposalId, status: "applied" });
+});
+
+app.post("/improvement/:id/revert", async (c) => {
+  const proposalId = c.req.param("id");
+  const body = await readJsonBody(c.req.raw);
+  const state = await proposalState();
+  const proposal = state.proposals[proposalId];
+  if (!proposal) return text(404, "proposal not found");
+  if (proposal.status !== "applied") return text(409, "proposal must be applied before revert");
+  await selfImprovementRuntime.execute(IMPROVEMENT_STREAM, {
+    type: "emit",
+    eventId: eventId(IMPROVEMENT_STREAM),
+    event: {
+      type: "proposal.reverted",
+      proposalId,
+      revertedBy: typeof body.revertedBy === "string" ? body.revertedBy : undefined,
+      reason: typeof body.reason === "string" ? body.reason : undefined,
+    },
+  });
+  sse.publish("receipt");
+  return jsonResponse(200, { ok: true, proposalId, status: "reverted" });
+});
+
+app.get("/improvement/:id", async (c) => {
+  const proposalId = c.req.param("id");
+  const state = await proposalState();
+  const proposal = state.proposals[proposalId];
+  if (!proposal) return text(404, "proposal not found");
+  return jsonResponse(200, proposal);
+});
+
+app.get("/improvement", async () => {
+  const state = await proposalState();
+  const proposals = Object.values(state.proposals).sort((a, b) => b.updatedAt - a.updatedAt);
+  return jsonResponse(200, { proposals });
+});
 
 app.notFound(() => text(404, "Not found"));
 

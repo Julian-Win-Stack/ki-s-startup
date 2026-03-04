@@ -181,25 +181,25 @@ const INSPECTOR_WORKFLOW: WorkflowSpec<InspectorWorkflowDeps, InspectorWorkflowC
 
     try {
       records = await callTool(
-        "receipt.read",
+        "memory.read",
         { file: source.name },
         () => tools.readFile(dataDir, source.name),
         (result) => `records:${result.length}`
       );
       slice = await callTool(
-        "receipt.slice",
+        "memory.search",
         { order, limit },
         () => Promise.resolve(tools.sliceRecords(records, order, limit)),
         (result) => `slice:${result.length}`
       );
       context = await callTool(
-        "receipt.context",
+        "memory.summarize",
         { maxChars: 12000 },
         () => Promise.resolve(tools.buildContext(slice, 12000)),
         (result) => `chars:${result.length}`
       );
       timeline = await callTool(
-        "receipt.timeline",
+        "memory.diff",
         { depth },
         () => Promise.resolve(tools.buildTimeline(records, depth)),
         (result) => `buckets:${result.length}`

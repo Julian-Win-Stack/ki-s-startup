@@ -8,14 +8,7 @@
 import type { Chain, Branch } from "../core/types.js";
 import type { TodoEvent, TodoState } from "../modules/todo.js";
 import { verify } from "../core/chain.js";
-
-// ============================================================================
-// Escape (security)
-// ============================================================================
-
-const esc = (s: string): string =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-   .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+import { esc } from "./agent-framework.js";
 
 const short = (s: string): string =>
   s.length <= 8 ? s : `${s.slice(0, 4)}…${s.slice(-3)}`;

@@ -1,9 +1,4 @@
-// ============================================================================
-// Writer Guild stream naming helpers
-// ============================================================================
+import { runStream, branchStream } from "../engine/runtime/workflow.js";
 
-export const writerRunStream = (base: string, runId: string): string =>
-  `${base}/runs/${runId}`;
-
-export const writerBranchStream = (runStream: string, branchId: string): string =>
-  `${runStream}/branches/${branchId}`;
+export const writerRunStream = runStream;
+export const writerBranchStream = branchStream;

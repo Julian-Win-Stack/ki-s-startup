@@ -48,14 +48,14 @@ export type FrameworkCoordinationModel = {
   readonly trail: ReadonlyArray<FrameworkTrailRow>;
 };
 
-const esc = (s: string): string =>
+export const esc = (s: string): string =>
   s.replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 
-const truncate = (s: string, max: number): string =>
+export const truncate = (s: string, max: number): string =>
   s.length <= max ? s : `${s.slice(0, max - 3)}...`;
 
 const paletteVars = (palette: FrameworkPalette): string => {

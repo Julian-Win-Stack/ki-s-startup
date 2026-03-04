@@ -146,6 +146,52 @@ export type TheoremEvent =
       readonly targetClaimId?: ClaimId;
     }
   | {
+      readonly type: "context.pruned";
+      readonly runId: string;
+      readonly agentId?: AgentId;
+      readonly stage: string;
+      readonly mode: "soft" | "hard";
+      readonly before: number;
+      readonly after: number;
+      readonly note?: string;
+    }
+  | {
+      readonly type: "context.compacted";
+      readonly runId: string;
+      readonly agentId?: AgentId;
+      readonly stage: string;
+      readonly reason: "threshold" | "overflow";
+      readonly before: number;
+      readonly after: number;
+      readonly note?: string;
+    }
+  | {
+      readonly type: "overflow.recovered";
+      readonly runId: string;
+      readonly agentId?: AgentId;
+      readonly stage: string;
+      readonly note?: string;
+    }
+  | {
+      readonly type: "tool.called";
+      readonly runId: string;
+      readonly agentId?: AgentId;
+      readonly tool: string;
+      readonly input?: Record<string, unknown>;
+      readonly summary?: string;
+      readonly durationMs?: number;
+      readonly error?: string;
+    }
+  | {
+      readonly type: "subagent.merged";
+      readonly runId: string;
+      readonly agentId?: AgentId;
+      readonly subJobId: string;
+      readonly subRunId: string;
+      readonly task: string;
+      readonly summary: string;
+    }
+  | {
       readonly type: "agent.status";
       readonly runId: string;
       readonly agentId: AgentId;
@@ -403,7 +449,19 @@ export const reduce: Reducer<TheoremState, TheoremEvent> = (state, event, ts) =>
           updatedAt: ts,
         },
       };
-    default:
+    case "phase.parallel":
+    case "prompt.context":
+    case "orchestrator.decision":
+    case "memory.slice":
+    case "context.pruned":
+    case "context.compacted":
+    case "overflow.recovered":
+    case "tool.called":
+    case "subagent.merged":
       return state;
+    default: {
+      const _exhaustive: never = event;
+      return _exhaustive;
+    }
   }
 };

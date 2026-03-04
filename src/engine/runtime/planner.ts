@@ -17,11 +17,20 @@ export type CapabilitySpec<Ctx> = {
   readonly run: (ctx: Ctx, inputs: Readonly<Record<string, unknown>>) => Promise<Record<string, unknown>>;
 };
 
+export type GoalResult = {
+  readonly done: boolean;
+  readonly blocked?: string;
+};
+
+export type GoalPredicate = (
+  outputs: Readonly<Record<string, string>>
+) => GoalResult;
+
 export type PlanSpec<Ctx> = {
   readonly id: string;
   readonly version: string;
   readonly capabilities: ReadonlyArray<CapabilitySpec<Ctx>>;
-  readonly goals: ReadonlyArray<string>;
+  readonly goal: GoalPredicate;
 };
 
 export type ReceiptPlannerRunOptions<Ctx, Event extends PlannerEvent> = {
@@ -221,13 +230,30 @@ export const runReceiptPlanner = async <Ctx, Event extends PlannerEvent>(
       await emit({ type: "plan.failed", runId: opts.runId, note: failure.error });
       break;
     }
+
+    const goalResult = opts.plan.goal(state.outputs);
+    if (goalResult.done) {
+      await emit({ type: "plan.completed", runId: opts.runId });
+      return state;
+    }
   }
 
-  const done = steps.every((step) => stepSucceeded(state, step));
-  if (!done && state.status !== "failed") {
-    await emit({ type: "plan.failed", runId: opts.runId, note: "No runnable steps (deadlock)." });
-  } else if (done && state.status !== "completed") {
-    await emit({ type: "plan.completed", runId: opts.runId });
+  if (state.status !== "failed" && state.status !== "completed") {
+    const goalResult = opts.plan.goal(state.outputs);
+    if (goalResult.done) {
+      await emit({ type: "plan.completed", runId: opts.runId });
+    } else {
+      const blockedSteps = steps
+        .filter((s) => !stepSettled(state, s, retryFailed) && !stepReady(state, s))
+        .map((s) => ({
+          stepId: s.id,
+          missing: s.inputs.filter((k) => state.outputs[k] === undefined),
+        }));
+      const stepDiag = blockedSteps.map((b) => `${b.stepId} needs [${b.missing.join(", ")}]`).join("; ");
+      const note = goalResult.blocked
+        ?? (stepDiag || "no runnable steps and goal unsatisfied");
+      await emit({ type: "plan.failed", runId: opts.runId, note });
+    }
   }
 
   return state;

@@ -11,21 +11,13 @@ import { fold } from "../core/chain.js";
 import { MiniGFM } from "@oblivionocean/minigfm";
 import type { WriterRunSummary } from "../agents/writer.runs.js";
 import {
+  esc,
+  truncate,
   frameworkCoordinationHtml,
   type FrameworkContextRow,
   type FrameworkLaneRow,
   type FrameworkTrailRow,
 } from "./agent-framework.js";
-
-const esc = (s: string): string =>
-  s.replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-
-const truncate = (s: string, max: number): string =>
-  s.length <= max ? s : s.slice(0, max - 3) + "...";
 
 const prettyKey = (key: string): string =>
   key.replace(/^[a-z]+\./, "")
