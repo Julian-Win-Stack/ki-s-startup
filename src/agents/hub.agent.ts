@@ -6,7 +6,7 @@ import type { MemoryTools } from "../adapters/memory-tools.js";
 import type { AgentLoaderContext, AgentModuleFactory, AgentRouteModule } from "../framework/agent-types.js";
 import { html, text } from "../framework/http.js";
 import { HubService, HubServiceError } from "../services/hub-service.js";
-import { hubCompose, hubDashboard, hubShell } from "../views/hub.js";
+import { hubComposeIsland, hubDashboardIsland, hubShell } from "../views/hub.js";
 
 const jsonResponse = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), {
@@ -91,7 +91,7 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       asOptionalString(url.searchParams.get("commit")),
       asOptionalString(url.searchParams.get("objective")),
     );
-    return html(hubDashboard(model));
+    return html(hubDashboardIsland(model, url.search));
   };
 
   return {
@@ -119,6 +119,14 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         () => ctx.sse.subscribeMany([{ topic: "receipt" }, { topic: "jobs" }], c.req.raw.signal)
       ));
 
+      app.get("/hub/stream", async (c) => wrap(
+        async () => {
+          await service.ensureBootstrap();
+          return null;
+        },
+        () => ctx.sse.subscribeMany([{ topic: "receipt" }, { topic: "jobs" }], c.req.raw.signal)
+      ));
+
       app.get("/hub/island/dashboard", async (c) =>
         renderDashboard(c.req.raw).catch((err) => {
           if (err instanceof HubServiceError) return text(err.status, err.message);
@@ -129,7 +137,7 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
       app.get("/hub/island/compose", async () => wrap(
         async () => service.buildComposeModel(),
-        (model) => html(hubCompose(model))
+        (model) => html(hubComposeIsland(model))
       ));
 
       app.get("/hub/api/state", async (c) => wrap(

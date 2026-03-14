@@ -43,25 +43,51 @@ const summarizeWorkspaceState = (pass: ObjectivePassView): string => {
   if (pass.workspaceDirty) return "workspace dirty";
   return "workspace clean";
 };
+const isLiveJobStatus = (status: string | undefined): boolean =>
+  status === "queued" || status === "leased" || status === "running";
+const presentJobState = (status: string | undefined): string => {
+  if (status === "queued") return "queued";
+  if (status === "leased") return "starting";
+  if (status === "running") return "running now";
+  if (status === "completed") return "completed";
+  if (status === "failed") return "failed";
+  if (status === "canceled") return "canceled";
+  return status ?? "idle";
+};
+const liveNarrative = (phase: string | undefined, status: string | undefined, elapsedMs: number | undefined): string => {
+  const phaseLabel = phase ? `${phase} pass` : "pass";
+  const duration = elapsedMs ? ` for ${formatDuration(elapsedMs)}` : "";
+  if (status === "queued") return `${phaseLabel} queued. Waiting for Codex worker${duration}.`;
+  if (status === "leased") return `${phaseLabel} starting. Worker claimed the job${duration}.`;
+  if (status === "running") return `${phaseLabel} is actively running in Codex${duration}.`;
+  return `${phaseLabel} idle.`;
+};
 
 const renderCard = (card: HubObjectiveCard, activeId?: string): string => `
   <a
-    class="objective-card${card.objectiveId === activeId ? " active" : ""}"
+    class="objective-card${card.objectiveId === activeId ? " active" : ""}${isLiveJobStatus(card.activeJobStatus) ? " live-card" : ""}"
     href="/hub?objective=${encodeURIComponent(card.objectiveId)}"
     hx-get="/hub/island/dashboard?objective=${encodeURIComponent(card.objectiveId)}"
     hx-target="#hub-dashboard"
+    hx-swap="outerHTML"
     hx-push-url="/hub?objective=${encodeURIComponent(card.objectiveId)}">
     <div class="card-top">
       <span class="badge ${statusClass(card.status)}">${esc(card.status.replaceAll("_", " "))}</span>
-      ${card.activeJobStatus ? `<span class="mini-status">${esc(card.activeJobStatus)}${card.activeElapsedMs ? ` · ${esc(formatDuration(card.activeElapsedMs))}` : ""}</span>` : ""}
+      ${card.activeJobStatus ? `
+        <span class="mini-status${isLiveJobStatus(card.activeJobStatus) ? " live" : ""}">
+          ${isLiveJobStatus(card.activeJobStatus) ? `<span class="live-dot"></span>` : ""}
+          ${esc(presentJobState(card.activeJobStatus))}
+          ${card.activeElapsedMs ? ` · ${esc(formatDuration(card.activeElapsedMs))}` : ""}
+        </span>` : ""}
     </div>
     <div class="card-title">${esc(truncate(card.title, 84))}</div>
     <div class="card-meta">
       ${card.assignedAgentId ? `<span>${esc(card.assignedAgentId)}</span>` : `<span>unassigned</span>`}
       ${card.currentPhase ? `<span>${esc(card.currentPhase)}</span>` : ""}
     </div>
-    ${(card.activeJobStatus === "running" || card.activeJobStatus === "leased" || card.activeJobStatus === "queued") && card.liveActivity
-      ? `<div class="card-summary live">${esc(truncate(card.liveActivity, 120))}</div>`
+    ${isLiveJobStatus(card.activeJobStatus)
+      ? `<div class="card-summary live">${esc(liveNarrative(card.currentPhase, card.activeJobStatus, card.activeElapsedMs))}</div>
+         <div class="card-runtime">${esc(truncate(card.liveActivity || "Codex has accepted the objective and is working.", 128))}</div>`
       : card.latestSummary
         ? `<div class="card-summary">${esc(truncate(card.latestSummary, 140))}</div>`
         : `<div class="card-summary muted">No summary yet.</div>`}
@@ -131,6 +157,15 @@ export const hubCompose = (model: HubComposeModel): string => `
   </section>
 `;
 
+export const hubComposeIsland = (model: HubComposeModel): string => `
+  <div id="hub-compose"
+    hx-get="/hub/island/compose"
+    hx-trigger="load, hub-compose-refresh from:body"
+    hx-swap="outerHTML">
+    ${hubCompose(model)}
+  </div>
+`;
+
 const renderSourceWarning = (model: HubDashboardModel): string => {
   if (!model.sourceDirty) return "";
   const changed = model.sourceChangedFiles.slice(0, 6);
@@ -195,18 +230,19 @@ const renderPass = (pass: ObjectivePassView): string => {
 
 const renderActiveCodex = (pass: ObjectivePassView | undefined): string => {
   if (!pass) return "";
-  if (!(pass.jobStatus === "queued" || pass.jobStatus === "leased" || pass.jobStatus === "running")) return "";
+  if (!isLiveJobStatus(pass.jobStatus)) return "";
   return `
     <section class="active-pass">
       <div class="panel-head">
-        <h2>Active Codex</h2>
-        <span>${esc(pass.phase)} #${pass.passNumber}${pass.elapsedMs ? ` · ${esc(formatDuration(pass.elapsedMs))}` : ""}</span>
+        <h2>Codex Live</h2>
+        <span class="mini-status live"><span class="live-dot"></span>${esc(presentJobState(pass.jobStatus))}${pass.elapsedMs ? ` · ${esc(formatDuration(pass.elapsedMs))}` : ""}</span>
       </div>
+      <div class="active-pass-copy">${esc(liveNarrative(pass.phase, pass.jobStatus, pass.elapsedMs))}</div>
       <div class="detail-kv">
         <span>${esc(pass.agentId)}</span>
         <span title="${esc(pass.workspacePath)}">${esc(shortenPath(pass.workspacePath, 3))}</span>
       </div>
-      <pre class="live-log">${esc(pass.stdoutTail || pass.lastMessage || "Codex started. Waiting for output...")}</pre>
+      <pre class="live-log">${esc(pass.stdoutTail || pass.lastMessage || "Codex accepted the prompt. No terminal output yet.")}</pre>
       ${pass.stderrTail ? `<pre class="live-log error">${esc(pass.stderrTail)}</pre>` : ""}
     </section>
   `;
@@ -231,6 +267,7 @@ const renderObjectiveDetail = (model: HubDashboardModel): string => {
     && objective.passes.some((pass) => pass.workspaceExists);
   const mergeTarget = model.sourceBranch ?? model.defaultBranch;
   const verification = summarizeCheckResults(objective.latestCheckResults);
+  const activeIsLive = objective.activePass ? isLiveJobStatus(objective.activePass.jobStatus) : false;
   return `
     <section class="panel detail-panel">
       <div class="panel-head">
@@ -244,6 +281,12 @@ const renderObjectiveDetail = (model: HubDashboardModel): string => {
         ${objective.assignedAgentId ? `<span class="tag">${esc(objective.assignedAgentId)}</span>` : ""}
         ${objective.latestCommitHash ? `<span class="tag">commit ${esc(shortHash(objective.latestCommitHash))}</span>` : ""}
       </div>
+      ${activeIsLive && objective.activePass ? `
+        <div class="live-banner">
+          <span class="mini-status live"><span class="live-dot"></span>${esc(presentJobState(objective.activePass.jobStatus))}</span>
+          <span>${esc(liveNarrative(objective.activePass.phase, objective.activePass.jobStatus, objective.activePass.elapsedMs))}</span>
+        </div>
+      ` : ""}
       <div class="detail-grid compact">
         <div>
           <div class="detail-label">Intent</div>
@@ -305,6 +348,7 @@ const renderCommitList = (
           href="/hub?commit=${encodeURIComponent(commit.hash)}"
           hx-get="/hub/island/dashboard?commit=${encodeURIComponent(commit.hash)}"
           hx-target="#hub-dashboard"
+          hx-swap="outerHTML"
           hx-push-url="/hub?commit=${encodeURIComponent(commit.hash)}">
           <div class="card-top">
             <span class="hash">${esc(shortHash(commit.hash))}</span>
@@ -391,6 +435,7 @@ export const hubShell = (query = ""): string => `<!doctype html>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script src="https://unpkg.com/htmx.org/dist/ext/sse.js"></script>
   <style>
     :root {
       --bg: #0b0d11;
@@ -675,6 +720,10 @@ export const hubShell = (query = ""): string => `<!doctype html>
       border-color: rgba(140,196,255,0.24);
       box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
     }
+    .objective-card.live-card {
+      border-color: rgba(121,228,191,0.32);
+      box-shadow: inset 0 0 0 1px rgba(121,228,191,0.08);
+    }
     .objective-card.active, .commit-card.active {
       border-color: rgba(121,228,191,0.45);
       background: rgba(121,228,191,0.08);
@@ -706,10 +755,44 @@ export const hubShell = (query = ""): string => `<!doctype html>
       color: var(--ink);
       min-height: 28px;
     }
+    .card-runtime {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      min-height: 18px;
+      margin-bottom: 8px;
+      overflow-wrap: anywhere;
+    }
     .hash, .time, .mini-status {
       font-family: "IBM Plex Mono", monospace;
       font-size: 11px;
       color: var(--muted);
+    }
+    .mini-status.live {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--accent);
+    }
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 0 0 rgba(121,228,191,0.6);
+      animation: pulse-live 1.6s ease-out infinite;
+      flex: 0 0 auto;
+    }
+    @keyframes pulse-live {
+      0% {
+        box-shadow: 0 0 0 0 rgba(121,228,191,0.55);
+      }
+      70% {
+        box-shadow: 0 0 0 9px rgba(121,228,191,0);
+      }
+      100% {
+        box-shadow: 0 0 0 0 rgba(121,228,191,0);
+      }
     }
     .badge, .tag {
       display: inline-flex;
@@ -776,6 +859,20 @@ export const hubShell = (query = ""): string => `<!doctype html>
       color: var(--muted);
       font-size: 12px;
       margin-bottom: 10px;
+    }
+    .live-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(121,228,191,0.22);
+      background: linear-gradient(180deg, rgba(121,228,191,0.12), rgba(121,228,191,0.04));
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.45;
     }
     .mono {
       font-family: "IBM Plex Mono", monospace;
@@ -850,6 +947,12 @@ export const hubShell = (query = ""): string => `<!doctype html>
     .active-pass .panel-head {
       margin-bottom: 8px;
     }
+    .active-pass-copy {
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.45;
+      margin-bottom: 10px;
+    }
     .live-log {
       margin: 0;
       max-height: 180px;
@@ -919,26 +1022,8 @@ export const hubShell = (query = ""): string => `<!doctype html>
       }
     }
   </style>
-  <script>
-    (() => {
-      let source;
-      const refresh = () => document.body.dispatchEvent(new CustomEvent("hub-refresh"));
-      const connect = () => {
-        source = new EventSource("/hub/events");
-        source.onmessage = refresh;
-        source.addEventListener("receipt-refresh", refresh);
-        source.addEventListener("job-refresh", refresh);
-        source.onerror = () => {
-          source?.close();
-          setTimeout(connect, 1000);
-        };
-      };
-      window.addEventListener("DOMContentLoaded", connect);
-      window.addEventListener("beforeunload", () => source?.close());
-    })();
-  </script>
 </head>
-<body>
+<body hx-ext="sse" sse-connect="/hub/stream">
   <div class="shell">
     <div class="head">
       <div>
@@ -949,12 +1034,12 @@ export const hubShell = (query = ""): string => `<!doctype html>
     </div>
     <div id="hub-compose"
       hx-get="/hub/island/compose"
-      hx-trigger="load"
-      hx-swap="innerHTML"></div>
+      hx-trigger="load, hub-compose-refresh from:body"
+      hx-swap="outerHTML"></div>
     <div id="hub-dashboard"
       hx-get="/hub/island/dashboard${query}"
-      hx-trigger="load, hub-refresh from:body"
-      hx-swap="innerHTML"></div>
+      hx-trigger="load, sse:receipt-refresh throttle:900ms, sse:job-refresh throttle:500ms, hub-refresh from:body"
+      hx-swap="outerHTML"></div>
   </div>
 </body>
 </html>`;
@@ -1002,4 +1087,13 @@ export const hubDashboard = (model: HubDashboardModel): string => `
     ${renderObjectiveDetail(model)}
   </div>
   ${renderDebugSection(model)}
+`;
+
+export const hubDashboardIsland = (model: HubDashboardModel, query = ""): string => `
+  <div id="hub-dashboard"
+    hx-get="/hub/island/dashboard${query}"
+    hx-trigger="load, sse:receipt-refresh throttle:900ms, sse:job-refresh throttle:500ms, hub-refresh from:body"
+    hx-swap="outerHTML">
+    ${hubDashboard(model)}
+  </div>
 `;
