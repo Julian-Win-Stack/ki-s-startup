@@ -160,7 +160,7 @@ export const hubCompose = (model: HubComposeModel): string => `
 export const hubComposeIsland = (model: HubComposeModel): string => `
   <div id="hub-compose"
     hx-get="/hub/island/compose"
-    hx-trigger="load, hub-compose-refresh from:body"
+    hx-trigger="hub-compose-refresh from:body"
     hx-swap="outerHTML">
     ${hubCompose(model)}
   </div>
@@ -425,7 +425,10 @@ const renderDebugSection = (model: HubDashboardModel): string => `
   </section>
 `;
 
-export const hubShell = (query = ""): string => `<!doctype html>
+export const hubShell = (opts: {
+  readonly composeIsland: string;
+  readonly dashboardIsland: string;
+}): string => `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -1032,14 +1035,8 @@ export const hubShell = (query = ""): string => `<!doctype html>
       </div>
       <a class="back" href="/monitor">Open command center</a>
     </div>
-    <div id="hub-compose"
-      hx-get="/hub/island/compose"
-      hx-trigger="load, hub-compose-refresh from:body"
-      hx-swap="outerHTML"></div>
-    <div id="hub-dashboard"
-      hx-get="/hub/island/dashboard${query}"
-      hx-trigger="load, sse:receipt-refresh throttle:900ms, sse:job-refresh throttle:500ms, hub-refresh from:body"
-      hx-swap="outerHTML"></div>
+    ${opts.composeIsland}
+    ${opts.dashboardIsland}
   </div>
 </body>
 </html>`;
@@ -1092,7 +1089,7 @@ export const hubDashboard = (model: HubDashboardModel): string => `
 export const hubDashboardIsland = (model: HubDashboardModel, query = ""): string => `
   <div id="hub-dashboard"
     hx-get="/hub/island/dashboard${query}"
-    hx-trigger="load, sse:receipt-refresh throttle:900ms, sse:job-refresh throttle:500ms, hub-refresh from:body"
+    hx-trigger="sse:receipt-refresh throttle:900ms, sse:job-refresh throttle:500ms, hub-refresh from:body"
     hx-swap="outerHTML">
     ${hubDashboard(model)}
   </div>

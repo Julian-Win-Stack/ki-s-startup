@@ -515,15 +515,18 @@ test("hub: objectives auto-run with codex and require human merge to finish the 
     const shellHtml = await shellRes.text();
     assert.match(shellHtml, /Receipt Hub/);
     assert.match(shellHtml, /id="hub-compose"/);
+    assert.match(shellHtml, /id="hub-dashboard"/);
     assert.match(shellHtml, /hx-ext="sse"/);
     assert.match(shellHtml, /sse-connect="\/hub\/stream"/);
     assert.doesNotMatch(shellHtml, /EventSource\(/);
+    assert.doesNotMatch(shellHtml, /load, sse:receipt-refresh/);
 
     const composeRes = await fetch(`${base}/hub/island/compose`);
     assert.equal(composeRes.status, 200);
     const composeHtml = await composeRes.text();
     assert.match(composeHtml, /Create Objective/);
     assert.match(composeHtml, /id="hub-compose"/);
+    assert.doesNotMatch(composeHtml, /load, hub-compose-refresh/);
 
     const dashboardRes = await fetch(`${base}/hub/island/dashboard`);
     assert.equal(dashboardRes.status, 200);
@@ -531,6 +534,7 @@ test("hub: objectives auto-run with codex and require human merge to finish the 
     assert.match(dashboardHtml, /id="hub-dashboard"/);
     assert.match(dashboardHtml, /sse:receipt-refresh/);
     assert.match(dashboardHtml, /sse:job-refresh/);
+    assert.doesNotMatch(dashboardHtml, /load, sse:receipt-refresh/);
     assert.match(dashboardHtml, /Objective Grid/);
     assert.match(dashboardHtml, /Awaiting Confirmation/);
     assert.doesNotMatch(dashboardHtml, /npm run build/);

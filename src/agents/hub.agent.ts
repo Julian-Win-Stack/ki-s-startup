@@ -106,9 +106,20 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       app.get("/hub", async (c) => wrap(
         async () => {
           await service.ensureBootstrap();
-          return c.req.raw.url;
+          const url = new URL(c.req.raw.url);
+          const [composeModel, dashboardModel] = await Promise.all([
+            service.buildComposeModel(),
+            service.buildDashboard(
+              asOptionalString(url.searchParams.get("commit")),
+              asOptionalString(url.searchParams.get("objective")),
+            ),
+          ]);
+          return {
+            composeIsland: hubComposeIsland(composeModel),
+            dashboardIsland: hubDashboardIsland(dashboardModel, url.search),
+          };
         },
-        () => html(hubShell(new URL(c.req.raw.url).search))
+        (payload) => html(hubShell(payload))
       ));
 
       app.get("/hub/events", async (c) => wrap(
