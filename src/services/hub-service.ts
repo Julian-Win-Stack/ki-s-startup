@@ -8,6 +8,12 @@ import type { JsonlQueue } from "../adapters/jsonl-queue.js";
 import { type CodexExecutor, type CodexRunControl } from "../adapters/codex-executor.js";
 import { HubGit, type HubGitCommit } from "../adapters/hub-git.js";
 import type { MemoryTools } from "../adapters/memory-tools.js";
+import {
+  activatableNodes,
+  graphProjection,
+  runnableNodes,
+  type GraphRef,
+} from "../core/graph.js";
 import { createRuntime, type Runtime } from "../core/runtime.js";
 import { makeEventId } from "../framework/http.js";
 import type { SseHub } from "../framework/sse-hub.js";
@@ -35,6 +41,7 @@ import {
   type ObjectiveCheckResult,
   type ObjectiveCmd,
   type ObjectiveEvent,
+  type ObjectiveGraphNodeRecord,
   type ObjectiveLane,
   type ObjectivePassOutcome,
   type ObjectivePassRecord,
@@ -159,6 +166,69 @@ export type ObjectivePassView = ObjectivePassRecord & {
   readonly elapsedMs?: number;
 };
 
+export type HubRepoProjection = {
+  readonly repoRoot: string;
+  readonly defaultBranch: string;
+  readonly sourceHead?: string;
+  readonly sourceDirty: boolean;
+  readonly sourceChangedFiles: ReadonlyArray<string>;
+  readonly sourceBranch?: string;
+  readonly mirrorHead?: string;
+  readonly mirrorStatus: "fresh" | "stale" | "syncing" | "error";
+  readonly mirrorLastSyncAt?: number;
+  readonly mirrorLastSyncError?: string;
+  readonly objectiveCount: number;
+  readonly awaitingConfirmationCount: number;
+  readonly agentIds: ReadonlyArray<string>;
+};
+
+export type HubBoardProjection = {
+  readonly objectives: ReadonlyArray<HubObjectiveCard>;
+  readonly lanes: Readonly<Record<ObjectiveLane, ReadonlyArray<HubObjectiveCard>>>;
+  readonly selectedObjectiveId?: string;
+};
+
+export type HubObjectiveProjection = {
+  readonly defaultBranch: string;
+  readonly sourceBranch?: string;
+  readonly sourceDirty: boolean;
+  readonly selectedObjectiveId?: string;
+  readonly objective?: ObjectiveDetail;
+};
+
+export type HubLiveProjection = {
+  readonly selectedObjectiveId?: string;
+  readonly objectiveTitle?: string;
+  readonly objectiveStatus?: ObjectiveStatus;
+  readonly activePass?: ObjectivePassView;
+};
+
+export type HubDebugProjection = {
+  readonly workspaces: ReadonlyArray<WorkspaceView>;
+  readonly posts: ReadonlyArray<BoardPost>;
+  readonly tasks: ReadonlyArray<TaskView>;
+};
+
+export type HubCommitProjection = {
+  readonly defaultBranch: string;
+  readonly sourceHead?: string;
+  readonly commitCount: number;
+  readonly leafCount: number;
+  readonly recentCommits: ReadonlyArray<HubCommitView>;
+  readonly leaves: ReadonlyArray<HubCommitView>;
+  readonly selectedCommit?: HubCommitView & { readonly touchedFiles: ReadonlyArray<string> };
+  readonly selectedLineage: ReadonlyArray<HubCommitView>;
+  readonly selectedDiff?: string;
+};
+
+export type HubProjectionInvalidation =
+  | "summary"
+  | "board"
+  | "objective"
+  | "live"
+  | "debug"
+  | "commits";
+
 export type ObjectiveDetail = HubObjectiveCard & {
   readonly prompt: string;
   readonly channel: string;
@@ -170,6 +240,16 @@ export type ObjectiveDetail = HubObjectiveCard & {
   readonly latestReviewOutcome?: Extract<ObjectivePassOutcome, "approved" | "changes_requested">;
   readonly latestReviewSummary?: string;
   readonly activePass?: ObjectivePassView;
+  readonly graph: ObjectiveGraphProjection;
+};
+
+export type ObjectiveGraphProjection = {
+  readonly graphId: string;
+  readonly status: ObjectiveState["graph"]["status"];
+  readonly currentNodeId?: string;
+  readonly readyNodeIds: ReadonlyArray<string>;
+  readonly nodeOrder: ReadonlyArray<string>;
+  readonly nodes: ReadonlyArray<ObjectiveGraphNodeRecord>;
 };
 
 export type HubDashboardModel = {
@@ -216,12 +296,14 @@ export type HubObjectivePassJobPayload = {
   readonly kind: "hub.objective.pass";
   readonly objectiveId: string;
   readonly passId: string;
+  readonly nodeId: string;
   readonly phase: ObjectivePhase;
   readonly passNumber: number;
   readonly agentId: string;
   readonly baseCommit: string;
   readonly workspaceId: string;
   readonly workspacePath: string;
+  readonly inputRefs: Readonly<Record<string, GraphRef>>;
   readonly promptPath: string;
   readonly resultPath: string;
   readonly stdoutPath: string;
@@ -257,6 +339,9 @@ const asOptionalString = (value: unknown): string | undefined => {
   const next = asTrimmed(value);
   return next || undefined;
 };
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
 const requireNonEmpty = (value: unknown, message: string): string => {
   const next = asTrimmed(value);
@@ -302,6 +387,26 @@ const renderTemplate = (template: string, vars: Readonly<Record<string, string>>
     (acc, [key, value]) => acc.replaceAll(`{{${key}}}`, value),
     template
   );
+
+const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
+
+const prependPath = (dir: string, currentPath: string | undefined): string =>
+  currentPath ? `${dir}${path.delimiter}${currentPath}` : dir;
+
+const stateRef = (ref: string, label?: string): GraphRef => ({ kind: "state", ref, label });
+
+const fileRef = (ref: string, label?: string): GraphRef => ({ kind: "file", ref, label });
+
+const commitRef = (ref: string, label?: string): GraphRef => ({ kind: "commit", ref, label });
+
+const workspaceRef = (ref: string, label?: string): GraphRef => ({ kind: "workspace", ref, label });
+
+type PlannedObjectiveNode = {
+  readonly phase: ObjectivePhase;
+  readonly baseCommit: string;
+  readonly dependsOn: ReadonlyArray<string>;
+  readonly inputRefs: Readonly<Record<string, GraphRef>>;
+};
 
 const objectiveStream = (objectiveId: string): string => `${OBJECTIVE_STREAM_PREFIX}/${objectiveId}`;
 
@@ -709,56 +814,13 @@ export class HubService {
   }
 
   async listObjectives(): Promise<ReadonlyArray<HubObjectiveCard>> {
-    await this.ensureBootstrap();
-    const hubState = await this.hubRuntime.state(HUB_STREAM);
-    const cards = await Promise.all(
-      Object.values(hubState.objectives)
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .map((objective) => this.objectiveToCard(objective))
-    );
-    return cards;
+    return (await this.buildBoardProjection()).objectives;
   }
 
   async getObjective(objectiveId: string): Promise<ObjectiveDetail> {
     await this.ensureBootstrap();
     const state = await this.requireObjectiveState(objectiveId);
-    const passViews = await Promise.all(
-      state.passOrder.map(async (passId) => {
-        const pass = state.passes[passId];
-        const job = await this.loadFreshJob(pass.jobId);
-        const workspaceStatus = await this.git.worktreeStatus(pass.workspacePath);
-        const live = await this.readPassLiveData(pass, job);
-        return {
-          ...pass,
-          jobStatus: job?.status ?? "missing",
-          job,
-          workspaceExists: workspaceStatus.exists,
-          workspaceDirty: workspaceStatus.dirty,
-          workspaceHead: workspaceStatus.head,
-          ...live,
-        } satisfies ObjectivePassView;
-      })
-    );
-    const latestReview = [...passViews]
-      .reverse()
-      .find((pass) => pass.phase === "reviewer" && (pass.outcome === "approved" || pass.outcome === "changes_requested"));
-    const card = await this.objectiveToCard(this.toObjectiveSummary(state));
-    const activePass = passViews.find((pass) => pass.passId === state.currentPassId);
-    return {
-      ...card,
-      prompt: state.prompt,
-      channel: state.channel,
-      baseHash: state.baseHash,
-      checks: state.checks,
-      createdAt: state.createdAt,
-      passes: passViews,
-      latestCheckResults: state.latestCheckResults,
-      latestReviewOutcome: latestReview?.outcome === "approved" || latestReview?.outcome === "changes_requested"
-        ? latestReview.outcome
-        : undefined,
-      latestReviewSummary: latestReview?.summary,
-      activePass,
-    };
+    return this.buildObjectiveDetail(state);
   }
 
   async mergeObjective(objectiveId: string): Promise<ObjectiveDetail> {
@@ -792,6 +854,30 @@ export class HubService {
     return this.mergeObjective(objectiveId);
   }
 
+  async resumeObjective(objectiveId: string): Promise<ObjectiveDetail> {
+    await this.ensureBootstrap();
+    const state = await this.requireObjectiveState(objectiveId);
+    if (!["blocked", "failed"].includes(state.status)) {
+      throw new HubServiceError(409, "objective is not resumable");
+    }
+    const next = this.planNextObjectiveNode(state);
+    if (next === "awaiting_confirmation") {
+      throw new HubServiceError(409, "objective is awaiting merge, not resume");
+    }
+    const phase = next?.phase
+      ?? state.currentPhase
+      ?? state.passOrder.map((passId) => state.passes[passId]).at(-1)?.phase
+      ?? "planner";
+    await this.emitObjective(objectiveId, {
+      type: "objective.resumed",
+      objectiveId,
+      phase,
+      resumedAt: Date.now(),
+    });
+    await this.reactObjective(objectiveId);
+    return this.getObjective(objectiveId);
+  }
+
   async cancelObjective(objectiveId: string, reason?: string): Promise<ObjectiveDetail> {
     await this.ensureBootstrap();
     const state = await this.requireObjectiveState(objectiveId);
@@ -820,26 +906,155 @@ export class HubService {
     return this.getObjective(objectiveId);
   }
 
-  async buildDashboard(selectedHash?: string, selectedObjectiveId?: string): Promise<HubDashboardModel> {
+  async buildRepoProjection(): Promise<HubRepoProjection> {
     await this.ensureBootstrap();
-    await this.git.syncFromSource();
-    const [hubState, graph, workspaces, tasks, objectiveCards, sourceStatus] = await Promise.all([
+    const [hubState, sourceStatus, defaultBranch] = await Promise.all([
       this.hubRuntime.state(HUB_STREAM),
-      this.git.graph(),
-      this.listActiveWorkspaces(),
-      this.listTasks(),
-      this.listObjectives(),
       this.git.sourceStatus(),
+      this.git.defaultBranch(),
     ]);
+    const sourceBranch = sourceStatus.branch ?? defaultBranch;
+    const mirror = await this.git.mirrorStatus(sourceBranch);
+    const sourceHead = sourceStatus.head;
+    const mirrorHead = mirror.head;
+    const mirrorStale = Boolean(sourceHead && sourceHead !== mirrorHead) || (!mirrorHead && Boolean(sourceHead));
+    if (mirrorStale && !mirror.syncing) {
+      this.git.scheduleSyncFromSource();
+    }
+    return {
+      repoRoot: this.git.repoRoot,
+      defaultBranch,
+      sourceHead,
+      sourceDirty: sourceStatus.dirty,
+      sourceChangedFiles: sourceStatus.changedFiles,
+      sourceBranch: sourceStatus.branch,
+      mirrorHead,
+      mirrorStatus: mirror.lastSyncError
+        ? "error"
+        : mirror.syncing
+          ? "syncing"
+          : mirrorStale
+            ? "stale"
+            : "fresh",
+      mirrorLastSyncAt: mirror.lastSyncAt,
+      mirrorLastSyncError: mirror.lastSyncError,
+      objectiveCount: Object.keys(hubState.objectives).length,
+      awaitingConfirmationCount: Object.values(hubState.objectives).filter((objective) => objective.status === "awaiting_confirmation").length,
+      agentIds: Object.values(hubState.agents)
+        .sort((a, b) => a.agentId.localeCompare(b.agentId))
+        .map((agent) => agent.agentId),
+    };
+  }
+
+  async buildBoardProjection(selectedObjectiveId?: string): Promise<HubBoardProjection> {
+    await this.ensureBootstrap();
+    const hubState = await this.hubRuntime.state(HUB_STREAM);
+    const objectives = Object.values(hubState.objectives).sort((a, b) => b.updatedAt - a.updatedAt);
+    const resolvedSelectedObjectiveId = this.resolveSelectedObjectiveId(hubState, selectedObjectiveId);
+    const jobs = await Promise.all(
+      objectives.map((objective) => objective.currentJobId ? this.loadFreshJob(objective.currentJobId) : Promise.resolve(undefined))
+    );
+    const cards = objectives.map((objective, index) => this.objectiveToCard(objective, jobs[index]));
+    return {
+      objectives: cards,
+      lanes: {
+        planner: cards.filter((objective) => objective.lane === "planner"),
+        builder: cards.filter((objective) => objective.lane === "builder"),
+        reviewer: cards.filter((objective) => objective.lane === "reviewer"),
+        awaiting_confirmation: cards.filter((objective) => objective.lane === "awaiting_confirmation"),
+        blocked: cards.filter((objective) => objective.lane === "blocked"),
+        completed: cards.filter((objective) => objective.lane === "completed"),
+      },
+      selectedObjectiveId: resolvedSelectedObjectiveId,
+    };
+  }
+
+  async buildObjectiveProjection(selectedObjectiveId?: string): Promise<HubObjectiveProjection> {
+    await this.ensureBootstrap();
+    const hubState = await this.hubRuntime.state(HUB_STREAM);
+    const resolvedSelectedObjectiveId = this.resolveSelectedObjectiveId(hubState, selectedObjectiveId);
+    const objective = resolvedSelectedObjectiveId
+      ? await this.requireObjectiveState(resolvedSelectedObjectiveId).then((state) => this.buildObjectiveDetail(state))
+      : undefined;
+    const [defaultBranch, sourceStatus] = await Promise.all([
+      this.git.defaultBranch(),
+      objective?.status === "awaiting_confirmation"
+        ? this.git.sourceStatus()
+        : Promise.resolve({
+          dirty: false,
+          head: undefined,
+          branch: undefined,
+          changedFiles: [],
+        }),
+    ]);
+    return {
+      defaultBranch,
+      sourceBranch: sourceStatus.branch,
+      sourceDirty: sourceStatus.dirty,
+      selectedObjectiveId: resolvedSelectedObjectiveId,
+      objective,
+    };
+  }
+
+  async buildLiveProjection(selectedObjectiveId?: string): Promise<HubLiveProjection> {
+    await this.ensureBootstrap();
+    const hubState = await this.hubRuntime.state(HUB_STREAM);
+    const resolvedSelectedObjectiveId = this.resolveSelectedObjectiveId(hubState, selectedObjectiveId);
+    if (!resolvedSelectedObjectiveId) {
+      return {};
+    }
+    const state = await this.requireObjectiveState(resolvedSelectedObjectiveId);
+    const activePass = state.currentPassId ? state.passes[state.currentPassId] : undefined;
+    if (!activePass || activePass.status !== "queued") {
+      return {
+        selectedObjectiveId: resolvedSelectedObjectiveId,
+        objectiveTitle: state.title,
+        objectiveStatus: state.status,
+      };
+    }
+    const job = await this.loadFreshJob(activePass.jobId);
+    const workspaceStatus = await this.git.worktreeStatus(activePass.workspacePath);
+    const live = await this.readPassLiveData(activePass, job);
+    return {
+      selectedObjectiveId: resolvedSelectedObjectiveId,
+      objectiveTitle: state.title,
+      objectiveStatus: state.status,
+      activePass: {
+        ...activePass,
+        jobStatus: job?.status ?? "missing",
+        job,
+        workspaceExists: workspaceStatus.exists,
+        workspaceDirty: workspaceStatus.dirty,
+        workspaceHead: workspaceStatus.head,
+        activity: this.describePassActivity(activePass, job),
+        elapsedMs: this.passElapsedMs(activePass, job),
+        ...live,
+      },
+    };
+  }
+
+  async buildDebugProjection(): Promise<HubDebugProjection> {
+    await this.ensureBootstrap();
+    const [workspaces, posts, tasks] = await Promise.all([
+      this.listActiveWorkspaces(),
+      this.listPosts(),
+      this.listTasks(),
+    ]);
+    return {
+      workspaces,
+      posts: posts.slice(0, 60),
+      tasks,
+    };
+  }
+
+  async buildCommitProjection(selectedHash?: string): Promise<HubCommitProjection> {
+    await this.ensureBootstrap();
+    await this.refreshMirrorForExplorer();
+    const graph = await this.git.graph();
     const selectedCommit = selectedHash
       ? await this.git.getCommit(selectedHash)
       : graph.commits[0]
         ? await this.git.getCommit(graph.commits[0].hash)
-        : undefined;
-    const selectedObjective = selectedObjectiveId
-      ? await this.getObjective(selectedObjectiveId).catch(() => undefined)
-      : objectiveCards[0]
-        ? await this.getObjective(objectiveCards[0].objectiveId).catch(() => undefined)
         : undefined;
     const lineage = selectedCommit ? await this.git.getLineage(selectedCommit.hash) : [];
     const diff = selectedCommit?.parents[0]
@@ -849,21 +1064,9 @@ export class HubService {
       .slice(0, 24)
       .map((hash) => graph.byHash[hash])
       .filter((commit): commit is HubGitCommit => Boolean(commit));
-    const lanes: Record<ObjectiveLane, ReadonlyArray<HubObjectiveCard>> = {
-      planner: objectiveCards.filter((objective) => objective.lane === "planner"),
-      builder: objectiveCards.filter((objective) => objective.lane === "builder"),
-      reviewer: objectiveCards.filter((objective) => objective.lane === "reviewer"),
-      awaiting_confirmation: objectiveCards.filter((objective) => objective.lane === "awaiting_confirmation"),
-      blocked: objectiveCards.filter((objective) => objective.lane === "blocked"),
-      completed: objectiveCards.filter((objective) => objective.lane === "completed"),
-    };
     return {
-      repoRoot: this.git.repoRoot,
       defaultBranch: graph.defaultBranch,
       sourceHead: graph.sourceHead,
-      sourceDirty: sourceStatus.dirty,
-      sourceChangedFiles: sourceStatus.changedFiles,
-      sourceBranch: sourceStatus.branch,
       commitCount: graph.commits.length,
       leafCount: graph.leaves.length,
       recentCommits: graph.commits.slice(0, 40).map(this.commitToView),
@@ -876,6 +1079,33 @@ export class HubService {
         : undefined,
       selectedLineage: lineage.map(this.commitToView),
       selectedDiff: diff,
+    };
+  }
+
+  async buildDashboard(selectedHash?: string, selectedObjectiveId?: string): Promise<HubDashboardModel> {
+    await this.ensureBootstrap();
+    const [hubState, repo, board, objective, debug, commits] = await Promise.all([
+      this.hubRuntime.state(HUB_STREAM),
+      this.buildRepoProjection(),
+      this.buildBoardProjection(selectedObjectiveId),
+      this.buildObjectiveProjection(selectedObjectiveId),
+      this.buildDebugProjection(),
+      this.buildCommitProjection(selectedHash),
+    ]);
+    return {
+      repoRoot: repo.repoRoot,
+      defaultBranch: repo.defaultBranch,
+      sourceHead: repo.sourceHead,
+      sourceDirty: repo.sourceDirty,
+      sourceChangedFiles: repo.sourceChangedFiles,
+      sourceBranch: repo.sourceBranch,
+      commitCount: commits.commitCount,
+      leafCount: commits.leafCount,
+      recentCommits: commits.recentCommits,
+      leaves: commits.leaves,
+      selectedCommit: commits.selectedCommit,
+      selectedLineage: commits.selectedLineage,
+      selectedDiff: commits.selectedDiff,
       agents: Object.values(hubState.agents)
         .sort((a, b) => a.agentId.localeCompare(b.agentId))
         .map((agent) => ({
@@ -886,12 +1116,12 @@ export class HubService {
       channels: Object.values(hubState.channels)
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((channel) => channel.name),
-      posts: sortedValues(hubState.posts).slice(0, 60),
-      workspaces,
-      tasks,
-      objectives: objectiveCards,
-      lanes,
-      selectedObjective,
+      posts: debug.posts,
+      workspaces: debug.workspaces,
+      tasks: debug.tasks,
+      objectives: board.objectives,
+      lanes: board.lanes,
+      selectedObjective: objective.objective,
     };
   }
 
@@ -912,33 +1142,45 @@ export class HubService {
   }
 
   async buildStatePayload(selectedHash?: string, selectedObjectiveId?: string): Promise<Record<string, unknown>> {
-    const model = await this.buildDashboard(selectedHash, selectedObjectiveId);
+    const [repo, board, objective, debug, commits, agents, channels] = await Promise.all([
+      this.buildRepoProjection(),
+      this.buildBoardProjection(selectedObjectiveId),
+      this.buildObjectiveProjection(selectedObjectiveId),
+      this.buildDebugProjection(),
+      this.buildCommitProjection(selectedHash),
+      this.listAgents(),
+      this.listChannels(),
+    ]);
     return {
       repo: {
-        repoRoot: model.repoRoot,
-        defaultBranch: model.defaultBranch,
-        sourceHead: model.sourceHead,
-        dirty: model.sourceDirty,
-        changedFiles: model.sourceChangedFiles,
-        branch: model.sourceBranch,
+        repoRoot: repo.repoRoot,
+        defaultBranch: repo.defaultBranch,
+        sourceHead: repo.sourceHead,
+        dirty: repo.sourceDirty,
+        changedFiles: repo.sourceChangedFiles,
+        branch: repo.sourceBranch,
+        mirrorHead: repo.mirrorHead,
+        mirrorStatus: repo.mirrorStatus,
+        mirrorLastSyncAt: repo.mirrorLastSyncAt,
+        mirrorLastSyncError: repo.mirrorLastSyncError,
       },
       graph: {
-        commitCount: model.commitCount,
-        leafCount: model.leafCount,
-        recentCommits: model.recentCommits,
-        leaves: model.leaves,
-        selectedCommit: model.selectedCommit,
-        selectedLineage: model.selectedLineage,
-        selectedDiff: model.selectedDiff,
+        commitCount: commits.commitCount,
+        leafCount: commits.leafCount,
+        recentCommits: commits.recentCommits,
+        leaves: commits.leaves,
+        selectedCommit: commits.selectedCommit,
+        selectedLineage: commits.selectedLineage,
+        selectedDiff: commits.selectedDiff,
       },
-      agents: model.agents,
-      channels: model.channels,
-      posts: model.posts,
-      workspaces: model.workspaces,
-      tasks: model.tasks,
-      objectives: model.objectives,
-      lanes: model.lanes,
-      selectedObjective: model.selectedObjective,
+      agents,
+      channels: channels.map((channel) => channel.name),
+      posts: debug.posts,
+      workspaces: debug.workspaces,
+      tasks: debug.tasks,
+      objectives: board.objectives,
+      lanes: board.lanes,
+      selectedObjective: objective.objective,
     };
   }
 
@@ -950,80 +1192,39 @@ export class HubService {
     if (!pass) throw new HubServiceError(404, "objective pass not found");
     const hubState = await this.hubRuntime.state(HUB_STREAM);
     const agent = this.requireAgent(hubState, pass.agentId);
-    const files = await this.writePassFiles(state, pass, agent);
-    try {
-      await this.codexExecutor.run({
-        prompt: files.renderedPrompt,
-        workspacePath: pass.workspacePath,
-        promptPath: pass.promptPath ?? files.promptPath,
-        lastMessagePath: pass.lastMessagePath ?? files.lastMessagePath,
-        stdoutPath: pass.stdoutPath ?? files.stdoutPath,
-        stderrPath: pass.stderrPath ?? files.stderrPath,
-      }, control);
-      const rawResult = await fs.readFile(pass.resultPath ?? files.resultPath, "utf-8").catch(() => "");
-      const parsedResult = this.parsePassResult(rawResult, pass.phase);
-      await this.applyPassResult(state, pass, parsedResult, agent);
-      await this.reactObjective(parsed.objectiveId);
-      return {
-        objectiveId: parsed.objectiveId,
-        passId: pass.passId,
-        phase: pass.phase,
-        outcome: parsedResult.outcome,
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      await this.emitObjective(parsed.objectiveId, {
-        type: "blocked",
-        objectiveId: parsed.objectiveId,
-        phase: pass.phase,
-        passId: pass.passId,
-        summary: clipText(message, 240) ?? "Codex pass blocked.",
-        reason: message,
-        completedAt: Date.now(),
-      });
-      throw err;
-    }
+    const workspacePath = await this.ensureObjectiveWorkspace(hubState, pass);
+    const files = await this.writePassFiles(state, { ...pass, workspacePath }, agent, parsed.inputRefs);
+    const receiptBinDir = await this.ensureWorkspaceReceiptCli(workspacePath);
+    await this.codexExecutor.run({
+      prompt: files.renderedPrompt,
+      workspacePath,
+      promptPath: pass.promptPath ?? files.promptPath,
+      lastMessagePath: pass.lastMessagePath ?? files.lastMessagePath,
+      stdoutPath: pass.stdoutPath ?? files.stdoutPath,
+      stderrPath: pass.stderrPath ?? files.stderrPath,
+      env: {
+        DATA_DIR: this.dataDir,
+        PATH: prependPath(receiptBinDir, process.env.PATH),
+      },
+    }, control);
+    const rawResult = await fs.readFile(pass.resultPath ?? files.resultPath, "utf-8").catch(() => "");
+    const parsedResult = this.parsePassResult(rawResult, pass.phase);
+    await this.applyPassResult(await this.requireObjectiveState(parsed.objectiveId), { ...pass, workspacePath }, parsedResult, agent);
+    await this.reactObjective(parsed.objectiveId);
+    return {
+      objectiveId: parsed.objectiveId,
+      passId: pass.passId,
+      phase: pass.phase,
+      outcome: parsedResult.outcome,
+    };
   }
 
   async reactObjective(objectiveId: string): Promise<void> {
     await this.ensureBootstrap();
-    const state = await this.requireObjectiveState(objectiveId);
-    const decision = objectiveMergePolicy.choose(
-      objectiveMergePolicy.candidates({ state }).map((candidate) => ({
-        candidate,
-        score: objectiveMergePolicy.score(candidate, objectiveMergePolicy.evidence({ state }), { state }),
-      }))
-    );
-    const currentPass = decision.candidateId ? state.passes[decision.candidateId] : undefined;
-    if (currentPass) {
-      const job = await this.loadFreshJob(currentPass.jobId);
-      if (!job) {
-        await this.enqueueObjectivePass(objectiveId, currentPass);
-        return;
-      }
-      if (!isTerminalJobStatus(job.status)) return;
-      if (job.status === "completed" && currentPass.status === "queued") {
-        await this.emitObjective(objectiveId, {
-          type: "blocked",
-          objectiveId,
-          phase: currentPass.phase,
-          passId: currentPass.passId,
-          summary: "Objective pass completed without recording an objective event.",
-          reason: "objective pass completed without durable outcome",
-          completedAt: Date.now(),
-        });
-      }
-      if ((job.status === "failed" || job.status === "canceled") && currentPass.status === "queued") {
-        await this.emitObjective(objectiveId, {
-          type: "blocked",
-          objectiveId,
-          phase: currentPass.phase,
-          passId: currentPass.passId,
-          summary: clipText(job.lastError ?? job.canceledReason ?? "Objective pass failed.", 240) ?? "Objective pass failed.",
-          reason: job.lastError ?? job.canceledReason ?? "objective pass failed",
-          completedAt: Date.now(),
-        });
-      }
+    let state = await this.requireObjectiveState(objectiveId);
+    const currentNode = state.graph.currentNodeId ? state.graph.nodes[state.graph.currentNodeId] : undefined;
+    if (currentNode) {
+      await this.reconcileObjectiveNode(state, currentNode);
       return;
     }
 
@@ -1031,38 +1232,43 @@ export class HubService {
       return;
     }
 
-    const lastPass = [...state.passOrder]
-      .map((passId) => state.passes[passId])
-      .at(-1);
+    const nextActivatable = activatableNodes(state.graph)[0];
+    if (nextActivatable) {
+      await this.emitObjective(objectiveId, {
+        type: "graph.node.ready",
+        objectiveId,
+        nodeId: nextActivatable.nodeId,
+        readyAt: Date.now(),
+      });
+      state = await this.requireObjectiveState(objectiveId);
+    }
 
-    if (!lastPass) {
-      await this.dispatchNextPhase(state, "planner", state.baseHash);
+    const readyNode = runnableNodes(state.graph)[0];
+    if (readyNode) {
+      const pass = state.passes[readyNode.passId];
+      if (!pass) throw new HubServiceError(500, `missing pass for graph node ${readyNode.nodeId}`);
+      await this.dispatchGraphNode(state, readyNode, pass);
       return;
     }
 
-    if (lastPass.phase === "planner" && lastPass.outcome === "plan_ready") {
-      await this.dispatchNextPhase(await this.requireObjectiveState(objectiveId), "builder", state.baseHash);
+    const nextNode = this.planNextObjectiveNode(state);
+    if (!nextNode) {
       return;
     }
-
-    if (lastPass.phase === "builder" && lastPass.outcome === "candidate_ready" && lastPass.commitHash) {
-      await this.dispatchNextPhase(await this.requireObjectiveState(objectiveId), "reviewer", lastPass.commitHash);
-      return;
-    }
-
-    if (lastPass.phase === "reviewer" && lastPass.outcome === "changes_requested" && lastPass.commitHash) {
-      await this.dispatchNextPhase(await this.requireObjectiveState(objectiveId), "builder", lastPass.commitHash);
-      return;
-    }
-
-    if (lastPass.phase === "reviewer" && lastPass.outcome === "approved") {
+    if (nextNode === "awaiting_confirmation") {
+      const latestReview = [...state.passOrder]
+        .map((passId) => state.passes[passId])
+        .reverse()
+        .find((pass) => pass.phase === "reviewer" && pass.outcome === "approved");
       await this.emitObjective(objectiveId, {
         type: "objective.awaiting_confirmation",
         objectiveId,
-        summary: lastPass.summary ?? "Review approved. Awaiting confirmation.",
+        summary: latestReview?.summary ?? "Review approved. Awaiting confirmation.",
         createdAt: Date.now(),
       });
+      return;
     }
+    await this.planObjectiveNode(state, nextNode);
   }
 
   async resumeObjectives(): Promise<void> {
@@ -1075,17 +1281,17 @@ export class HubService {
     }
   }
 
-  private async dispatchNextPhase(state: ObjectiveState, phase: ObjectivePhase, baseCommit: string): Promise<void> {
+  private async planObjectiveNode(state: ObjectiveState, next: PlannedObjectiveNode): Promise<void> {
     const hubState = await this.hubRuntime.state(HUB_STREAM);
-    const agent = this.resolvePhaseAgent(hubState, phase);
+    const agent = this.resolvePhaseAgent(hubState, next.phase);
     const passNumber = state.passOrder.length + 1;
-    const workspaceId = `${state.objectiveId}_${phase}_${String(passNumber).padStart(2, "0")}`;
+    const workspaceId = `${state.objectiveId}_${next.phase}_${String(passNumber).padStart(2, "0")}`;
     let workspace = hubState.workspaces[workspaceId];
     if (!workspace || workspace.removedAt) {
       const created = await this.git.createWorkspace({
         workspaceId,
         agentId: agent.agentId,
-        baseHash: baseCommit,
+        baseHash: next.baseCommit,
       });
       workspace = {
         workspaceId,
@@ -1097,16 +1303,16 @@ export class HubService {
       };
       await this.emitHub({ type: "workspace.created", workspace });
     }
-    const files = this.passFilePaths(workspace.path, phase, passNumber);
+    const files = this.passFilePaths(workspace.path, next.phase, passNumber);
     const pass: Omit<ObjectivePassRecord, "status"> = {
-      passId: `${state.objectiveId}_${phase}_${String(passNumber).padStart(2, "0")}`,
-      phase,
+      passId: `${state.objectiveId}_${next.phase}_${String(passNumber).padStart(2, "0")}`,
+      phase: next.phase,
       passNumber,
       agentId: agent.agentId,
-      jobId: `job_hub_${state.objectiveId}_${phase}_${String(passNumber).padStart(2, "0")}`,
+      jobId: `job_hub_${state.objectiveId}_${next.phase}_${String(passNumber).padStart(2, "0")}`,
       workspaceId,
       workspacePath: workspace.path,
-      baseCommit,
+      baseCommit: next.baseCommit,
       dispatchedAt: Date.now(),
       promptPath: files.promptPath,
       resultPath: files.resultPath,
@@ -1114,29 +1320,80 @@ export class HubService {
       stderrPath: files.stderrPath,
       lastMessagePath: files.lastMessagePath,
     };
+    const node: Omit<ObjectiveGraphNodeRecord, "status" | "outputRefs"> = {
+      nodeId: pass.passId,
+      kind: pass.phase,
+      title: `${pass.phase}-${String(pass.passNumber).padStart(2, "0")}`,
+      passId: pass.passId,
+      passNumber: pass.passNumber,
+      agentId: pass.agentId,
+      jobId: pass.jobId,
+      workspaceId: pass.workspaceId,
+      workspacePath: pass.workspacePath,
+      baseCommit: pass.baseCommit,
+      dependsOn: next.dependsOn,
+      inputRefs: next.inputRefs,
+      createdAt: pass.dispatchedAt,
+      readyAt: pass.dispatchedAt,
+      dispatchedAt: pass.dispatchedAt,
+    };
+    await this.emitObjective(state.objectiveId, {
+      type: "graph.node.planned",
+      objectiveId: state.objectiveId,
+      node,
+      plannedAt: pass.dispatchedAt,
+    });
+    await this.emitObjective(state.objectiveId, {
+      type: "graph.node.ready",
+      objectiveId: state.objectiveId,
+      nodeId: node.nodeId,
+      readyAt: pass.dispatchedAt,
+    });
     await this.emitObjective(state.objectiveId, {
       type: "phase.dispatched",
       objectiveId: state.objectiveId,
       pass,
       dispatchedAt: pass.dispatchedAt,
     });
-    await this.enqueueObjectivePass(state.objectiveId, {
-      ...pass,
-      status: "queued",
-    });
+    await this.dispatchGraphNode(
+      await this.requireObjectiveState(state.objectiveId),
+      { ...node, status: "ready", outputRefs: {} },
+      { ...pass, status: "queued" },
+    );
   }
 
-  private async enqueueObjectivePass(objectiveId: string, pass: ObjectivePassRecord): Promise<void> {
+  private async dispatchGraphNode(
+    state: ObjectiveState,
+    node: ObjectiveGraphNodeRecord,
+    pass: ObjectivePassRecord,
+  ): Promise<void> {
+    await this.emitObjective(state.objectiveId, {
+      type: "graph.node.dispatched",
+      objectiveId: state.objectiveId,
+      nodeId: node.nodeId,
+      jobId: pass.jobId,
+      dispatchedAt: Date.now(),
+    });
+    await this.enqueueObjectivePass(state.objectiveId, pass, node);
+  }
+
+  private async enqueueObjectivePass(
+    objectiveId: string,
+    pass: ObjectivePassRecord,
+    node: Pick<ObjectiveGraphNodeRecord, "nodeId" | "inputRefs">,
+  ): Promise<void> {
     const payload: HubObjectivePassJobPayload = {
       kind: "hub.objective.pass",
       objectiveId,
       passId: pass.passId,
+      nodeId: node.nodeId,
       phase: pass.phase,
       passNumber: pass.passNumber,
       agentId: pass.agentId,
       baseCommit: pass.baseCommit,
       workspaceId: pass.workspaceId,
       workspacePath: pass.workspacePath,
+      inputRefs: node.inputRefs,
       promptPath: pass.promptPath ?? this.passFilePaths(pass.workspacePath, pass.phase, pass.passNumber).promptPath,
       resultPath: pass.resultPath ?? this.passFilePaths(pass.workspacePath, pass.phase, pass.passNumber).resultPath,
       stdoutPath: pass.stdoutPath ?? this.passFilePaths(pass.workspacePath, pass.phase, pass.passNumber).stdoutPath,
@@ -1149,10 +1406,111 @@ export class HubService {
       lane: "collect",
       sessionKey: `hub-objective:${payload.objectiveId}`,
       singletonMode: "allow",
-      maxAttempts: 1,
+      maxAttempts: 2,
       payload,
     });
     this.sse.publish("jobs", pass.jobId);
+  }
+
+  private async reconcileObjectiveNode(
+    state: ObjectiveState,
+    node: ObjectiveGraphNodeRecord,
+  ): Promise<void> {
+    const pass = state.passes[node.passId];
+    if (!pass) throw new HubServiceError(500, `missing pass for graph node ${node.nodeId}`);
+    const job = await this.loadFreshJob(pass.jobId);
+    if (!job) {
+      await this.enqueueObjectivePass(state.objectiveId, pass, node);
+      return;
+    }
+    if (!isTerminalJobStatus(job.status)) return;
+    if (job.status === "completed" && pass.status === "queued") {
+      await this.emitObjective(state.objectiveId, {
+        type: "graph.node.terminal",
+        objectiveId: state.objectiveId,
+        nodeId: node.nodeId,
+        status: "blocked",
+        reason: "objective pass completed without durable outcome",
+        completedAt: Date.now(),
+      });
+      await this.emitObjective(state.objectiveId, {
+        type: "blocked",
+        objectiveId: state.objectiveId,
+        phase: pass.phase,
+        passId: pass.passId,
+        summary: "Objective pass completed without recording an objective event.",
+        reason: "objective pass completed without durable outcome",
+        completedAt: Date.now(),
+      });
+      return;
+    }
+    if ((job.status === "failed" || job.status === "canceled") && pass.status === "queued") {
+      const reason = job.lastError ?? job.canceledReason ?? "objective pass failed";
+      await this.emitObjective(state.objectiveId, {
+        type: "graph.node.terminal",
+        objectiveId: state.objectiveId,
+        nodeId: node.nodeId,
+        status: "blocked",
+        reason,
+        completedAt: Date.now(),
+      });
+      await this.emitObjective(state.objectiveId, {
+        type: "blocked",
+        objectiveId: state.objectiveId,
+        phase: pass.phase,
+        passId: pass.passId,
+        summary: clipText(reason, 240) ?? "Objective pass failed.",
+        reason,
+        completedAt: Date.now(),
+      });
+    }
+  }
+
+  private planNextObjectiveNode(state: ObjectiveState): PlannedObjectiveNode | "awaiting_confirmation" | undefined {
+    const completedNodes = graphProjection(state.graph).completed;
+    const lastNode = completedNodes[completedNodes.length - 1];
+    if (!lastNode) {
+      return {
+        phase: "planner",
+        baseCommit: state.baseHash,
+        dependsOn: [],
+        inputRefs: {
+          objective: stateRef(`${objectiveStream(state.objectiveId)}:prompt`, "objective prompt"),
+          baseCommit: commitRef(state.baseHash, "base commit"),
+          checks: stateRef(`${objectiveStream(state.objectiveId)}:checks`, "required checks"),
+        },
+      };
+    }
+    const lastPass = state.passes[lastNode.passId];
+    if (!lastPass) return undefined;
+    if (lastPass.phase === "planner" && lastPass.outcome === "plan_ready") {
+      return {
+        phase: "builder",
+        baseCommit: state.baseHash,
+        dependsOn: [lastNode.nodeId],
+        inputRefs: this.buildNodeInputRefs(state, state.baseHash, [lastNode.nodeId]),
+      };
+    }
+    if (lastPass.phase === "builder" && lastPass.outcome === "candidate_ready" && lastPass.commitHash) {
+      return {
+        phase: "reviewer",
+        baseCommit: lastPass.commitHash,
+        dependsOn: [lastNode.nodeId],
+        inputRefs: this.buildNodeInputRefs(state, lastPass.commitHash, [lastNode.nodeId]),
+      };
+    }
+    if (lastPass.phase === "reviewer" && lastPass.outcome === "changes_requested" && lastPass.commitHash) {
+      return {
+        phase: "builder",
+        baseCommit: lastPass.commitHash,
+        dependsOn: [lastNode.nodeId],
+        inputRefs: this.buildNodeInputRefs(state, lastPass.commitHash, [lastNode.nodeId]),
+      };
+    }
+    if (lastPass.phase === "reviewer" && lastPass.outcome === "approved") {
+      return "awaiting_confirmation";
+    }
+    return undefined;
   }
 
   private async applyPassResult(
@@ -1163,8 +1521,17 @@ export class HubService {
   ): Promise<void> {
     const cleanSummary = clipText(result.summary, 1_200) ?? "Objective pass completed.";
     const cleanHandoff = clipText(result.handoff, 4_000) ?? cleanSummary;
+    const completedAt = Date.now();
 
     if (result.outcome === "blocked") {
+      await this.emitObjective(state.objectiveId, {
+        type: "graph.node.terminal",
+        objectiveId: state.objectiveId,
+        nodeId: pass.passId,
+        status: "blocked",
+        reason: cleanHandoff,
+        completedAt,
+      });
       await this.emitObjective(state.objectiveId, {
         type: "blocked",
         objectiveId: state.objectiveId,
@@ -1172,7 +1539,7 @@ export class HubService {
         passId: pass.passId,
         summary: cleanSummary,
         reason: cleanHandoff,
-        completedAt: Date.now(),
+        completedAt,
       });
       await this.commitPassMemory(agent, pass.phase, cleanSummary, "blocked");
       return;
@@ -1189,7 +1556,17 @@ export class HubService {
         passId: pass.passId,
         summary: cleanSummary,
         handoff: cleanHandoff,
-        completedAt: Date.now(),
+        completedAt,
+      });
+      await this.emitObjective(state.objectiveId, {
+        type: "graph.node.completed",
+        objectiveId: state.objectiveId,
+        nodeId: pass.passId,
+        outputRefs: this.passOutputRefs(state, pass, {
+          summary: cleanSummary,
+          handoff: cleanHandoff,
+        }),
+        completedAt,
       });
       await this.commitPassMemory(agent, pass.phase, cleanSummary, "plan_ready");
       return;
@@ -1199,27 +1576,45 @@ export class HubService {
       const checkResults = await this.runChecks(state.checks, pass.workspacePath);
       const failedCheck = checkResults.find((check) => !check.ok);
       if (failedCheck) {
+        const reason = `Required check failed: ${failedCheck.command}`;
+        await this.emitObjective(state.objectiveId, {
+          type: "graph.node.terminal",
+          objectiveId: state.objectiveId,
+          nodeId: pass.passId,
+          status: "blocked",
+          reason,
+          completedAt,
+        });
         await this.emitObjective(state.objectiveId, {
           type: "blocked",
           objectiveId: state.objectiveId,
           phase: pass.phase,
           passId: pass.passId,
           summary: cleanSummary,
-          reason: `Required check failed: ${failedCheck.command}`,
-          completedAt: Date.now(),
+          reason,
+          completedAt,
         });
         return;
       }
       const status = await this.git.worktreeStatus(pass.workspacePath);
       if (!status.dirty) {
+        const reason = "builder pass produced no tracked diff";
+        await this.emitObjective(state.objectiveId, {
+          type: "graph.node.terminal",
+          objectiveId: state.objectiveId,
+          nodeId: pass.passId,
+          status: "blocked",
+          reason,
+          completedAt,
+        });
         await this.emitObjective(state.objectiveId, {
           type: "blocked",
           objectiveId: state.objectiveId,
           phase: pass.phase,
           passId: pass.passId,
           summary: cleanSummary,
-          reason: "builder pass produced no tracked diff",
-          completedAt: Date.now(),
+          reason,
+          completedAt,
         });
         return;
       }
@@ -1235,7 +1630,18 @@ export class HubService {
         handoff: cleanHandoff,
         commitHash: committed.hash,
         checkResults,
-        completedAt: Date.now(),
+        completedAt,
+      });
+      await this.emitObjective(state.objectiveId, {
+        type: "graph.node.completed",
+        objectiveId: state.objectiveId,
+        nodeId: pass.passId,
+        outputRefs: this.passOutputRefs(state, pass, {
+          summary: cleanSummary,
+          handoff: cleanHandoff,
+          commitHash: committed.hash,
+        }),
+        completedAt,
       });
       await this.commitPassMemory(agent, pass.phase, cleanSummary, "candidate_ready");
       return;
@@ -1254,7 +1660,19 @@ export class HubService {
         summary: cleanSummary,
         handoff: cleanHandoff,
         commitHash,
-        completedAt: Date.now(),
+        completedAt,
+      });
+      await this.emitObjective(state.objectiveId, {
+        type: "graph.node.completed",
+        objectiveId: state.objectiveId,
+        nodeId: pass.passId,
+        outputRefs: this.passOutputRefs(state, pass, {
+          summary: cleanSummary,
+          handoff: cleanHandoff,
+          commitHash,
+          decision: "approved",
+        }),
+        completedAt,
       });
       await this.commitPassMemory(agent, pass.phase, cleanSummary, "approved");
       return;
@@ -1266,7 +1684,19 @@ export class HubService {
       summary: cleanSummary,
       handoff: cleanHandoff,
       commitHash,
-      completedAt: Date.now(),
+      completedAt,
+    });
+    await this.emitObjective(state.objectiveId, {
+      type: "graph.node.completed",
+      objectiveId: state.objectiveId,
+      nodeId: pass.passId,
+      outputRefs: this.passOutputRefs(state, pass, {
+        summary: cleanSummary,
+        handoff: cleanHandoff,
+        commitHash,
+        decision: "changes_requested",
+      }),
+      completedAt,
     });
     await this.commitPassMemory(agent, pass.phase, cleanSummary, "changes_requested");
   }
@@ -1308,18 +1738,92 @@ export class HubService {
     return results;
   }
 
+  private async ensureObjectiveWorkspace(
+    hubState: HubState,
+    pass: ObjectivePassRecord,
+  ): Promise<string> {
+    const workspace = hubState.workspaces[pass.workspaceId];
+    if (workspace) {
+      const status = await this.git.worktreeStatus(workspace.path);
+      if (status.exists) return workspace.path;
+      const restored = await this.git.restoreWorkspace({
+        workspaceId: workspace.workspaceId,
+        branchName: workspace.branchName,
+        workspacePath: workspace.path,
+        baseHash: workspace.baseHash,
+      });
+      return restored.path;
+    }
+    const fallback = await this.git.worktreeStatus(pass.workspacePath);
+    if (fallback.exists) return pass.workspacePath;
+    throw new HubServiceError(409, `objective workspace record is missing for ${pass.passId}`);
+  }
+
+  private buildNodeInputRefs(
+    state: ObjectiveState,
+    baseCommit: string,
+    dependsOn: ReadonlyArray<string>,
+  ): Readonly<Record<string, GraphRef>> {
+    const refs: Record<string, GraphRef> = {
+      objective: stateRef(`${objectiveStream(state.objectiveId)}:prompt`, "objective prompt"),
+      checks: stateRef(`${objectiveStream(state.objectiveId)}:checks`, "required checks"),
+      baseCommit: commitRef(baseCommit, "base commit"),
+    };
+    for (const [index, nodeId] of dependsOn.entries()) {
+      const node = state.graph.nodes[nodeId];
+      if (!node) continue;
+      refs[`depends_on_${index + 1}`] = stateRef(`${objectiveStream(state.objectiveId)}:graph/${nodeId}`, `${node.kind} node`);
+      if (node.outputRefs.summary) refs[`summary_${index + 1}`] = node.outputRefs.summary;
+      if (node.outputRefs.handoff) refs[`handoff_${index + 1}`] = node.outputRefs.handoff;
+      if (node.outputRefs.commit) refs[`commit_${index + 1}`] = node.outputRefs.commit;
+      if (node.outputRefs.decision) refs[`decision_${index + 1}`] = node.outputRefs.decision;
+      refs[`workspace_${index + 1}`] = workspaceRef(node.workspacePath, `${node.kind} workspace`);
+    }
+    return refs;
+  }
+
+  private passOutputRefs(
+    state: ObjectiveState,
+    pass: ObjectivePassRecord,
+    result: {
+      readonly summary: string;
+      readonly handoff: string;
+      readonly commitHash?: string;
+      readonly decision?: string;
+    },
+  ): Readonly<Record<string, GraphRef>> {
+    const refs: Record<string, GraphRef> = {
+      summary: stateRef(`${objectiveStream(state.objectiveId)}:passes/${pass.passId}/summary`, `${pass.phase} summary`),
+      handoff: stateRef(`${objectiveStream(state.objectiveId)}:passes/${pass.passId}/handoff`, `${pass.phase} handoff`),
+      workspace: workspaceRef(pass.workspacePath, `${pass.phase} workspace`),
+    };
+    if (pass.promptPath) refs.prompt = fileRef(pass.promptPath, `${pass.phase} prompt`);
+    if (pass.resultPath) refs.result = fileRef(pass.resultPath, `${pass.phase} result`);
+    if (pass.stdoutPath) refs.stdout = fileRef(pass.stdoutPath, `${pass.phase} stdout`);
+    if (pass.stderrPath) refs.stderr = fileRef(pass.stderrPath, `${pass.phase} stderr`);
+    if (pass.lastMessagePath) refs.lastMessage = fileRef(pass.lastMessagePath, `${pass.phase} last message`);
+    if (result.commitHash) refs.commit = commitRef(result.commitHash, `${pass.phase} commit`);
+    if (result.decision) refs.decision = stateRef(
+      `${objectiveStream(state.objectiveId)}:passes/${pass.passId}/decision`,
+      `${pass.phase} decision`,
+    );
+    return refs;
+  }
+
   private parseObjectivePassPayload(payload: Record<string, unknown>): HubObjectivePassJobPayload {
     if (payload.kind !== "hub.objective.pass") throw new HubServiceError(400, "invalid objective job payload");
     return {
       kind: "hub.objective.pass",
       objectiveId: requireNonEmpty(payload.objectiveId, "objectiveId required"),
       passId: requireNonEmpty(payload.passId, "passId required"),
+      nodeId: requireNonEmpty(payload.nodeId, "nodeId required"),
       phase: requireNonEmpty(payload.phase, "phase required") as ObjectivePhase,
       passNumber: asPositiveInt(payload.passNumber) ?? 1,
       agentId: requireNonEmpty(payload.agentId, "agentId required"),
       baseCommit: requireNonEmpty(payload.baseCommit, "baseCommit required"),
       workspaceId: requireNonEmpty(payload.workspaceId, "workspaceId required"),
       workspacePath: requireNonEmpty(payload.workspacePath, "workspacePath required"),
+      inputRefs: isRecord(payload.inputRefs) ? payload.inputRefs as Readonly<Record<string, GraphRef>> : {},
       promptPath: requireNonEmpty(payload.promptPath, "promptPath required"),
       resultPath: requireNonEmpty(payload.resultPath, "resultPath required"),
       stdoutPath: requireNonEmpty(payload.stdoutPath, "stdoutPath required"),
@@ -1332,6 +1836,7 @@ export class HubService {
     state: ObjectiveState,
     pass: ObjectivePassRecord,
     agent: AgentProfile,
+    inputRefs: Readonly<Record<string, GraphRef>>,
   ): Promise<{
     readonly promptPath: string;
     readonly resultPath: string;
@@ -1379,6 +1884,8 @@ export class HubService {
       agentId: agent.agentId,
       workspaceId: pass.workspaceId,
       baseCommit: pass.baseCommit,
+      nodeId: pass.passId,
+      inputRefs,
       checks: state.checks,
     }, null, 2), "utf-8");
     await fs.rm(files.resultPath, { force: true });
@@ -1410,6 +1917,33 @@ export class HubService {
       lastMessagePath: files.lastMessagePath,
       renderedPrompt,
     };
+  }
+
+  private async ensureWorkspaceReceiptCli(workspacePath: string): Promise<string> {
+    const binDir = path.join(workspacePath, ".receipt", "bin");
+    const shimPath = path.join(binDir, process.platform === "win32" ? "receipt.cmd" : "receipt");
+    const runtimeRoot = process.cwd();
+    const cliPath = path.join(runtimeRoot, "src", "cli.ts");
+    const tsxLoaderPath = path.join(runtimeRoot, "node_modules", "tsx", "dist", "loader.mjs");
+    await fs.mkdir(binDir, { recursive: true });
+    const body = process.platform === "win32"
+      ? [
+          "@echo off",
+          `set "DATA_DIR=${this.dataDir}"`,
+          `node --import "${tsxLoaderPath}" "${cliPath}" %*`,
+          "",
+        ].join("\r\n")
+      : [
+          "#!/bin/sh",
+          `export DATA_DIR=${shellQuote(this.dataDir)}`,
+          `exec node --import ${shellQuote(tsxLoaderPath)} ${shellQuote(cliPath)} "$@"`,
+          "",
+        ].join("\n");
+    await fs.writeFile(shimPath, body, "utf-8");
+    if (process.platform !== "win32") {
+      await fs.chmod(shimPath, 0o755);
+    }
+    return binDir;
   }
 
   private passFilePaths(workspacePath: string, phase: ObjectivePhase, passNumber: number) {
@@ -1566,7 +2100,63 @@ export class HubService {
     }
   }
 
+  private async buildObjectiveDetail(state: ObjectiveState): Promise<ObjectiveDetail> {
+    const passViews = await Promise.all(
+      state.passOrder.map(async (passId) => {
+        const pass = state.passes[passId];
+        const job = await this.loadFreshJob(pass.jobId);
+        const workspaceStatus = await this.git.worktreeStatus(pass.workspacePath);
+        return {
+          ...pass,
+          jobStatus: job?.status ?? "missing",
+          job,
+          workspaceExists: workspaceStatus.exists,
+          workspaceDirty: workspaceStatus.dirty,
+          workspaceHead: workspaceStatus.head,
+          activity: this.describePassActivity(pass, job),
+          elapsedMs: this.passElapsedMs(pass, job),
+        } satisfies ObjectivePassView;
+      })
+    );
+    const latestReview = [...passViews]
+      .reverse()
+      .find((pass) => pass.phase === "reviewer" && (pass.outcome === "approved" || pass.outcome === "changes_requested"));
+    const activePass = passViews.find((pass) => pass.passId === state.currentPassId && pass.status === "queued");
+    const activeJob = activePass?.job;
+    const card = this.objectiveToCard(this.toObjectiveSummary(state), activeJob);
+    return {
+      ...card,
+      prompt: state.prompt,
+      channel: state.channel,
+      baseHash: state.baseHash,
+      checks: state.checks,
+      createdAt: state.createdAt,
+      passes: passViews,
+      latestCheckResults: state.latestCheckResults,
+      latestReviewOutcome: latestReview?.outcome === "approved" || latestReview?.outcome === "changes_requested"
+        ? latestReview.outcome
+        : undefined,
+      latestReviewSummary: latestReview?.summary,
+      activePass,
+      graph: this.buildObjectiveGraphProjection(state),
+    };
+  }
+
+  private buildObjectiveGraphProjection(state: ObjectiveState): ObjectiveGraphProjection {
+    return {
+      graphId: state.graph.graphId,
+      status: state.graph.status,
+      currentNodeId: state.graph.currentNodeId,
+      readyNodeIds: graphProjection(state.graph).ready.map((node) => node.nodeId),
+      nodeOrder: state.graph.order,
+      nodes: state.graph.order
+        .map((nodeId) => state.graph.nodes[nodeId])
+        .filter((node): node is ObjectiveGraphNodeRecord => Boolean(node)),
+    };
+  }
+
   private toObjectiveSummary(state: ObjectiveState): HubObjectiveSummary {
+    const currentPass = state.currentPassId ? state.passes[state.currentPassId] : undefined;
     return {
       objectiveId: state.objectiveId,
       title: state.title,
@@ -1584,15 +2174,17 @@ export class HubService {
       approvalState: state.approvalState,
       createdAt: state.createdAt,
       updatedAt: state.updatedAt,
+      currentPassId: currentPass?.passId,
+      currentJobId: currentPass?.jobId,
+      currentPassPhase: currentPass?.phase,
+      currentPassStatus: currentPass?.status,
+      currentPassDispatchedAt: currentPass?.dispatchedAt,
     };
   }
 
-  private async objectiveToCard(objective: HubObjectiveSummary): Promise<HubObjectiveCard> {
-    const detail = await this.objectiveRuntime.state(objectiveStream(objective.objectiveId)).catch(() => undefined);
-    const activePass = detail?.currentPassId ? detail.passes[detail.currentPassId] : undefined;
-    const job = activePass?.jobId ? await this.loadFreshJob(activePass.jobId) : undefined;
-    const live = activePass ? await this.readPassLiveData(activePass, job) : undefined;
-    const derived = this.deriveObjectiveDisplay(objective, activePass, job);
+  private objectiveToCard(objective: HubObjectiveSummary, job?: JobRecord): HubObjectiveCard {
+    const activeJob = objective.currentPassStatus === "queued" ? job : undefined;
+    const derived = this.deriveObjectiveDisplay(objective, job);
     return {
       objectiveId: objective.objectiveId,
       title: objective.title,
@@ -1605,9 +2197,16 @@ export class HubService {
       blockedReason: derived.blockedReason,
       approvalState: objective.approvalState,
       updatedAt: objective.updatedAt,
-      activeJobStatus: job?.status ?? (activePass ? "missing" : undefined),
-      activeElapsedMs: live?.elapsedMs,
-      liveActivity: live?.activity,
+      activeJobStatus: activeJob?.status ?? (objective.currentPassStatus === "queued" && objective.currentJobId ? "missing" : undefined),
+      activeElapsedMs: this.passElapsedMs(
+        objective.currentPassStatus === "queued" && objective.currentPassDispatchedAt
+          ? { dispatchedAt: objective.currentPassDispatchedAt }
+          : undefined,
+        activeJob,
+      ),
+      liveActivity: activeJob?.status === "queued" || activeJob?.status === "leased" || activeJob?.status === "running"
+        ? `${objective.currentPhase ?? "pass"} pass is active in Codex.`
+        : undefined,
     };
   }
 
@@ -1632,9 +2231,7 @@ export class HubService {
       stderrTail,
       lastMessage,
       activity,
-      elapsedMs: jobStatus === "queued" || jobStatus === "leased" || jobStatus === "running"
-        ? Math.max(0, Date.now() - pass.dispatchedAt)
-        : undefined,
+      elapsedMs: this.passElapsedMs(pass, job),
     };
   }
 
@@ -1650,8 +2247,7 @@ export class HubService {
   }
 
   private deriveObjectiveDisplay(
-    objective: Pick<HubObjectiveSummary, "status" | "lane" | "latestSummary" | "blockedReason">,
-    activePass: ObjectivePassRecord | undefined,
+    objective: Pick<HubObjectiveSummary, "status" | "lane" | "latestSummary" | "blockedReason" | "currentJobId" | "currentPassStatus">,
     job: JobRecord | undefined,
   ): Pick<HubObjectiveCard, "status" | "lane" | "latestSummary" | "blockedReason"> {
     const base = {
@@ -1661,7 +2257,7 @@ export class HubService {
       blockedReason: objective.blockedReason,
     } satisfies Pick<HubObjectiveCard, "status" | "lane" | "latestSummary" | "blockedReason">;
 
-    if (!activePass || activePass.status !== "queued" || !job) return base;
+    if (!objective.currentJobId || objective.currentPassStatus !== "queued" || !job) return base;
     if (job.status === "failed" || job.status === "canceled") {
       const reason = job.lastError ?? job.canceledReason ?? "objective pass failed";
       return {
@@ -1680,6 +2276,50 @@ export class HubService {
       };
     }
     return base;
+  }
+
+  private describePassActivity(pass: ObjectivePassRecord, job?: JobRecord): string | undefined {
+    if (!job) {
+      return clipText(pass.error ?? pass.summary, 240);
+    }
+    if (job.status === "failed") {
+      return clipText(job.lastError ?? pass.error ?? pass.summary, 240);
+    }
+    if (job.status === "canceled") {
+      return clipText(job.canceledReason ?? pass.error ?? pass.summary, 240);
+    }
+    if (job.status === "queued" || job.status === "leased" || job.status === "running") {
+      return clipText(`${pass.phase} pass is active in Codex.`, 240);
+    }
+    return clipText(pass.summary ?? pass.error ?? job.lastError, 240);
+  }
+
+  private passElapsedMs(
+    pass: Pick<ObjectivePassRecord, "dispatchedAt"> | undefined,
+    job: Pick<JobRecord, "status"> | undefined,
+  ): number | undefined {
+    const jobStatus = job?.status;
+    if (!pass) return undefined;
+    if (jobStatus === "queued" || jobStatus === "leased" || jobStatus === "running") {
+      return Math.max(0, Date.now() - pass.dispatchedAt);
+    }
+    return undefined;
+  }
+
+  private resolveSelectedObjectiveId(state: HubState, preferredId?: string): string | undefined {
+    if (preferredId && state.objectives[preferredId]) return preferredId;
+    return Object.values(state.objectives)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map((objective) => objective.objectiveId)
+      .at(0);
+  }
+
+  private async refreshMirrorForExplorer(): Promise<void> {
+    const source = await this.git.sourceStatus();
+    const branch = source.branch ?? await this.git.defaultBranch();
+    const mirrorHead = await this.git.mirrorHead(branch);
+    if (!source.head || source.head === mirrorHead) return;
+    await this.git.syncFromSource();
   }
 
   private resolvePhaseAgent(state: HubState, phase: ObjectivePhase): AgentProfile {

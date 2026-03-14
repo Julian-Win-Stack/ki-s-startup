@@ -76,6 +76,7 @@ import { axiomSimpleRunStream } from "./agents/axiom-simple.streams.js";
 import { runReceiptInspector } from "./agents/inspector.js";
 import { maybeQueueAxiomGuildVerifyFailureFollowUp } from "./agents/axiom-guild-recovery.js";
 import { HubService } from "./services/hub-service.js";
+import { HubServiceError } from "./services/hub-service.js";
 import {
   assertReceiptFileName,
   listReceiptFiles,
@@ -1264,6 +1265,7 @@ const worker = new JobWorker({
         return { ok: true, result };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        const noRetry = err instanceof HubServiceError && err.status >= 400 && err.status < 500;
         return {
           ok: false,
           error: message,
@@ -1272,7 +1274,7 @@ const worker = new JobWorker({
             status: "failed",
             message,
           },
-          noRetry: true,
+          noRetry,
         };
       }
     },

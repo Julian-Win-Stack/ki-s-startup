@@ -1,4 +1,11 @@
 import type { Decide, Reducer } from "../core/types.js";
+import {
+  createGraphState,
+  type GraphNodeStatus,
+  type GraphRef,
+  type GraphRunStatus,
+  type GraphState,
+} from "../core/graph.js";
 
 export type ObjectivePhase = "planner" | "builder" | "reviewer";
 
@@ -74,6 +81,30 @@ export type ObjectivePassRecord = {
   readonly lastMessagePath?: string;
 };
 
+export type ObjectiveGraphNodeRecord = {
+  readonly nodeId: string;
+  readonly kind: ObjectivePhase;
+  readonly title: string;
+  readonly passId: string;
+  readonly passNumber: number;
+  readonly agentId: string;
+  readonly jobId: string;
+  readonly workspaceId: string;
+  readonly workspacePath: string;
+  readonly baseCommit: string;
+  readonly dependsOn: ReadonlyArray<string>;
+  readonly inputRefs: Readonly<Record<string, GraphRef>>;
+  readonly outputRefs: Readonly<Record<string, GraphRef>>;
+  readonly status: GraphNodeStatus;
+  readonly createdAt: number;
+  readonly readyAt?: number;
+  readonly dispatchedAt?: number;
+  readonly completedAt?: number;
+  readonly error?: string;
+};
+
+export type ObjectiveGraphState = GraphState<ObjectiveGraphNodeRecord>;
+
 export type ObjectiveRecord = {
   readonly objectiveId: string;
   readonly title: string;
@@ -98,6 +129,7 @@ export type ObjectiveState = ObjectiveRecord & {
   readonly passOrder: ReadonlyArray<string>;
   readonly passes: Readonly<Record<string, ObjectivePassRecord>>;
   readonly latestCheckResults: ReadonlyArray<ObjectiveCheckResult>;
+  readonly graph: ObjectiveGraphState;
 };
 
 export type ObjectiveEvent =
@@ -116,6 +148,40 @@ export type ObjectiveEvent =
       readonly objectiveId: string;
       readonly pass: Omit<ObjectivePassRecord, "status">;
       readonly dispatchedAt: number;
+    }
+  | {
+      readonly type: "graph.node.planned";
+      readonly objectiveId: string;
+      readonly node: Omit<ObjectiveGraphNodeRecord, "status" | "outputRefs">;
+      readonly plannedAt: number;
+    }
+  | {
+      readonly type: "graph.node.ready";
+      readonly objectiveId: string;
+      readonly nodeId: string;
+      readonly readyAt: number;
+    }
+  | {
+      readonly type: "graph.node.dispatched";
+      readonly objectiveId: string;
+      readonly nodeId: string;
+      readonly jobId: string;
+      readonly dispatchedAt: number;
+    }
+  | {
+      readonly type: "graph.node.completed";
+      readonly objectiveId: string;
+      readonly nodeId: string;
+      readonly outputRefs: Readonly<Record<string, GraphRef>>;
+      readonly completedAt: number;
+    }
+  | {
+      readonly type: "graph.node.terminal";
+      readonly objectiveId: string;
+      readonly nodeId: string;
+      readonly status: Extract<GraphNodeStatus, "blocked" | "failed" | "canceled">;
+      readonly reason: string;
+      readonly completedAt: number;
     }
   | {
       readonly type: "plan.ready";
@@ -161,6 +227,12 @@ export type ObjectiveEvent =
       readonly summary: string;
       readonly reason: string;
       readonly completedAt: number;
+    }
+  | {
+      readonly type: "objective.resumed";
+      readonly objectiveId: string;
+      readonly phase: ObjectivePhase;
+      readonly resumedAt: number;
     }
   | {
       readonly type: "objective.awaiting_confirmation";
@@ -237,7 +309,15 @@ const initialRecord = (event: Extract<ObjectiveEvent, { type: "objective.created
   passOrder: [],
   passes: {},
   latestCheckResults: [],
+  graph: createGraphState<ObjectiveGraphNodeRecord>(event.objectiveId, event.createdAt),
 });
+
+const statusForPhase = (phase: ObjectivePhase): ObjectiveStatus =>
+  phase === "planner"
+    ? "planning"
+    : phase === "builder"
+      ? "building"
+      : "reviewing";
 
 const updatePass = (
   state: ObjectiveState,
@@ -258,6 +338,41 @@ const updatePass = (
   };
 };
 
+const updateGraphNode = (
+  state: ObjectiveState,
+  nodeId: string,
+  patch: Partial<ObjectiveGraphNodeRecord>,
+): ObjectiveState => {
+  const current = state.graph.nodes[nodeId];
+  if (!current) return state;
+  return {
+    ...state,
+    graph: {
+      ...state.graph,
+      nodes: {
+        ...state.graph.nodes,
+        [nodeId]: {
+          ...current,
+          ...patch,
+        },
+      },
+    },
+  };
+};
+
+const updateGraphStatus = (
+  state: ObjectiveState,
+  updatedAt: number,
+  status: GraphRunStatus,
+): ObjectiveState => ({
+  ...state,
+  graph: {
+    ...state.graph,
+    status,
+    updatedAt,
+  },
+});
+
 export const initialObjectiveState: ObjectiveState = {
   objectiveId: "",
   title: "",
@@ -273,6 +388,7 @@ export const initialObjectiveState: ObjectiveState = {
   passOrder: [],
   passes: {},
   latestCheckResults: [],
+  graph: createGraphState<ObjectiveGraphNodeRecord>("", 0),
 };
 
 export const decideObjective: Decide<ObjectiveCmd, ObjectiveEvent> = (cmd) => [cmd.event];
@@ -286,12 +402,7 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
         ...event.pass,
         status: "queued",
       };
-      const nextStatus: ObjectiveStatus =
-        pass.phase === "planner"
-          ? "planning"
-          : pass.phase === "builder"
-            ? "building"
-            : "reviewing";
+      const nextStatus = statusForPhase(pass.phase);
       return {
         ...state,
         status: nextStatus,
@@ -309,6 +420,91 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
         },
       };
     }
+    case "graph.node.planned":
+      return {
+        ...state,
+        graph: {
+          ...state.graph,
+          updatedAt: event.plannedAt,
+          order: state.graph.order.includes(event.node.nodeId)
+            ? state.graph.order
+            : [...state.graph.order, event.node.nodeId],
+          nodes: {
+            ...state.graph.nodes,
+            [event.node.nodeId]: {
+              ...event.node,
+              outputRefs: {},
+              status: "planned",
+            },
+          },
+        },
+      };
+    case "graph.node.ready":
+      return updateGraphStatus(
+        updateGraphNode(state, event.nodeId, {
+          status: "ready",
+          readyAt: event.readyAt,
+        }),
+        event.readyAt,
+        state.graph.status,
+      );
+    case "graph.node.dispatched":
+      return {
+        ...updateGraphNode(state, event.nodeId, {
+          status: "dispatched",
+          jobId: event.jobId,
+          dispatchedAt: event.dispatchedAt,
+        }),
+        graph: {
+          ...state.graph,
+          currentNodeId: event.nodeId,
+          updatedAt: event.dispatchedAt,
+          nodes: {
+            ...state.graph.nodes,
+            [event.nodeId]: {
+              ...state.graph.nodes[event.nodeId],
+              status: "dispatched",
+              jobId: event.jobId,
+              dispatchedAt: event.dispatchedAt,
+            },
+          },
+        },
+      };
+    case "graph.node.completed": {
+      const next = updateGraphNode(state, event.nodeId, {
+        status: "completed",
+        outputRefs: event.outputRefs,
+        completedAt: event.completedAt,
+        error: undefined,
+      });
+      return {
+        ...next,
+        graph: {
+          ...next.graph,
+          currentNodeId: next.graph.currentNodeId === event.nodeId
+            ? undefined
+            : next.graph.currentNodeId,
+          updatedAt: event.completedAt,
+        },
+      };
+    }
+    case "graph.node.terminal": {
+      const next = updateGraphNode(state, event.nodeId, {
+        status: event.status,
+        completedAt: event.completedAt,
+        error: event.reason,
+      });
+      return {
+        ...next,
+        graph: {
+          ...next.graph,
+          currentNodeId: next.graph.currentNodeId === event.nodeId
+            ? undefined
+            : next.graph.currentNodeId,
+          updatedAt: event.completedAt,
+        },
+      };
+    }
     case "plan.ready": {
       const next = updatePass(state, event.passId, {
         status: "completed",
@@ -318,7 +514,7 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
         completedAt: event.completedAt,
       });
       return {
-        ...next,
+        ...updateGraphStatus(next, event.completedAt, next.graph.status),
         latestSummary: event.summary,
         updatedAt: event.completedAt,
       };
@@ -334,7 +530,7 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
         completedAt: event.completedAt,
       });
       return {
-        ...next,
+        ...updateGraphStatus(next, event.completedAt, next.graph.status),
         latestCommitHash: event.commitHash,
         latestSummary: event.summary,
         latestCheckResults: event.checkResults,
@@ -351,7 +547,7 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
         completedAt: event.completedAt,
       });
       return {
-        ...next,
+        ...updateGraphStatus(next, event.completedAt, next.graph.status),
         latestCommitHash: event.commitHash,
         latestSummary: event.summary,
         updatedAt: event.completedAt,
@@ -367,7 +563,7 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
         completedAt: event.completedAt,
       });
       return {
-        ...next,
+        ...updateGraphStatus(next, event.completedAt, next.graph.status),
         latestCommitHash: event.commitHash,
         latestSummary: event.summary,
         updatedAt: event.completedAt,
@@ -390,6 +586,28 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
         latestSummary: event.summary,
         blockedReason: event.reason,
         updatedAt: event.completedAt,
+        graph: {
+          ...next.graph,
+          status: "blocked",
+          updatedAt: event.completedAt,
+        },
+      };
+    }
+    case "objective.resumed": {
+      const nextStatus = statusForPhase(event.phase);
+      return {
+        ...state,
+        status: nextStatus,
+        lane: objectiveLaneForStatus(nextStatus),
+        currentPhase: event.phase,
+        blockedReason: undefined,
+        latestSummary: `Resumed ${event.phase} pass.`,
+        updatedAt: event.resumedAt,
+        graph: {
+          ...state.graph,
+          status: "active",
+          updatedAt: event.resumedAt,
+        },
       };
     }
     case "objective.awaiting_confirmation":
@@ -400,12 +618,21 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
         approvalState: "awaiting_confirmation",
         latestSummary: event.summary,
         updatedAt: event.createdAt,
+        graph: {
+          ...state.graph,
+          status: "awaiting_confirmation",
+          updatedAt: event.createdAt,
+        },
       };
     case "objective.approved":
       return {
         ...state,
         approvalState: "approved",
         updatedAt: event.approvedAt,
+        graph: {
+          ...state.graph,
+          updatedAt: event.approvedAt,
+        },
       };
     case "objective.completed":
       return {
@@ -414,6 +641,11 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
         lane: "completed",
         latestSummary: event.summary,
         updatedAt: event.completedAt,
+        graph: {
+          ...state.graph,
+          status: "completed",
+          updatedAt: event.completedAt,
+        },
       };
     case "objective.failed":
       return {
@@ -423,6 +655,11 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
         blockedReason: event.reason,
         latestSummary: event.reason,
         updatedAt: event.failedAt,
+        graph: {
+          ...state.graph,
+          status: "failed",
+          updatedAt: event.failedAt,
+        },
       };
     case "objective.canceled":
       return {
@@ -432,6 +669,11 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
         blockedReason: event.reason ?? "canceled",
         latestSummary: event.reason ?? "canceled",
         updatedAt: event.canceledAt,
+        graph: {
+          ...state.graph,
+          status: "canceled",
+          updatedAt: event.canceledAt,
+        },
       };
     default: {
       const _never: never = event;
@@ -439,4 +681,3 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
     }
   }
 };
-

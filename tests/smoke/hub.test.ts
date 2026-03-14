@@ -98,18 +98,44 @@ const createSourceRepo = async (): Promise<string> => {
   return repoDir;
 };
 
-const createFakeCodexBin = async (): Promise<string> => {
+type FakeCodexOptions = {
+  readonly failFirstBuilderByRemovingWorkspace?: boolean;
+};
+
+const createFakeCodexBin = async (options: FakeCodexOptions = {}): Promise<string> => {
   const dir = await createTempDir("receipt-fake-codex");
   const bin = path.join(dir, process.platform === "win32" ? "codex.cmd" : "codex");
+  const failFirstBuilderByRemovingWorkspace = options.failFirstBuilderByRemovingWorkspace === true;
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 
 const args = process.argv.slice(2);
 const lastMessageIndex = args.indexOf("--output-last-message");
 const lastMessagePath = lastMessageIndex >= 0 ? args[lastMessageIndex + 1] : "";
 const hubDir = path.join(process.cwd(), ".receipt", "hub");
 const passMeta = JSON.parse(fs.readFileSync(path.join(hubDir, "pass.json"), "utf-8"));
+const stateDir = ${JSON.stringify(dir)};
+const jobList = JSON.parse(execFileSync("receipt", ["jobs", "--limit", "20"], {
+  cwd: process.cwd(),
+  encoding: "utf-8",
+}));
+if (!Array.isArray(jobList.jobs) || !jobList.jobs.some((job) => job?.payload?.workspaceId === passMeta.workspaceId)) {
+  throw new Error("hub worktree did not expose a usable receipt CLI");
+}
+
+if (${failFirstBuilderByRemovingWorkspace} && passMeta.phase === "builder" && passMeta.passNumber === 2) {
+  const markerPath = path.join(stateDir, passMeta.passId + ".retry-marker");
+  if (!fs.existsSync(markerPath)) {
+    fs.writeFileSync(markerPath, "1", "utf-8");
+    const workspacePath = process.cwd();
+    process.chdir(path.dirname(workspacePath));
+    fs.rmSync(workspacePath, { recursive: true, force: true });
+    process.stderr.write("simulated workspace loss\\n");
+    process.exit(1);
+  }
+}
 
 let result;
 if (passMeta.phase === "planner") {
@@ -161,7 +187,25 @@ const waitForObjectiveStatus = async (
   objectiveId: string,
   statuses: ReadonlyArray<string>,
   timeoutMs: number,
-): Promise<{ objective: { status: string; passes: Array<{ phase: string; outcome?: string; workspaceId?: string }>; latestCommitHash?: string; latestReviewOutcome?: string } }> => {
+): Promise<{
+  objective: {
+    status: string;
+    passes: Array<{
+      phase: string;
+      passNumber: number;
+      outcome?: string;
+      workspaceId?: string;
+      jobId: string;
+    }>;
+    latestCommitHash?: string;
+    latestReviewOutcome?: string;
+    graph: {
+      currentNodeId?: string;
+      nodeOrder: string[];
+      nodes: Array<{ nodeId: string; kind: string; status: string; dependsOn: string[] }>;
+    };
+  };
+}> => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const res = await fetch(`${base}/hub/api/objectives/${objectiveId}`);
@@ -169,9 +213,20 @@ const waitForObjectiveStatus = async (
       const payload = await res.json() as {
         objective: {
           status: string;
-          passes: Array<{ phase: string; outcome?: string; workspaceId?: string }>;
+          passes: Array<{
+            phase: string;
+            passNumber: number;
+            outcome?: string;
+            workspaceId?: string;
+            jobId: string;
+          }>;
           latestCommitHash?: string;
           latestReviewOutcome?: string;
+          graph: {
+            currentNodeId?: string;
+            nodeOrder: string[];
+            nodes: Array<{ nodeId: string; kind: string; status: string; dependsOn: string[] }>;
+          };
         };
       };
       if (statuses.includes(payload.objective.status)) return payload;
@@ -515,30 +570,76 @@ test("hub: objectives auto-run with codex and require human merge to finish the 
     const shellHtml = await shellRes.text();
     assert.match(shellHtml, /Receipt Hub/);
     assert.match(shellHtml, /id="hub-compose"/);
-    assert.match(shellHtml, /id="hub-dashboard"/);
-    assert.match(shellHtml, /hx-ext="sse"/);
-    assert.match(shellHtml, /sse-connect="\/hub\/stream"/);
+    assert.match(shellHtml, /id="hub-summary"/);
+    assert.match(shellHtml, /id="hub-board"/);
+    assert.match(shellHtml, /id="hub-objective"/);
+    assert.match(shellHtml, /id="hub-live"/);
+    assert.match(shellHtml, /sse-connect="\/hub\/stream\/board"/);
     assert.doesNotMatch(shellHtml, /EventSource\(/);
+    assert.doesNotMatch(shellHtml, /id="hub-dashboard"/);
     assert.doesNotMatch(shellHtml, /load, sse:receipt-refresh/);
+    assert.doesNotMatch(shellHtml, /Manual Tasks/);
+    assert.doesNotMatch(shellHtml, /Recent Commits/);
+    assert.match(shellHtml, /Load debug surfaces/);
+    assert.match(shellHtml, /Load commit explorer/);
 
     const composeRes = await fetch(`${base}/hub/island/compose`);
     assert.equal(composeRes.status, 200);
+    assert.match(composeRes.headers.get("server-timing") ?? "", /hub-compose/);
     const composeHtml = await composeRes.text();
     assert.match(composeHtml, /Create Objective/);
     assert.match(composeHtml, /id="hub-compose"/);
     assert.doesNotMatch(composeHtml, /load, hub-compose-refresh/);
+    assert.doesNotMatch(composeHtml, /Advanced/);
+    assert.doesNotMatch(composeHtml, /name="baseHash"/);
+    assert.doesNotMatch(composeHtml, /name="checks"/);
 
-    const dashboardRes = await fetch(`${base}/hub/island/dashboard`);
-    assert.equal(dashboardRes.status, 200);
-    const dashboardHtml = await dashboardRes.text();
-    assert.match(dashboardHtml, /id="hub-dashboard"/);
-    assert.match(dashboardHtml, /sse:receipt-refresh/);
-    assert.match(dashboardHtml, /sse:job-refresh/);
-    assert.doesNotMatch(dashboardHtml, /load, sse:receipt-refresh/);
-    assert.match(dashboardHtml, /Objective Grid/);
-    assert.match(dashboardHtml, /Awaiting Confirmation/);
-    assert.doesNotMatch(dashboardHtml, /npm run build/);
-    assert.doesNotMatch(dashboardHtml, /Create Objective/);
+    const summaryRes = await fetch(`${base}/hub/island/summary`);
+    assert.equal(summaryRes.status, 200);
+    assert.match(summaryRes.headers.get("server-timing") ?? "", /hub-summary/);
+    const summaryHtml = await summaryRes.text();
+    assert.match(summaryHtml, /id="hub-summary"/);
+    assert.match(summaryHtml, /mirror/i);
+
+    const boardRes = await fetch(`${base}/hub/island/board`);
+    assert.equal(boardRes.status, 200);
+    assert.match(boardRes.headers.get("server-timing") ?? "", /hub-board/);
+    const boardHtml = await boardRes.text();
+    assert.match(boardHtml, /id="hub-board"/);
+    assert.match(boardHtml, /sse:receipt-refresh/);
+    assert.match(boardHtml, /sse:job-refresh/);
+    assert.doesNotMatch(boardHtml, /load, sse:receipt-refresh/);
+    assert.match(boardHtml, /Objective Grid/);
+    assert.match(boardHtml, /Awaiting Confirmation/);
+    assert.doesNotMatch(boardHtml, /npm run build/);
+    assert.doesNotMatch(boardHtml, /Create Objective/);
+    assert.doesNotMatch(boardHtml, /href="\/hub\?objective=/);
+
+    const objectiveRes = await fetch(`${base}/hub/island/objective`);
+    assert.equal(objectiveRes.status, 200);
+    assert.match(objectiveRes.headers.get("server-timing") ?? "", /hub-objective/);
+    const objectiveHtml = await objectiveRes.text();
+    assert.match(objectiveHtml, /id="hub-objective"/);
+    assert.doesNotMatch(objectiveHtml, /load, sse:receipt-refresh/);
+
+    const liveRes = await fetch(`${base}/hub/island/live`);
+    assert.equal(liveRes.status, 200);
+    assert.match(liveRes.headers.get("server-timing") ?? "", /hub-live/);
+    const liveHtml = await liveRes.text();
+    assert.match(liveHtml, /id="hub-live"/);
+    assert.match(liveHtml, /select an objective|has no active Codex pass/i);
+
+    const debugRes = await fetch(`${base}/hub/island/debug`);
+    assert.equal(debugRes.status, 200);
+    const debugHtml = await debugRes.text();
+    assert.match(debugHtml, /Workspaces/);
+    assert.match(debugHtml, /Manual Tasks/);
+
+    const commitsRes = await fetch(`${base}/hub/island/commits`);
+    assert.equal(commitsRes.status, 200);
+    const commitsHtml = await commitsRes.text();
+    assert.match(commitsHtml, /Recent Commits/);
+    assert.match(commitsHtml, /Selected Commit/);
 
     const objectiveCreate = await fetch(`${base}/hub/api/objectives`, {
       method: "POST",
@@ -568,6 +669,29 @@ test("hub: objectives auto-run with codex and require human merge to finish the 
         "reviewer:approved",
       ],
     );
+    assert.equal(awaiting.objective.graph.currentNodeId, undefined);
+    assert.deepEqual(awaiting.objective.graph.nodeOrder, awaiting.objective.passes.map((pass) => `${created.objective.objectiveId}_${pass.phase}_${String(pass.passNumber).padStart(2, "0")}`));
+    assert.deepEqual(
+      awaiting.objective.graph.nodes.map((node) => `${node.kind}:${node.status}`),
+      [
+        "planner:completed",
+        "builder:completed",
+        "reviewer:completed",
+        "builder:completed",
+        "reviewer:completed",
+      ],
+    );
+    assert.deepEqual(
+      awaiting.objective.graph.nodes.map((node) => node.dependsOn.length),
+      [0, 1, 1, 1, 1],
+    );
+
+    const selectedBoardRes = await fetch(`${base}/hub/island/board?objective=${created.objective.objectiveId}`);
+    assert.equal(selectedBoardRes.status, 200);
+    const selectedBoardHtml = await selectedBoardRes.text();
+    assert.match(selectedBoardHtml, /id="hub-objective"/);
+    assert.match(selectedBoardHtml, /hx-swap-oob="outerHTML"/);
+    assert.match(selectedBoardHtml, /id="hub-live"/);
 
     const sourceHeadBeforeMerge = await git(repoDir, ["rev-parse", "HEAD"]);
 
@@ -598,6 +722,78 @@ test("hub: objectives auto-run with codex and require human merge to finish the 
       lanes: Record<string, Array<{ objectiveId: string }>>;
     };
     assert.ok(statePayload.lanes.completed.some((item) => item.objectiveId === created.objective.objectiveId));
+  } finally {
+    await stopChild(child);
+  }
+});
+
+test("hub: objective pass retries after sandbox loss and restores the worktree from durable state", { timeout: 180_000 }, async () => {
+  const port = await getFreePort();
+  const dataDir = await createTempDir("receipt-hub-objective-retry-data");
+  const repoDir = await createSourceRepo();
+  const fakeCodex = await createFakeCodexBin({ failFirstBuilderByRemovingWorkspace: true });
+  const tsxBin = path.join(
+    ROOT,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "tsx.cmd" : "tsx"
+  );
+
+  const child = spawn(tsxBin, ["src/server.ts"], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      DATA_DIR: dataDir,
+      HUB_REPO_ROOT: repoDir,
+      HUB_CODEX_BIN: fakeCodex,
+      OPENAI_API_KEY: "",
+      JOB_POLL_MS: "150",
+      IMPROVEMENT_VALIDATE_CMD: "echo validate-ok",
+      IMPROVEMENT_HARNESS_CMD: "echo harness-ok",
+    },
+    stdio: "pipe",
+  });
+
+  try {
+    const base = `http://127.0.0.1:${port}`;
+    await waitForHttpOk(`${base}/hub`, 30_000);
+
+    const objectiveCreate = await fetch(`${base}/hub/api/objectives`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "Recover from builder workspace loss",
+        prompt: "Exercise queue retry and workspace restoration in the hub objective flow.",
+        checks: ["git rev-parse HEAD"],
+      }),
+    });
+    assert.equal(objectiveCreate.status, 201);
+    const created = await objectiveCreate.json() as { objective: { objectiveId: string } };
+
+    const awaiting = await waitForObjectiveStatus(base, created.objective.objectiveId, ["awaiting_confirmation"], 120_000);
+    assert.equal(awaiting.objective.status, "awaiting_confirmation");
+
+    const firstBuilder = awaiting.objective.passes.find((pass) => pass.phase === "builder" && pass.passNumber === 2);
+    assert.ok(firstBuilder);
+
+    const queue = makeQueue(dataDir);
+    const builderJob = await queue.getJob(firstBuilder.jobId);
+    assert.equal(builderJob?.status, "completed");
+    assert.equal(builderJob?.attempt, 2);
+
+    const restoredWorkspaceRes = await fetch(`${base}/hub/api/workspaces/${firstBuilder.workspaceId}`);
+    assert.equal(restoredWorkspaceRes.status, 200);
+    const restoredWorkspacePayload = await restoredWorkspaceRes.json() as {
+      workspace: { exists: boolean; dirty: boolean; head?: string };
+    };
+    assert.equal(restoredWorkspacePayload.workspace.exists, true);
+    assert.equal(restoredWorkspacePayload.workspace.dirty, false);
+    assert.ok(restoredWorkspacePayload.workspace.head);
+
+    const firstBuilderNodeId = `${created.objective.objectiveId}_builder_02`;
+    const firstBuilderNode = awaiting.objective.graph.nodes.find((node) => node.nodeId === firstBuilderNodeId);
+    assert.equal(firstBuilderNode?.status, "completed");
   } finally {
     await stopChild(child);
   }

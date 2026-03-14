@@ -45,6 +45,13 @@ export type HubGitWorkspace = {
   readonly path: string;
 };
 
+export type HubGitWorkspaceRestoreSpec = {
+  readonly workspaceId: string;
+  readonly branchName: string;
+  readonly workspacePath: string;
+  readonly baseHash: string;
+};
+
 export type HubWorktreeStatus = {
   readonly exists: boolean;
   readonly dirty: boolean;
@@ -68,6 +75,13 @@ export type HubSourcePromotion = {
   readonly targetBranch: string;
   readonly previousHead: string;
   readonly mergedHead: string;
+};
+
+export type HubMirrorStatus = {
+  readonly head?: string;
+  readonly syncing: boolean;
+  readonly lastSyncAt?: number;
+  readonly lastSyncError?: string;
 };
 
 type HubGitOptions = {
@@ -110,6 +124,9 @@ export class HubGit {
   private readonly remoteName = "source";
   private readyPromise: Promise<void> | undefined;
   private graphCache: { readonly key: string; readonly graph: HubGitGraph } | undefined;
+  private syncPromise: Promise<void> | undefined;
+  private lastSyncAt: number | undefined;
+  private lastSyncError: string | undefined;
 
   constructor(opts: HubGitOptions) {
     this.repoRoot = path.resolve(opts.repoRoot);
@@ -130,12 +147,32 @@ export class HubGit {
 
   async syncFromSource(): Promise<void> {
     await this.ensureReady();
-    await this.execGit(["remote", "get-url", this.remoteName], { gitDir: this.bareDir });
-    await this.execGit(
-      ["fetch", "--prune", this.remoteName, "+refs/heads/*:refs/remotes/source/*"],
-      { gitDir: this.bareDir }
-    );
-    this.invalidateGraph();
+    if (!this.syncPromise) {
+      this.syncPromise = (async () => {
+        try {
+          await this.execGit(["remote", "get-url", this.remoteName], { gitDir: this.bareDir });
+          await this.execGit(
+            ["fetch", "--prune", this.remoteName, "+refs/heads/*:refs/remotes/source/*"],
+            { gitDir: this.bareDir }
+          );
+          this.invalidateGraph();
+          this.lastSyncAt = Date.now();
+          this.lastSyncError = undefined;
+        } catch (err) {
+          this.lastSyncError = err instanceof Error ? err.message : String(err);
+          throw err;
+        } finally {
+          this.syncPromise = undefined;
+        }
+      })();
+    }
+    return this.syncPromise;
+  }
+
+  scheduleSyncFromSource(): void {
+    void this.syncFromSource().catch(() => {
+      // background sync failures are surfaced through mirrorStatus
+    });
   }
 
   async defaultBranch(): Promise<string> {
@@ -151,6 +188,22 @@ export class HubGit {
     const branch = await this.defaultBranch();
     const ref = `refs/remotes/${this.remoteName}/${branch}`;
     return clean(await this.execGit(["rev-parse", "--verify", ref], { gitDir: this.bareDir }).catch(() => ""));
+  }
+
+  async mirrorHead(branch?: string): Promise<string | undefined> {
+    await this.ensureReady();
+    const resolvedBranch = branch || await this.defaultBranch();
+    const ref = `refs/remotes/${this.remoteName}/${resolvedBranch}`;
+    return clean(await this.execGit(["rev-parse", "--verify", ref], { gitDir: this.bareDir }).catch(() => "")) || undefined;
+  }
+
+  async mirrorStatus(branch?: string): Promise<HubMirrorStatus> {
+    return {
+      head: await this.mirrorHead(branch),
+      syncing: Boolean(this.syncPromise),
+      lastSyncAt: this.lastSyncAt,
+      lastSyncError: this.lastSyncError,
+    };
   }
 
   async resolveBaseHash(baseHash?: string): Promise<string> {
@@ -306,6 +359,32 @@ export class HubGit {
       baseHash,
       branchName,
       path: workspacePath,
+    };
+  }
+
+  async restoreWorkspace(spec: HubGitWorkspaceRestoreSpec): Promise<HubGitWorkspace> {
+    await this.syncFromSource();
+    await fs.promises.mkdir(this.worktreesDir, { recursive: true });
+    if (!fs.existsSync(spec.workspacePath)) {
+      await this.execGit(["worktree", "prune"], { gitDir: this.bareDir });
+      const branchRef = `refs/heads/${spec.branchName}`;
+      const branchExists = await this.execGit(["show-ref", "--verify", "--quiet", branchRef], { gitDir: this.bareDir })
+        .then(() => true)
+        .catch(() => false);
+      if (branchExists) {
+        await this.execGit(["worktree", "add", "--force", spec.workspacePath, spec.branchName], { gitDir: this.bareDir });
+      } else {
+        const baseHash = await this.resolveCommit(spec.baseHash);
+        await this.execGit(["worktree", "add", "--force", "-b", spec.branchName, spec.workspacePath, baseHash], { gitDir: this.bareDir });
+      }
+      this.invalidateGraph();
+    }
+    await this.configureWorktreeIdentity(spec.workspacePath);
+    return {
+      workspaceId: spec.workspaceId,
+      baseHash: spec.baseHash,
+      branchName: spec.branchName,
+      path: spec.workspacePath,
     };
   }
 

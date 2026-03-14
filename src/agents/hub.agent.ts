@@ -6,7 +6,19 @@ import type { MemoryTools } from "../adapters/memory-tools.js";
 import type { AgentLoaderContext, AgentModuleFactory, AgentRouteModule } from "../framework/agent-types.js";
 import { html, text } from "../framework/http.js";
 import { HubService, HubServiceError } from "../services/hub-service.js";
-import { hubComposeIsland, hubDashboardIsland, hubShell } from "../views/hub.js";
+import {
+  hubBoardIsland,
+  hubCommitsIsland,
+  hubCommitsShell,
+  hubComposeIsland,
+  hubDashboardIsland,
+  hubDebugIsland,
+  hubDebugShell,
+  hubLiveIsland,
+  hubObjectiveIsland,
+  hubShell,
+  hubSummaryIsland,
+} from "../views/hub.js";
 
 const jsonResponse = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), {
@@ -85,6 +97,43 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     }
   };
 
+  const withTiming = async <T>(
+    label: string,
+    fn: () => Promise<T>,
+    render: (value: T) => Response,
+  ): Promise<Response> => {
+    const started = performance.now();
+    const response = await wrap(fn, render);
+    response.headers.set("Server-Timing", `${label};dur=${(performance.now() - started).toFixed(1)}`);
+    return response;
+  };
+
+  const buildQuery = (params: { readonly objective?: string; readonly commit?: string }): string => {
+    const search = new URLSearchParams();
+    if (params.objective) search.set("objective", params.objective);
+    if (params.commit) search.set("commit", params.commit);
+    const encoded = search.toString();
+    return encoded ? `?${encoded}` : "";
+  };
+
+  const renderBoardResponse = async (req: Request): Promise<Response> => {
+    const url = new URL(req.url);
+    const objectiveId = asOptionalString(url.searchParams.get("objective"));
+    const commitHash = asOptionalString(url.searchParams.get("commit"));
+    const board = await service.buildBoardProjection(objectiveId);
+    const objective = await service.buildObjectiveProjection(objectiveId);
+    const live = await service.buildLiveProjection(objectiveId);
+    const query = buildQuery({
+      objective: board.selectedObjectiveId,
+      commit: commitHash,
+    });
+    return html([
+      hubBoardIsland(board, query),
+      hubObjectiveIsland(objective, query, true),
+      hubLiveIsland(live, query, true),
+    ].join(""));
+  };
+
   const renderDashboard = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
     const model = await service.buildDashboard(
@@ -103,39 +152,146 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       state: "/hub/api/state",
     },
     register: (app: Hono) => {
-      app.get("/hub", async (c) => wrap(
-        async () => {
-          await service.ensureBootstrap();
-          const url = new URL(c.req.raw.url);
-          const [composeModel, dashboardModel] = await Promise.all([
-            service.buildComposeModel(),
-            service.buildDashboard(
-              asOptionalString(url.searchParams.get("commit")),
-              asOptionalString(url.searchParams.get("objective")),
-            ),
-          ]);
-          return {
-            composeIsland: hubComposeIsland(composeModel),
-            dashboardIsland: hubDashboardIsland(dashboardModel, url.search),
-          };
-        },
+      app.get("/hub", async (c) => withTiming("hub-shell", async () => {
+        await service.ensureBootstrap();
+        const url = new URL(c.req.raw.url);
+        const selectedObjectiveId = asOptionalString(url.searchParams.get("objective"));
+        const selectedCommit = asOptionalString(url.searchParams.get("commit"));
+        const [composeModel, summary, board, objective, live] = await Promise.all([
+          service.buildComposeModel(),
+          service.buildRepoProjection(),
+          service.buildBoardProjection(selectedObjectiveId),
+          service.buildObjectiveProjection(selectedObjectiveId),
+          service.buildLiveProjection(selectedObjectiveId),
+        ]);
+        const query = buildQuery({
+          objective: board.selectedObjectiveId,
+          commit: selectedCommit,
+        });
+        return {
+          composeIsland: hubComposeIsland(composeModel),
+          summaryIsland: hubSummaryIsland(summary),
+          boardIsland: hubBoardIsland(board, query),
+          objectiveIsland: hubObjectiveIsland(objective, query),
+          liveIsland: hubLiveIsland(live, query),
+          debugShell: hubDebugShell(),
+          commitsShell: hubCommitsShell(),
+        };
+      },
         (payload) => html(hubShell(payload))
       ));
 
-      app.get("/hub/events", async (c) => wrap(
-        async () => {
-          await service.ensureBootstrap();
-          return null;
-        },
+      app.get("/hub/events", async (c) => withTiming("hub-events", async () => {
+        await service.ensureBootstrap();
+        return null;
+      },
         () => ctx.sse.subscribeMany([{ topic: "receipt" }, { topic: "jobs" }], c.req.raw.signal)
       ));
 
-      app.get("/hub/stream", async (c) => wrap(
-        async () => {
-          await service.ensureBootstrap();
-          return null;
-        },
+      app.get("/hub/stream", async (c) => withTiming("hub-stream", async () => {
+        await service.ensureBootstrap();
+        return null;
+      },
         () => ctx.sse.subscribeMany([{ topic: "receipt" }, { topic: "jobs" }], c.req.raw.signal)
+      ));
+
+      app.get("/hub/stream/board", async (c) => withTiming("hub-stream-board", async () => {
+        await service.ensureBootstrap();
+        return null;
+      },
+        () => ctx.sse.subscribeMany([{ topic: "receipt" }, { topic: "jobs" }], c.req.raw.signal)
+      ));
+
+      app.get("/hub/stream/objective", async (c) => withTiming("hub-stream-objective", async () => {
+        await service.ensureBootstrap();
+        const objectiveId = asOptionalString(c.req.query("objective"));
+        if (!objectiveId) return { objective: undefined, activeJobId: undefined };
+        const objective = await service.buildObjectiveProjection(objectiveId);
+        return { objective: objective.selectedObjectiveId, activeJobId: objective.objective?.activePass?.jobId };
+      },
+        (payload) => ctx.sse.subscribeMany(
+          payload.activeJobId
+            ? [{ topic: "receipt" }, { topic: "jobs", stream: payload.activeJobId }]
+            : [{ topic: "receipt" }],
+          c.req.raw.signal,
+        )
+      ));
+
+      app.get("/hub/stream/live", async (c) => withTiming("hub-stream-live", async () => {
+        await service.ensureBootstrap();
+        const objectiveId = asOptionalString(c.req.query("objective"));
+        const live = await service.buildLiveProjection(objectiveId);
+        return { activeJobId: live.activePass?.jobId };
+      },
+        (payload) => ctx.sse.subscribeMany(
+          payload.activeJobId
+            ? [{ topic: "jobs", stream: payload.activeJobId }, { topic: "receipt" }]
+            : [{ topic: "receipt" }],
+          c.req.raw.signal,
+        )
+      ));
+
+      app.get("/hub/island/summary", async (c) => withTiming(
+        "hub-summary",
+        async () => {
+          return service.buildRepoProjection();
+        },
+        (payload) => html(hubSummaryIsland(payload))
+      ));
+
+      app.get("/hub/island/board", async (c) => withTiming(
+        "hub-board",
+        () => renderBoardResponse(c.req.raw),
+        (response) => response,
+      ));
+
+      app.get("/hub/island/objective", async (c) => withTiming(
+        "hub-objective",
+        async () => {
+          const url = new URL(c.req.raw.url);
+          const objectiveId = asOptionalString(url.searchParams.get("objective"));
+          const commit = asOptionalString(url.searchParams.get("commit"));
+          const projection = await service.buildObjectiveProjection(objectiveId);
+          return {
+            projection,
+            query: buildQuery({ objective: projection.selectedObjectiveId, commit }),
+          };
+        },
+        (payload) => html(hubObjectiveIsland(payload.projection, payload.query))
+      ));
+
+      app.get("/hub/island/live", async (c) => withTiming(
+        "hub-live",
+        async () => {
+          const url = new URL(c.req.raw.url);
+          const objectiveId = asOptionalString(url.searchParams.get("objective"));
+          const commit = asOptionalString(url.searchParams.get("commit"));
+          const projection = await service.buildLiveProjection(objectiveId);
+          return {
+            projection,
+            query: buildQuery({ objective: projection.selectedObjectiveId, commit }),
+          };
+        },
+        (payload) => html(hubLiveIsland(payload.projection, payload.query))
+      ));
+
+      app.get("/hub/island/debug", async (c) => withTiming(
+        "hub-debug",
+        async () => service.buildDebugProjection(),
+        (payload) => html(hubDebugIsland(payload))
+      ));
+
+      app.get("/hub/island/commits", async (c) => withTiming(
+        "hub-commits",
+        async () => {
+          const commit = asOptionalString(c.req.query("commit"));
+          const objective = asOptionalString(c.req.query("objective"));
+          return {
+            projection: await service.buildCommitProjection(commit),
+            query: buildQuery({ objective, commit }),
+          };
+        },
+        (payload) => html(hubCommitsIsland(payload.projection, payload.query))
       ));
 
       app.get("/hub/island/dashboard", async (c) =>
@@ -146,7 +302,8 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           return text(500, "hub server error");
         }));
 
-      app.get("/hub/island/compose", async () => wrap(
+      app.get("/hub/island/compose", async () => withTiming(
+        "hub-compose",
         async () => service.buildComposeModel(),
         (model) => html(hubComposeIsland(model))
       ));
@@ -305,6 +462,11 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         (payload) => jsonResponse(200, payload)
       ));
 
+      app.post("/hub/api/objectives/:id/resume", async (c) => wrap(
+        async () => ({ objective: await service.resumeObjective(c.req.param("id")) }),
+        (payload) => jsonResponse(200, payload)
+      ));
+
       app.post("/hub/api/objectives/:id/cancel", async (c) => wrap(
         async () => {
           const body = await readBody(c.req.raw);
@@ -322,42 +484,42 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
       app.post("/hub/ui/agents", async (c) => wrap(
         async () => service.createAgent(await readBody(c.req.raw)),
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-summary-refresh,hub-compose-refresh" })
       ));
 
       app.post("/hub/ui/channels", async (c) => wrap(
         async () => service.createChannel(await readBody(c.req.raw)),
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-compose-refresh,hub-debug-refresh" })
       ));
 
       app.post("/hub/ui/posts", async (c) => wrap(
         async () => service.createPost(await readBody(c.req.raw)),
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-debug-refresh" })
       ));
 
       app.post("/hub/ui/posts/:id/reply", async (c) => wrap(
         async () => service.createPost(await readBody(c.req.raw), c.req.param("id")),
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-debug-refresh" })
       ));
 
       app.post("/hub/ui/workspaces", async (c) => wrap(
         async () => service.createWorkspace(await readBody(c.req.raw)),
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-debug-refresh" })
       ));
 
       app.post("/hub/ui/workspaces/:id/announce", async (c) => wrap(
         async () => service.announceWorkspace(c.req.param("id"), await readBody(c.req.raw)),
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-debug-refresh" })
       ));
 
       app.post("/hub/ui/workspaces/:id/remove", async (c) => wrap(
         async () => service.removeWorkspace(c.req.param("id")),
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-debug-refresh" })
       ));
 
       app.post("/hub/ui/tasks", async (c) => wrap(
         async () => service.createTask(await readBody(c.req.raw)),
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-debug-refresh" })
       ));
 
       app.post("/hub/ui/objectives", async (c) => wrap(
@@ -375,27 +537,32 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             checks,
           });
         },
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-summary-refresh,hub-board-refresh,hub-objective-refresh,hub-live-refresh,hub-compose-refresh" })
       ));
 
       app.post("/hub/ui/objectives/:id/approve", async (c) => wrap(
         async () => service.approveObjective(c.req.param("id")),
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-summary-refresh,hub-board-refresh,hub-objective-refresh,hub-live-refresh,hub-debug-refresh,hub-commits-refresh" })
       ));
 
       app.post("/hub/ui/objectives/:id/merge", async (c) => wrap(
         async () => service.mergeObjective(c.req.param("id")),
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-summary-refresh,hub-board-refresh,hub-objective-refresh,hub-live-refresh,hub-debug-refresh,hub-commits-refresh" })
+      ));
+
+      app.post("/hub/ui/objectives/:id/resume", async (c) => wrap(
+        async () => service.resumeObjective(c.req.param("id")),
+        () => emptyOk({ "HX-Trigger": "hub-summary-refresh,hub-board-refresh,hub-objective-refresh,hub-live-refresh,hub-debug-refresh" })
       ));
 
       app.post("/hub/ui/objectives/:id/cancel", async (c) => wrap(
         async () => service.cancelObjective(c.req.param("id")),
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-summary-refresh,hub-board-refresh,hub-objective-refresh,hub-live-refresh,hub-debug-refresh" })
       ));
 
       app.post("/hub/ui/objectives/:id/cleanup", async (c) => wrap(
         async () => service.cleanupObjective(c.req.param("id")),
-        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+        () => emptyOk({ "HX-Trigger": "hub-board-refresh,hub-objective-refresh,hub-live-refresh,hub-debug-refresh" })
       ));
     },
   };

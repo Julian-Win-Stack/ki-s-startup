@@ -10,6 +10,7 @@ export type CodexRunInput = {
   readonly lastMessagePath: string;
   readonly stdoutPath: string;
   readonly stderrPath: string;
+  readonly env?: NodeJS.ProcessEnv;
   readonly timeoutMs?: number;
 };
 
@@ -84,7 +85,7 @@ export class LocalCodexExecutor implements CodexExecutor {
 
     const child = spawn(this.bin, args, {
       cwd: input.workspacePath,
-      env: this.env,
+      env: { ...this.env, ...input.env },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
