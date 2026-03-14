@@ -25,6 +25,23 @@ const shortenPath = (value: string, parts = 2): string => {
   const split = value.split("/").filter(Boolean);
   return split.length <= parts ? value : `…/${split.slice(-parts).join("/")}`;
 };
+const pluralize = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
+const describeChecks = (checks: ReadonlyArray<string>): string =>
+  checks.length ? `${pluralize(checks.length, "verification gate")} armed` : "No explicit verification gates";
+const summarizeCheckResults = (
+  checkResults: ReadonlyArray<{ readonly ok: boolean }> | undefined,
+): { readonly label: string; readonly tone: "ok" | "bad" | "muted" } => {
+  if (!checkResults?.length) return { label: "Verification pending", tone: "muted" };
+  const passed = checkResults.filter((check) => check.ok).length;
+  const failed = checkResults.length - passed;
+  if (failed > 0) return { label: `${pluralize(failed, "gate")} failed`, tone: "bad" };
+  return { label: `${pluralize(passed, "gate")} passed`, tone: "ok" };
+};
+const summarizeWorkspaceState = (pass: ObjectivePassView): string => {
+  if (!pass.workspaceExists) return "workspace cleared";
+  if (pass.workspaceDirty) return "workspace dirty";
+  return "workspace clean";
+};
 
 const renderCard = (card: HubObjectiveCard, activeId?: string): string => `
   <a
@@ -82,20 +99,29 @@ const renderObjectiveForm = (model: HubDashboardModel): string => `
     </div>
     <form class="objective-form" hx-post="/hub/ui/objectives" hx-swap="none">
       <input name="title" placeholder="Add agent deletion to /hub" required />
-      <input name="baseHash" placeholder="Base commit (optional)" />
-      <select name="channel">
-        ${model.channels.map((channel) => `<option value="${esc(channel)}"${channel === "results" ? " selected" : ""}>${esc(channel)}</option>`).join("")}
-      </select>
       <textarea name="prompt" placeholder="Describe the objective, acceptance criteria, and any repo-specific constraints." required></textarea>
-      <textarea name="checks" placeholder="One shell command per line. Default: npm run build">npm run build</textarea>
-      <button type="submit">Create Objective</button>
+      <div class="compose-actions">
+        <button type="submit">Launch Objective</button>
+        <details class="compose-advanced">
+          <summary>Advanced</summary>
+          <div class="compose-advanced-grid">
+            <input name="baseHash" placeholder="Base commit (optional)" />
+            <select name="channel">
+              ${model.channels.map((channel) => `<option value="${esc(channel)}"${channel === "results" ? " selected" : ""}>${esc(channel)}</option>`).join("")}
+            </select>
+            <textarea
+              name="checks"
+              placeholder="Optional verification overrides, one command per line. Leave empty to use the hub default."></textarea>
+          </div>
+        </details>
+      </div>
     </form>
     ${model.sourceDirty ? `
       <div class="form-note warn">
         New objectives are blocked while the source repo has uncommitted changes. Commit or stash first, or set an explicit base commit.
       </div>
     ` : `
-      <div class="form-note">Objectives start from committed Git history on <span class="mono">${esc(model.sourceBranch ?? model.defaultBranch)}</span>.</div>
+      <div class="form-note">Objectives launch from committed Git history on <span class="mono">${esc(model.sourceBranch ?? model.defaultBranch)}</span>. Verification runs automatically unless you override it.</div>
     `}
   </section>
 `;
@@ -120,7 +146,9 @@ const renderSourceWarning = (model: HubDashboardModel): string => {
   `;
 };
 
-const renderPass = (pass: ObjectivePassView): string => `
+const renderPass = (pass: ObjectivePassView): string => {
+  const verification = summarizeCheckResults(pass.checkResults);
+  return `
   <article class="pass-row">
     <div class="pass-top">
       <span class="pass-title">${esc(`${pass.phase} #${pass.passNumber}`)}</span>
@@ -128,28 +156,37 @@ const renderPass = (pass: ObjectivePassView): string => `
     </div>
     <div class="pass-meta">
       <span>${esc(pass.agentId)}</span>
-      <span>${esc(shortHash(pass.baseCommit))}</span>
+      <span>base ${esc(shortHash(pass.baseCommit))}</span>
       ${pass.commitHash ? `<span>${esc(shortHash(pass.commitHash))}</span>` : ""}
       <span>${esc(formatTime(pass.dispatchedAt))}</span>
     </div>
     ${pass.summary ? `<div class="pass-summary">${esc(pass.summary)}</div>` : ""}
-    ${pass.handoff ? `<div class="pass-handoff">${esc(truncate(pass.handoff, 280))}</div>` : ""}
-    <div class="pass-meta">
-      <span title="${esc(pass.workspacePath)}">${esc(shortenPath(pass.workspacePath, 3))}</span>
-      <span>${pass.workspaceExists ? "exists" : "missing"}</span>
-      <span>${pass.workspaceDirty ? "dirty" : "clean"}</span>
+    <div class="pass-signals">
+      <span class="tag ${verification.tone}">${esc(verification.label)}</span>
+      <span class="tag">${esc(summarizeWorkspaceState(pass))}</span>
+      ${pass.outcome ? `<span class="tag">${esc(pass.outcome.replaceAll("_", " "))}</span>` : ""}
     </div>
     ${pass.activity ? `<div class="pass-live">${esc(pass.activity)}</div>` : ""}
-    ${pass.checkResults?.length
-      ? `<div class="check-list">${pass.checkResults.map((check) => `
-          <div class="check ${check.ok ? "ok" : "bad"}">
-            <span>${esc(check.command)}</span>
-            <span>${check.ok ? "ok" : `exit ${check.exitCode ?? 1}`}</span>
-          </div>
-        `).join("")}</div>`
-      : ""}
+    <details class="pass-inspect">
+      <summary>Inspect pass</summary>
+      ${pass.handoff ? `<div class="pass-handoff">${esc(truncate(pass.handoff, 420))}</div>` : ""}
+      <div class="pass-meta">
+        <span title="${esc(pass.workspacePath)}">${esc(shortenPath(pass.workspacePath, 3))}</span>
+        <span>${pass.workspaceExists ? "exists" : "missing"}</span>
+        <span>${pass.workspaceDirty ? "dirty" : "clean"}</span>
+      </div>
+      ${pass.checkResults?.length
+        ? `<div class="check-list">${pass.checkResults.map((check, index) => `
+            <div class="check ${check.ok ? "ok" : "bad"}">
+              <span>Gate ${index + 1}</span>
+              <span>${check.ok ? "passed" : `exit ${check.exitCode ?? 1}`}</span>
+            </div>
+          `).join("")}</div>`
+        : `<div class="empty">No verification trace recorded yet.</div>`}
+    </details>
   </article>
 `;
+};
 
 const renderActiveCodex = (pass: ObjectivePassView | undefined): string => {
   if (!pass) return "";
@@ -183,8 +220,12 @@ const renderObjectiveDetail = (model: HubDashboardModel): string => {
       </section>
     `;
   }
-  const canApprove = objective.status === "awaiting_confirmation";
+  const canMerge = objective.status === "awaiting_confirmation";
   const canCancel = objective.status !== "completed" && objective.status !== "canceled";
+  const canCleanup = ["completed", "blocked", "failed", "canceled"].includes(objective.status)
+    && objective.passes.some((pass) => pass.workspaceExists);
+  const mergeTarget = model.sourceBranch ?? model.defaultBranch;
+  const verification = summarizeCheckResults(objective.latestCheckResults);
   return `
     <section class="panel detail-panel">
       <div class="panel-head">
@@ -200,12 +241,12 @@ const renderObjectiveDetail = (model: HubDashboardModel): string => {
       </div>
       <div class="detail-grid compact">
         <div>
-          <div class="detail-label">Objective</div>
+          <div class="detail-label">Intent</div>
           <div class="detail-text">${esc(objective.prompt)}</div>
         </div>
         <div>
-          <div class="detail-label">Checks</div>
-          <div class="detail-text">${objective.checks.length ? objective.checks.map((check) => esc(check)).join("<br/>") : "None"}</div>
+          <div class="detail-label">Verification</div>
+          <div class="detail-text">${esc(describeChecks(objective.checks))}<br/>${esc(verification.label)}</div>
         </div>
         <div>
           <div class="detail-label">Base Commit</div>
@@ -217,9 +258,14 @@ const renderObjectiveDetail = (model: HubDashboardModel): string => {
         </div>
       </div>
       <div class="detail-actions">
-        ${canApprove ? `
-          <form hx-post="/hub/ui/objectives/${encodeURIComponent(objective.objectiveId)}/approve" hx-swap="none">
-            <button type="submit">Approve Completion</button>
+        ${canMerge ? `
+          <form hx-post="/hub/ui/objectives/${encodeURIComponent(objective.objectiveId)}/merge" hx-swap="none">
+            <button type="submit"${model.sourceDirty ? " disabled" : ""}>Merge to ${esc(mergeTarget)}</button>
+          </form>
+        ` : ""}
+        ${canCleanup ? `
+          <form hx-post="/hub/ui/objectives/${encodeURIComponent(objective.objectiveId)}/cleanup" hx-swap="none">
+            <button type="submit" class="ghost">Clear Worktrees</button>
           </form>
         ` : ""}
         ${canCancel ? `
@@ -228,6 +274,7 @@ const renderObjectiveDetail = (model: HubDashboardModel): string => {
           </form>
         ` : ""}
       </div>
+      ${canMerge && model.sourceDirty ? `<div class="form-note warn">Merge is blocked while the source repo has uncommitted changes.</div>` : ""}
       ${renderActiveCodex(objective.activePass)}
       <div class="pass-list">
         ${objective.passes.length === 0 ? `<div class="empty">No passes yet.</div>` : objective.passes.map(renderPass).join("")}
@@ -397,6 +444,7 @@ export const hubShell = (query = ""): string => `<!doctype html>
       border: 1px solid var(--line);
       border-radius: 18px;
       box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
     }
     .panel {
       padding: 16px;
@@ -427,10 +475,20 @@ export const hubShell = (query = ""): string => `<!doctype html>
       margin-bottom: 16px;
     }
     .summary-tile {
+      position: relative;
       padding: 14px;
       border-radius: 16px;
       background: rgba(255,255,255,0.03);
       border: 1px solid var(--line);
+      overflow: hidden;
+    }
+    .summary-tile::after {
+      content: "";
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: 100%;
+      height: 1px;
+      background: linear-gradient(90deg, rgba(121,228,191,0.55), rgba(140,196,255,0.18), transparent);
     }
     .summary-tile.source-dirty {
       border-color: rgba(255, 207, 122, 0.3);
@@ -447,7 +505,7 @@ export const hubShell = (query = ""): string => `<!doctype html>
     }
     .objective-form {
       display: grid;
-      grid-template-columns: 1.2fr 0.9fr 0.7fr;
+      grid-template-columns: minmax(0, 1fr);
       gap: 10px;
     }
     .objective-form textarea,
@@ -466,8 +524,42 @@ export const hubShell = (query = ""): string => `<!doctype html>
       font: inherit;
     }
     .objective-form textarea {
-      min-height: 92px;
-      grid-column: span 3;
+      min-height: 104px;
+    }
+    .compose-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .compose-advanced {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.02);
+      padding: 10px 12px;
+    }
+    .compose-advanced summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      list-style: none;
+    }
+    .compose-advanced summary::-webkit-details-marker {
+      display: none;
+    }
+    .compose-advanced-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .compose-advanced-grid textarea {
+      min-height: 84px;
+      grid-column: 1 / -1;
     }
     .objective-form button,
     button {
@@ -479,6 +571,10 @@ export const hubShell = (query = ""): string => `<!doctype html>
       font: inherit;
       font-weight: 700;
       cursor: pointer;
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
     }
     .form-note {
       grid-column: 1 / -1;
@@ -531,13 +627,22 @@ export const hubShell = (query = ""): string => `<!doctype html>
     .lane-grid {
       display: grid;
       grid-template-columns: repeat(6, minmax(260px, 1fr));
-      gap: 12px;
+      gap: 14px;
       overflow-x: auto;
       padding-bottom: 4px;
     }
     .lane {
+      position: relative;
       padding: 14px;
       min-height: 420px;
+      overflow: hidden;
+    }
+    .lane::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto 0;
+      height: 2px;
+      background: linear-gradient(90deg, rgba(121,228,191,0.55), rgba(140,196,255,0.24), transparent);
     }
     .lane-count {
       border: 1px solid var(--line-strong);
@@ -554,10 +659,16 @@ export const hubShell = (query = ""): string => `<!doctype html>
       display: block;
       border: 1px solid var(--line);
       border-radius: 16px;
-      background: rgba(255,255,255,0.03);
+      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.025));
       padding: 12px;
       text-decoration: none;
       color: inherit;
+      transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+    }
+    .objective-card:hover, .commit-card:hover, .mini-card:hover {
+      transform: translateY(-1px);
+      border-color: rgba(140,196,255,0.24);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
     }
     .objective-card.active, .commit-card.active {
       border-color: rgba(121,228,191,0.45);
@@ -571,9 +682,10 @@ export const hubShell = (query = ""): string => `<!doctype html>
       flex-wrap: wrap;
     }
     .card-title {
-      margin: 10px 0 8px;
+      margin: 10px 0 6px;
       font-size: 15px;
       font-weight: 600;
+      letter-spacing: -0.01em;
     }
     .card-summary, .pass-summary, .pass-handoff, .detail-text {
       color: var(--muted);
@@ -582,12 +694,12 @@ export const hubShell = (query = ""): string => `<!doctype html>
       overflow-wrap: anywhere;
     }
     .card-summary {
-      min-height: 42px;
-      margin-bottom: 10px;
+      min-height: 34px;
+      margin-bottom: 8px;
     }
     .card-summary.live {
       color: var(--ink);
-      min-height: 36px;
+      min-height: 28px;
     }
     .hash, .time, .mini-status {
       font-family: "IBM Plex Mono", monospace;
@@ -613,6 +725,9 @@ export const hubShell = (query = ""): string => `<!doctype html>
       position: sticky;
       top: 18px;
       padding: 14px;
+      background:
+        linear-gradient(180deg, rgba(140,196,255,0.06), transparent 24%),
+        var(--panel);
     }
     .detail-grid {
       display: grid;
@@ -685,12 +800,47 @@ export const hubShell = (query = ""): string => `<!doctype html>
       line-height: 1.45;
       overflow-wrap: anywhere;
     }
+    .pass-signals {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .tag.ok {
+      color: var(--ok);
+      border-color: rgba(125,226,157,0.35);
+    }
+    .tag.bad {
+      color: var(--danger);
+      border-color: rgba(255,143,143,0.4);
+    }
+    .tag.muted {
+      color: var(--muted);
+    }
+    .pass-inspect {
+      margin-top: 10px;
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+    }
+    .pass-inspect summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      list-style: none;
+    }
+    .pass-inspect summary::-webkit-details-marker {
+      display: none;
+    }
     .active-pass {
       margin-bottom: 12px;
       padding: 12px;
       border: 1px solid rgba(140,196,255,0.22);
       border-radius: 16px;
-      background: rgba(140,196,255,0.06);
+      background:
+        linear-gradient(180deg, rgba(140,196,255,0.1), rgba(140,196,255,0.04)),
+        rgba(140,196,255,0.06);
     }
     .active-pass .panel-head {
       margin-bottom: 8px;
@@ -737,6 +887,9 @@ export const hubShell = (query = ""): string => `<!doctype html>
       cursor: pointer;
       color: var(--muted);
       margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 12px;
     }
     .debug-grid {
       display: grid;
@@ -750,7 +903,7 @@ export const hubShell = (query = ""): string => `<!doctype html>
       padding: 8px 0;
     }
     @media (max-width: 1180px) {
-      .summary-bar, .detail-grid, .debug-grid, .objective-form, .board-shell {
+      .summary-bar, .detail-grid, .debug-grid, .objective-form, .board-shell, .compose-advanced-grid {
         grid-template-columns: 1fr;
       }
       .detail-panel {
@@ -785,7 +938,7 @@ export const hubShell = (query = ""): string => `<!doctype html>
     <div class="head">
       <div>
         <h1 class="title">Receipt Hub</h1>
-        <div class="sub">Codex-powered objectives on top of Git worktrees for this repo.</div>
+        <div class="sub">Autonomous objectives routed through isolated Git worktrees on this repo.</div>
       </div>
       <a class="back" href="/monitor">Open command center</a>
     </div>
@@ -826,14 +979,14 @@ export const hubDashboard = (model: HubDashboardModel): string => `
   <div class="board-shell">
     <section class="panel">
       <div class="panel-head">
-        <h2>Agent Columns</h2>
-        <span>Objectives move automatically by phase</span>
+        <h2>Objective Grid</h2>
+        <span>Work flows across agents automatically</span>
       </div>
       <div class="lane-grid">
         ${renderLane("Planner", "planner-1", model.lanes.planner, model.selectedObjective?.objectiveId)}
         ${renderLane("Builder", "builder-1", model.lanes.builder, model.selectedObjective?.objectiveId)}
         ${renderLane("Reviewer", "reviewer-1", model.lanes.reviewer, model.selectedObjective?.objectiveId)}
-        ${renderLane("Awaiting Confirmation", "human approval required", model.lanes.awaiting_confirmation, model.selectedObjective?.objectiveId)}
+        ${renderLane("Awaiting Confirmation", "human merge required", model.lanes.awaiting_confirmation, model.selectedObjective?.objectiveId)}
         ${renderLane("Blocked", "needs intervention", model.lanes.blocked, model.selectedObjective?.objectiveId)}
         ${renderLane("Completed", "closed objectives", model.lanes.completed, model.selectedObjective?.objectiveId)}
       </div>

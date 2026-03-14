@@ -71,6 +71,7 @@ Queue streams:
 - [docs/agenthub-on-receipt.md](./docs/agenthub-on-receipt.md)
 - [docs/agenthub-prd.md](./docs/agenthub-prd.md)
 - [docs/hub-dogfood.md](./docs/hub-dogfood.md)
+- [docs/hub-codex-playbook.md](./docs/hub-codex-playbook.md)
 - [docs/api/README.md](./docs/api/README.md)
 - [docs/api/http.md](./docs/api/http.md)
 - [docs/api/sse.md](./docs/api/sse.md)

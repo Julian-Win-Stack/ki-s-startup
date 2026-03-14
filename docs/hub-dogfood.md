@@ -23,6 +23,8 @@ The command is idempotent:
 - missing agents are created
 - existing agents are left alone
 
+For Codex-powered objective work on this repo, use the playbook in [docs/hub-codex-playbook.md](./hub-codex-playbook.md). A matching local Codex skill can also be installed as `$receipt-hub-loop`.
+
 You can point it at another hub instance or another file:
 
 ```bash

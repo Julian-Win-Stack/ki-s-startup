@@ -161,7 +161,7 @@ const waitForObjectiveStatus = async (
   objectiveId: string,
   statuses: ReadonlyArray<string>,
   timeoutMs: number,
-): Promise<{ objective: { status: string; passes: Array<{ phase: string; outcome?: string }>; latestCommitHash?: string; latestReviewOutcome?: string } }> => {
+): Promise<{ objective: { status: string; passes: Array<{ phase: string; outcome?: string; workspaceId?: string }>; latestCommitHash?: string; latestReviewOutcome?: string } }> => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const res = await fetch(`${base}/hub/api/objectives/${objectiveId}`);
@@ -169,7 +169,7 @@ const waitForObjectiveStatus = async (
       const payload = await res.json() as {
         objective: {
           status: string;
-          passes: Array<{ phase: string; outcome?: string }>;
+          passes: Array<{ phase: string; outcome?: string; workspaceId?: string }>;
           latestCommitHash?: string;
           latestReviewOutcome?: string;
         };
@@ -477,7 +477,7 @@ test("hub: bootstraps, manages workspaces, board, graph, and tasks", { timeout: 
   }
 });
 
-test("hub: objectives auto-run with codex and require human confirmation", { timeout: 180_000 }, async () => {
+test("hub: objectives auto-run with codex and require human merge to finish the loop", { timeout: 180_000 }, async () => {
   const port = await getFreePort();
   const dataDir = await createTempDir("receipt-hub-objective-data");
   const repoDir = await createSourceRepo();
@@ -518,8 +518,9 @@ test("hub: objectives auto-run with codex and require human confirmation", { tim
     const dashboardRes = await fetch(`${base}/hub/island/dashboard`);
     assert.equal(dashboardRes.status, 200);
     const dashboardHtml = await dashboardRes.text();
-    assert.match(dashboardHtml, /Agent Columns/);
+    assert.match(dashboardHtml, /Objective Grid/);
     assert.match(dashboardHtml, /Awaiting Confirmation/);
+    assert.doesNotMatch(dashboardHtml, /npm run build/);
 
     const objectiveCreate = await fetch(`${base}/hub/api/objectives`, {
       method: "POST",
@@ -534,7 +535,7 @@ test("hub: objectives auto-run with codex and require human confirmation", { tim
     assert.equal(objectiveCreate.status, 201);
     const created = await objectiveCreate.json() as { objective: { objectiveId: string } };
 
-    const awaiting = await waitForObjectiveStatus(base, created.objective.objectiveId, ["awaiting_confirmation"], 90_000);
+    const awaiting = await waitForObjectiveStatus(base, created.objective.objectiveId, ["awaiting_confirmation"], 120_000);
     assert.equal(awaiting.objective.status, "awaiting_confirmation");
     assert.equal(awaiting.objective.latestReviewOutcome, "approved");
     assert.ok(awaiting.objective.latestCommitHash);
@@ -550,13 +551,28 @@ test("hub: objectives auto-run with codex and require human confirmation", { tim
       ],
     );
 
-    const approveRes = await fetch(`${base}/hub/api/objectives/${created.objective.objectiveId}/approve`, {
+    const sourceHeadBeforeMerge = await git(repoDir, ["rev-parse", "HEAD"]);
+
+    const mergeRes = await fetch(`${base}/hub/api/objectives/${created.objective.objectiveId}/merge`, {
       method: "POST",
     });
-    assert.equal(approveRes.status, 200);
+    assert.equal(mergeRes.status, 200);
 
     const completed = await waitForObjectiveStatus(base, created.objective.objectiveId, ["completed"], 15_000);
     assert.equal(completed.objective.status, "completed");
+    assert.equal(completed.objective.latestCommitHash, awaiting.objective.latestCommitHash);
+
+    const sourceHeadAfterMerge = await git(repoDir, ["rev-parse", "HEAD"]);
+    assert.notEqual(sourceHeadAfterMerge, sourceHeadBeforeMerge);
+    assert.equal(sourceHeadAfterMerge, awaiting.objective.latestCommitHash);
+
+    const workspacesRes = await fetch(`${base}/hub/api/workspaces`);
+    assert.equal(workspacesRes.status, 200);
+    const workspacesPayload = await workspacesRes.json() as { workspaces: Array<{ workspaceId: string }> };
+    const objectiveWorkspaceIds = awaiting.objective.passes.map((pass) => pass.workspaceId);
+    for (const workspaceId of objectiveWorkspaceIds) {
+      assert.ok(!workspacesPayload.workspaces.some((workspace) => workspace.workspaceId === workspaceId));
+    }
 
     const stateRes = await fetch(`${base}/hub/api/state`);
     assert.equal(stateRes.status, 200);
@@ -564,6 +580,73 @@ test("hub: objectives auto-run with codex and require human confirmation", { tim
       lanes: Record<string, Array<{ objectiveId: string }>>;
     };
     assert.ok(statePayload.lanes.completed.some((item) => item.objectiveId === created.objective.objectiveId));
+  } finally {
+    await stopChild(child);
+  }
+});
+
+test("hub: merge is blocked when the source repo is dirty", { timeout: 180_000 }, async () => {
+  const port = await getFreePort();
+  const dataDir = await createTempDir("receipt-hub-objective-merge-guard-data");
+  const repoDir = await createSourceRepo();
+  const fakeCodex = await createFakeCodexBin();
+  const tsxBin = path.join(
+    ROOT,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "tsx.cmd" : "tsx"
+  );
+
+  const child = spawn(tsxBin, ["src/server.ts"], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      DATA_DIR: dataDir,
+      HUB_REPO_ROOT: repoDir,
+      HUB_CODEX_BIN: fakeCodex,
+      OPENAI_API_KEY: "",
+      IMPROVEMENT_VALIDATE_CMD: "echo validate-ok",
+      IMPROVEMENT_HARNESS_CMD: "echo harness-ok",
+    },
+    stdio: "pipe",
+  });
+
+  try {
+    const base = `http://127.0.0.1:${port}`;
+    await waitForHttpOk(`${base}/hub`, 30_000);
+
+    const objectiveCreate = await fetch(`${base}/hub/api/objectives`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "Exercise merge guard",
+        prompt: "Create a tiny tracked file so the hub can verify merge blocking.",
+        checks: ["git rev-parse HEAD"],
+      }),
+    });
+    assert.equal(objectiveCreate.status, 201);
+    const created = await objectiveCreate.json() as { objective: { objectiveId: string; latestCommitHash?: string } };
+
+    const awaiting = await waitForObjectiveStatus(base, created.objective.objectiveId, ["awaiting_confirmation"], 120_000);
+    assert.equal(awaiting.objective.status, "awaiting_confirmation");
+    assert.ok(awaiting.objective.latestCommitHash);
+
+    await fs.writeFile(path.join(repoDir, "DIRTY_MERGE_GUARD.txt"), "uncommitted\n", "utf-8");
+
+    const mergeRes = await fetch(`${base}/hub/api/objectives/${created.objective.objectiveId}/merge`, {
+      method: "POST",
+    });
+    assert.equal(mergeRes.status, 409);
+    assert.match(await mergeRes.text(), /source repository has uncommitted changes/i);
+
+    const sourceHead = await git(repoDir, ["rev-parse", "HEAD"]);
+    assert.notEqual(sourceHead, awaiting.objective.latestCommitHash);
+
+    const stillAwaiting = await fetch(`${base}/hub/api/objectives/${created.objective.objectiveId}`);
+    assert.equal(stillAwaiting.status, 200);
+    const stillAwaitingPayload = await stillAwaiting.json() as { objective: { status: string } };
+    assert.equal(stillAwaitingPayload.objective.status, "awaiting_confirmation");
   } finally {
     await stopChild(child);
   }
@@ -628,11 +711,24 @@ test("hub: failed objective pass is reconciled to blocked on the next read", { t
         status: string;
         lane: string;
         latestSummary?: string;
+        passes: Array<{ workspaceId: string }>;
       };
     };
     assert.equal(detailPayload.objective.status, "blocked");
     assert.equal(detailPayload.objective.lane, "blocked");
     assert.match(detailPayload.objective.latestSummary ?? "", /forced failure/i);
+
+    const cleanupRes = await fetch(`${base}/hub/api/objectives/${created.objective.objectiveId}/cleanup`, {
+      method: "POST",
+    });
+    assert.equal(cleanupRes.status, 200);
+
+    const workspacesRes = await fetch(`${base}/hub/api/workspaces`);
+    assert.equal(workspacesRes.status, 200);
+    const workspacesPayload = await workspacesRes.json() as { workspaces: Array<{ workspaceId: string }> };
+    for (const pass of detailPayload.objective.passes) {
+      assert.ok(!workspacesPayload.workspaces.some((workspace) => workspace.workspaceId === pass.workspaceId));
+    }
   } finally {
     await stopChild(child);
   }

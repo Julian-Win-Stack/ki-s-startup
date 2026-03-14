@@ -276,6 +276,11 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         (payload) => jsonResponse(200, payload)
       ));
 
+      app.post("/hub/api/objectives/:id/merge", async (c) => wrap(
+        async () => ({ objective: await service.mergeObjective(c.req.param("id")) }),
+        (payload) => jsonResponse(200, payload)
+      ));
+
       app.post("/hub/api/objectives/:id/cancel", async (c) => wrap(
         async () => {
           const body = await readBody(c.req.raw);
@@ -283,6 +288,11 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             objective: await service.cancelObjective(c.req.param("id"), asOptionalString(body.reason)),
           };
         },
+        (payload) => jsonResponse(200, payload)
+      ));
+
+      app.post("/hub/api/objectives/:id/cleanup", async (c) => wrap(
+        async () => ({ objective: await service.cleanupObjective(c.req.param("id")) }),
         (payload) => jsonResponse(200, payload)
       ));
 
@@ -349,8 +359,18 @@ const createHubRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         () => emptyOk({ "HX-Trigger": "hub-refresh" })
       ));
 
+      app.post("/hub/ui/objectives/:id/merge", async (c) => wrap(
+        async () => service.mergeObjective(c.req.param("id")),
+        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+      ));
+
       app.post("/hub/ui/objectives/:id/cancel", async (c) => wrap(
         async () => service.cancelObjective(c.req.param("id")),
+        () => emptyOk({ "HX-Trigger": "hub-refresh" })
+      ));
+
+      app.post("/hub/ui/objectives/:id/cleanup", async (c) => wrap(
+        async () => service.cleanupObjective(c.req.param("id")),
         () => emptyOk({ "HX-Trigger": "hub-refresh" })
       ));
     },

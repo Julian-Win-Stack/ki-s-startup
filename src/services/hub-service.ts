@@ -753,12 +753,17 @@ export class HubService {
     };
   }
 
-  async approveObjective(objectiveId: string): Promise<ObjectiveDetail> {
+  async mergeObjective(objectiveId: string): Promise<ObjectiveDetail> {
     await this.ensureBootstrap();
     const state = await this.requireObjectiveState(objectiveId);
     if (state.status !== "awaiting_confirmation") {
-      throw new HubServiceError(409, "objective is not awaiting confirmation");
+      throw new HubServiceError(409, "objective is not ready to merge");
     }
+    const candidateCommit = state.latestCommitHash;
+    if (!candidateCommit) {
+      throw new HubServiceError(409, "objective has no candidate commit to merge");
+    }
+    const promoted = await this.git.promoteCommit(candidateCommit);
     const approvedAt = Date.now();
     await this.emitObjective(objectiveId, {
       type: "objective.approved",
@@ -768,10 +773,15 @@ export class HubService {
     await this.emitObjective(objectiveId, {
       type: "objective.completed",
       objectiveId,
-      summary: state.latestSummary ?? "Objective approved and completed.",
+      summary: `Merged ${shortHash(promoted.mergedHead)} into ${promoted.targetBranch}.`,
       completedAt: Date.now(),
     });
+    await this.cleanupObjectiveWorkspaces(state);
     return this.getObjective(objectiveId);
+  }
+
+  async approveObjective(objectiveId: string): Promise<ObjectiveDetail> {
+    return this.mergeObjective(objectiveId);
   }
 
   async cancelObjective(objectiveId: string, reason?: string): Promise<ObjectiveDetail> {
@@ -787,6 +797,18 @@ export class HubService {
       canceledAt: Date.now(),
       reason,
     });
+    await this.cleanupObjectiveWorkspaces(state);
+    return this.getObjective(objectiveId);
+  }
+
+  async cleanupObjective(objectiveId: string): Promise<ObjectiveDetail> {
+    await this.ensureBootstrap();
+    await this.reactObjective(objectiveId);
+    const state = await this.requireObjectiveState(objectiveId);
+    if (!["completed", "blocked", "failed", "canceled"].includes(state.status)) {
+      throw new HubServiceError(409, "objective workspaces can only be cleaned after the objective stops running");
+    }
+    await this.cleanupObjectiveWorkspaces(state);
     return this.getObjective(objectiveId);
   }
 
@@ -1495,6 +1517,29 @@ export class HubService {
       type: "objective.synced",
       objective,
     });
+  }
+
+  private async cleanupObjectiveWorkspaces(state: ObjectiveState): Promise<void> {
+    const hubState = await this.hubRuntime.state(HUB_STREAM);
+    const seen = new Set<string>();
+    for (const passId of state.passOrder) {
+      const pass = state.passes[passId];
+      const workspaceId = pass?.workspaceId;
+      if (!workspaceId || seen.has(workspaceId)) continue;
+      seen.add(workspaceId);
+      const workspace = hubState.workspaces[workspaceId];
+      if (!workspace || workspace.removedAt) continue;
+      try {
+        await this.git.removeWorkspace(workspace.path);
+        await this.emitHub({
+          type: "workspace.removed",
+          workspaceId,
+          removedAt: Date.now(),
+        });
+      } catch (err) {
+        console.warn(`hub workspace cleanup failed for ${workspaceId}`, err);
+      }
+    }
   }
 
   private toObjectiveSummary(state: ObjectiveState): HubObjectiveSummary {

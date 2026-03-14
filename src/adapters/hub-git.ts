@@ -64,6 +64,12 @@ export type HubWorkspaceCommit = {
   readonly branch?: string;
 };
 
+export type HubSourcePromotion = {
+  readonly targetBranch: string;
+  readonly previousHead: string;
+  readonly mergedHead: string;
+};
+
 type HubGitOptions = {
   readonly dataDir: string;
   readonly repoRoot: string;
@@ -342,6 +348,40 @@ export class HubGit {
     };
   }
 
+  async promoteCommit(commitHash: string): Promise<HubSourcePromotion> {
+    await this.ensureReady();
+    const source = await this.sourceStatus();
+    if (source.dirty) {
+      throw new HubGitError(409, "source repository has uncommitted changes");
+    }
+    const previousHead = source.head;
+    if (!previousHead) {
+      throw new HubGitError(503, "source repository has no HEAD commit");
+    }
+    const targetBranch = source.branch || await this.defaultBranch();
+    const resolved = await this.resolveCommit(commitHash);
+    try {
+      await this.execGit(["fetch", "--no-tags", this.bareDir, resolved], { cwd: this.repoRoot });
+      await this.execGit(["merge", "--ff-only", "FETCH_HEAD"], { cwd: this.repoRoot });
+    } catch (err) {
+      const message = err instanceof HubGitError ? err.message : String(err);
+      throw new HubGitError(
+        409,
+        `unable to fast-forward ${targetBranch} to ${shortCommit(resolved)}: ${message}`
+      );
+    }
+    const mergedHead = clean(await this.execGit(["rev-parse", "HEAD"], { cwd: this.repoRoot }).catch(() => ""));
+    if (!mergedHead) {
+      throw new HubGitError(500, "unable to resolve source HEAD after merge");
+    }
+    await this.syncFromSource();
+    return {
+      targetBranch,
+      previousHead,
+      mergedHead,
+    };
+  }
+
   private async prepare(): Promise<void> {
     const gitOk = await this.execBare(["--version"]).then(() => true).catch(() => false);
     if (!gitOk) throw new HubGitError(503, "git is not available on PATH");
@@ -458,3 +498,5 @@ export class HubGit {
     }
   }
 }
+
+const shortCommit = (value: string): string => value.slice(0, 8);
