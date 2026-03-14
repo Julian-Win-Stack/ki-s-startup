@@ -63,10 +63,12 @@ import { loadTheoremPrompts, hashTheoremPrompts } from "./prompts/theorem.js";
 import { loadWriterPrompts, hashWriterPrompts } from "./prompts/writer.js";
 import { loadInspectorPrompts, hashInspectorPrompts } from "./prompts/inspector.js";
 import { loadAgentPrompts, hashAgentPrompts } from "./prompts/agent.js";
+import { loadInfraPrompts, hashInfraPrompts } from "./prompts/infra.js";
 import { loadAxiomPrompts, hashAxiomPrompts } from "./prompts/axiom.js";
 import { runTheoremGuild, normalizeTheoremConfig } from "./agents/theorem.js";
 import { runWriterGuild, normalizeWriterConfig } from "./agents/writer.js";
 import { runAgent, normalizeAgentConfig } from "./agents/agent.js";
+import { runInfra, normalizeInfraConfig } from "./agents/infra.js";
 import { runAxiom, normalizeAxiomConfig } from "./agents/axiom.js";
 import { runAxiomSimple, normalizeAxiomSimpleConfig, type AxiomSimpleWorkerLauncher } from "./agents/axiom-simple.js";
 import { theoremRunStream } from "./agents/theorem.streams.js";
@@ -210,6 +212,11 @@ const AGENT_PROMPTS = loadAgentPrompts();
 const AGENT_PROMPTS_HASH = hashAgentPrompts(AGENT_PROMPTS);
 const AGENT_PROMPTS_PATH = "prompts/agent.prompts.json";
 const AGENT_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2";
+
+const INFRA_PROMPTS = loadInfraPrompts();
+const INFRA_PROMPTS_HASH = hashInfraPrompts(INFRA_PROMPTS);
+const INFRA_PROMPTS_PATH = "prompts/infra.prompts.json";
+const INFRA_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2";
 
 const AXIOM_PROMPTS = loadAxiomPrompts();
 const AXIOM_PROMPTS_HASH = hashAxiomPrompts(AXIOM_PROMPTS);
@@ -406,6 +413,15 @@ const agentRunner = createAgentRunner({
   prompts: AGENT_PROMPTS, model: AGENT_MODEL,
   promptHash: AGENT_PROMPTS_HASH, promptPath: AGENT_PROMPTS_PATH,
   runFn: runAgent as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  extras: { memoryTools, delegationTools, workspaceRoot: process.cwd(), llmStructured },
+});
+
+const infraRunner = createAgentRunner({
+  defaultStream: "agents/infra", sseTopic: "agent", sseTokenEvent: "agent-token",
+  normalizeConfig: normalizeInfraConfig, runtime: agentRuntime,
+  prompts: INFRA_PROMPTS, model: INFRA_MODEL,
+  promptHash: INFRA_PROMPTS_HASH, promptPath: INFRA_PROMPTS_PATH,
+  runFn: runInfra as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
   extras: { memoryTools, delegationTools, workspaceRoot: process.cwd(), llmStructured },
 });
 
@@ -1235,6 +1251,11 @@ const worker = new JobWorker({
       defaultSubConfig: { maxIterations: 3, maxToolOutputChars: 2500, memoryScope: "agent", workspace: "." },
       runtime: agentRuntime, runStreamFn: agentRunStream, runner: agentRunner,
     }),
+    infra: createWorkerHandler({
+      defaultStream: "agents/infra", defaultAgentId: "infra", kind: "infra.run",
+      defaultSubConfig: { maxIterations: 4, maxToolOutputChars: 2500, memoryScope: "infra", workspace: "." },
+      runtime: agentRuntime, runStreamFn: agentRunStream, runner: infraRunner,
+    }),
     axiom: createWorkerHandler({
       defaultStream: "agents/axiom", defaultAgentId: "axiom", kind: "axiom.run",
       defaultSubConfig: {
@@ -1343,6 +1364,7 @@ const routes = await loadAgentRoutes({
     "axiom-simple": axiomSimpleRuntime,
     writer: writerRuntime,
     agent: agentRuntime,
+    infra: agentRuntime,
     axiom: agentRuntime,
     inspector: inspectorRuntime,
     selfImprovement: selfImprovementRuntime,
@@ -1353,6 +1375,7 @@ const routes = await loadAgentRoutes({
     writer: WRITER_PROMPTS,
     inspector: INSPECTOR_PROMPTS,
     agent: AGENT_PROMPTS,
+    infra: INFRA_PROMPTS,
     axiom: AXIOM_PROMPTS,
   },
   promptHashes: {
@@ -1360,6 +1383,7 @@ const routes = await loadAgentRoutes({
     writer: WRITER_PROMPTS_HASH,
     inspector: INSPECTOR_PROMPTS_HASH,
     agent: AGENT_PROMPTS_HASH,
+    infra: INFRA_PROMPTS_HASH,
     axiom: AXIOM_PROMPTS_HASH,
   },
   promptPaths: {
@@ -1367,6 +1391,7 @@ const routes = await loadAgentRoutes({
     writer: WRITER_PROMPTS_PATH,
     inspector: INSPECTOR_PROMPTS_PATH,
     agent: AGENT_PROMPTS_PATH,
+    infra: INFRA_PROMPTS_PATH,
     axiom: AXIOM_PROMPTS_PATH,
   },
   models: {
@@ -1374,6 +1399,7 @@ const routes = await loadAgentRoutes({
     writer: WRITER_MODEL,
     inspector: INSPECTOR_MODEL,
     agent: AGENT_MODEL,
+    infra: INFRA_MODEL,
     axiom: AXIOM_MODEL,
   },
   helpers: {

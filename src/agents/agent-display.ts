@@ -1,5 +1,6 @@
 export const MONITOR_AGENT_IDS = [
   "agent",
+  "infra",
   "theorem",
   "axiom-guild",
   "axiom-simple",
@@ -14,6 +15,7 @@ const AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   "axiom-simple": "Axiom Simple",
   axiom: "Lean Worker",
   agent: "General Agent",
+  infra: "Infrastructure Agent",
   writer: "Writer",
   inspector: "Receipt Inspector",
 };

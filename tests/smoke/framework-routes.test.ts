@@ -293,6 +293,7 @@ test("framework routes: status parity for core endpoints", { timeout: 120_000 },
     assert.equal(monitorPage.status, 200);
     const monitorHtml = await monitorPage.text();
     assert.match(monitorHtml, /General Agent/);
+    assert.match(monitorHtml, /Infrastructure Agent/);
     assert.match(monitorHtml, /Theorem Guild/);
     assert.match(monitorHtml, /Proof Guild/);
     assert.match(monitorHtml, /Axiom Simple/);
@@ -360,17 +361,44 @@ test("framework routes: status parity for core endpoints", { timeout: 120_000 },
     const agentQueued = await agentEnqueue.json() as { job?: { id?: string } };
     assert.ok(agentQueued.job?.id, "expected agent job id");
 
+    const infraEnqueue = await fetch(`${base}/agents/infra/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        payload: {
+          kind: "infra.run",
+          stream: "agents/infra",
+          runId: `infra_${Date.now()}`,
+          problem: "Inspect AWS caller identity.",
+          config: { maxIterations: 2, maxToolOutputChars: 1200, memoryScope: "infra", workspace: "." },
+        },
+      }),
+    });
+    assert.equal(infraEnqueue.status, 202);
+    const infraQueued = await infraEnqueue.json() as { job?: { id?: string } };
+    assert.ok(infraQueued.job?.id, "expected infra job id");
+
     const jobsIsland = await fetch(`${base}/monitor/island/jobs?job=${encodeURIComponent(agentQueued.job.id!)}`);
     assert.equal(jobsIsland.status, 200);
     const jobsIslandHtml = await jobsIsland.text();
     assert.equal(jobsIslandHtml.includes("data-selected-job-id"), true);
     assert.equal(jobsIslandHtml.includes("General Agent"), true);
 
+    const infraJobsIsland = await fetch(`${base}/monitor/island/jobs?job=${encodeURIComponent(infraQueued.job.id!)}`);
+    assert.equal(infraJobsIsland.status, 200);
+    const infraJobsIslandHtml = await infraJobsIsland.text();
+    assert.equal(infraJobsIslandHtml.includes("Infrastructure Agent"), true);
+
     const jobIsland = await fetch(`${base}/monitor/island/job?stream=agent&job=${encodeURIComponent(agentQueued.job.id!)}`);
     assert.equal(jobIsland.status, 200);
     const jobIslandHtml = await jobIsland.text();
     assert.equal(jobIslandHtml.includes("Steer Job"), true);
     assert.equal(jobIslandHtml.includes("General Agent"), true);
+
+    const infraJobIsland = await fetch(`${base}/monitor/island/job?stream=agents/infra&job=${encodeURIComponent(infraQueued.job.id!)}`);
+    assert.equal(infraJobIsland.status, 200);
+    const infraJobIslandHtml = await infraJobIsland.text();
+    assert.equal(infraJobIslandHtml.includes("Infrastructure Agent"), true);
 
     const seededJobIsland = await fetch(`${base}/monitor/island/job?stream=agents/axiom-guild&job=${encodeURIComponent(seededFailedJob.id)}`);
     assert.equal(seededJobIsland.status, 200);
