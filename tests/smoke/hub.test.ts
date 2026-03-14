@@ -870,6 +870,95 @@ test("hub: merge is blocked when the source repo is dirty", { timeout: 180_000 }
   }
 });
 
+test("hub: divergent merge auto-queues a reconciliation pass instead of failing", { timeout: 180_000 }, async () => {
+  const port = await getFreePort();
+  const dataDir = await createTempDir("receipt-hub-objective-diverge-data");
+  const repoDir = await createSourceRepo();
+  const fakeCodex = await createFakeCodexBin();
+  const tsxBin = path.join(
+    ROOT,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "tsx.cmd" : "tsx"
+  );
+
+  const child = spawn(tsxBin, ["src/server.ts"], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      DATA_DIR: dataDir,
+      HUB_REPO_ROOT: repoDir,
+      HUB_CODEX_BIN: fakeCodex,
+      OPENAI_API_KEY: "",
+      IMPROVEMENT_VALIDATE_CMD: "echo validate-ok",
+      IMPROVEMENT_HARNESS_CMD: "echo harness-ok",
+    },
+    stdio: "pipe",
+  });
+
+  try {
+    const base = `http://127.0.0.1:${port}`;
+    await waitForHttpOk(`${base}/hub`, 30_000);
+
+    const objectiveCreate = await fetch(`${base}/hub/api/objectives`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: "Auto reconcile stale merge",
+        prompt: "Create a tiny tracked file so the hub can reconcile an approved candidate after main moves.",
+        checks: ["git rev-parse HEAD"],
+      }),
+    });
+    assert.equal(objectiveCreate.status, 201);
+    const created = await objectiveCreate.json() as { objective: { objectiveId: string } };
+
+    const firstAwaiting = await waitForObjectiveStatus(base, created.objective.objectiveId, ["awaiting_confirmation"], 120_000);
+    assert.equal(firstAwaiting.objective.passes.length, 5);
+    const firstCandidate = firstAwaiting.objective.latestCommitHash;
+    assert.ok(firstCandidate);
+
+    await fs.writeFile(path.join(repoDir, "MAIN_MOVED.txt"), "main moved forward\n", "utf-8");
+    await git(repoDir, ["add", "MAIN_MOVED.txt"]);
+    await git(repoDir, ["commit", "-m", "advance main before merge"]);
+
+    const reconcileRes = await fetch(`${base}/hub/api/objectives/${created.objective.objectiveId}/merge`, {
+      method: "POST",
+    });
+    assert.equal(reconcileRes.status, 200);
+    const reconcilePayload = await reconcileRes.json() as {
+      objective: {
+        status: string;
+        latestSummary?: string;
+        passes: Array<{ phase: string; passNumber: number }>;
+      };
+    };
+    assert.equal(reconcilePayload.objective.status, "building");
+    assert.match(reconcilePayload.objective.latestSummary ?? "", /queued a reconciliation builder pass/i);
+    assert.equal(reconcilePayload.objective.passes.at(-1)?.phase, "builder");
+
+    const secondAwaiting = await waitForObjectiveStatus(base, created.objective.objectiveId, ["awaiting_confirmation"], 120_000);
+    assert.equal(secondAwaiting.objective.passes.length, 7);
+    assert.notEqual(secondAwaiting.objective.latestCommitHash, firstCandidate);
+    assert.deepEqual(
+      secondAwaiting.objective.passes.slice(-2).map((pass) => `${pass.phase}:${pass.outcome ?? "queued"}`),
+      ["builder:candidate_ready", "reviewer:approved"],
+    );
+
+    const mergeRes = await fetch(`${base}/hub/api/objectives/${created.objective.objectiveId}/merge`, {
+      method: "POST",
+    });
+    assert.equal(mergeRes.status, 200);
+
+    const completed = await waitForObjectiveStatus(base, created.objective.objectiveId, ["completed"], 20_000);
+    assert.equal(completed.objective.latestCommitHash, secondAwaiting.objective.latestCommitHash);
+    const sourceHead = await git(repoDir, ["rev-parse", "HEAD"]);
+    assert.equal(sourceHead, secondAwaiting.objective.latestCommitHash);
+  } finally {
+    await stopChild(child);
+  }
+});
+
 test("hub: failed objective pass is reconciled to blocked on the next read", { timeout: 120_000 }, async () => {
   const port = await getFreePort();
   const dataDir = await createTempDir("receipt-hub-objective-fail-data");

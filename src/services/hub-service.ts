@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { jsonBranchStore, jsonlStore } from "../adapters/jsonl.js";
 import type { JsonlQueue } from "../adapters/jsonl-queue.js";
 import { type CodexExecutor, type CodexRunControl } from "../adapters/codex-executor.js";
-import { HubGit, type HubGitCommit } from "../adapters/hub-git.js";
+import { HubGit, HubGitError, type HubGitCommit } from "../adapters/hub-git.js";
 import type { MemoryTools } from "../adapters/memory-tools.js";
 import {
   activatableNodes,
@@ -100,6 +100,14 @@ const objectiveMergePolicy: MergePolicy<ObjectivePolicyContext, { readonly statu
     } satisfies MergeDecision;
   },
 });
+
+const isFastForwardDivergence = (err: unknown): boolean => {
+  if (!(err instanceof HubGitError)) return false;
+  const message = err.message.toLowerCase();
+  return message.includes("unable to fast-forward")
+    || message.includes("diverging branches")
+    || message.includes("not possible to fast-forward");
+};
 
 export class HubServiceError extends Error {
   readonly status: number;
@@ -825,7 +833,7 @@ export class HubService {
 
   async mergeObjective(objectiveId: string): Promise<ObjectiveDetail> {
     await this.ensureBootstrap();
-    const state = await this.requireObjectiveState(objectiveId);
+    let state = await this.requireObjectiveState(objectiveId);
     if (state.status !== "awaiting_confirmation") {
       throw new HubServiceError(409, "objective is not ready to merge");
     }
@@ -833,7 +841,25 @@ export class HubService {
     if (!candidateCommit) {
       throw new HubServiceError(409, "objective has no candidate commit to merge");
     }
-    const promoted = await this.git.promoteCommit(candidateCommit);
+    let promoted;
+    try {
+      promoted = await this.git.promoteCommit(candidateCommit);
+    } catch (err) {
+      if (!isFastForwardDivergence(err)) throw err;
+      const source = await this.git.sourceStatus();
+      if (!source.head) throw err;
+      const reconcile = this.planReconciliationNode(state, source.head);
+      await this.emitObjective(objectiveId, {
+        type: "objective.resumed",
+        objectiveId,
+        phase: "builder",
+        summary: `Target branch advanced to ${shortHash(source.head)}. Queued a reconciliation builder pass on the latest ${source.branch ?? await this.git.defaultBranch()}.`,
+        resumedAt: Date.now(),
+      });
+      state = await this.requireObjectiveState(objectiveId);
+      await this.planObjectiveNode(state, reconcile);
+      return this.getObjective(objectiveId);
+    }
     const approvedAt = Date.now();
     await this.emitObjective(objectiveId, {
       type: "objective.approved",
@@ -872,6 +898,7 @@ export class HubService {
       type: "objective.resumed",
       objectiveId,
       phase,
+      summary: `Resumed ${phase} pass.`,
       resumedAt: Date.now(),
     });
     await this.reactObjective(objectiveId);
@@ -1511,6 +1538,18 @@ export class HubService {
       return "awaiting_confirmation";
     }
     return undefined;
+  }
+
+  private planReconciliationNode(state: ObjectiveState, targetBaseCommit: string): PlannedObjectiveNode {
+    const completedNodes = graphProjection(state.graph).completed;
+    const lastNode = completedNodes[completedNodes.length - 1];
+    const dependsOn = lastNode ? [lastNode.nodeId] : [];
+    return {
+      phase: "builder",
+      baseCommit: targetBaseCommit,
+      dependsOn,
+      inputRefs: this.buildNodeInputRefs(state, targetBaseCommit, dependsOn),
+    };
   }
 
   private async applyPassResult(

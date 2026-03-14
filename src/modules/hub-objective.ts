@@ -232,6 +232,7 @@ export type ObjectiveEvent =
       readonly type: "objective.resumed";
       readonly objectiveId: string;
       readonly phase: ObjectivePhase;
+      readonly summary?: string;
       readonly resumedAt: number;
     }
   | {
@@ -601,7 +602,7 @@ export const reduceObjective: Reducer<ObjectiveState, ObjectiveEvent> = (state, 
         lane: objectiveLaneForStatus(nextStatus),
         currentPhase: event.phase,
         blockedReason: undefined,
-        latestSummary: `Resumed ${event.phase} pass.`,
+        latestSummary: event.summary ?? `Resumed ${event.phase} pass.`,
         updatedAt: event.resumedAt,
         graph: {
           ...state.graph,
