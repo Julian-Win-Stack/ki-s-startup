@@ -388,6 +388,21 @@ test("factory shell: hub shortcut link is not rendered", () => {
   assert.doesNotMatch(markup, /href="\/hub"/);
 });
 
+test("factory shell: objective detail lists use responsive grid layout", () => {
+  const markup = factoryShell({
+    composeIsland: '<section id="factory-compose"></section>',
+    boardIsland: '<section id="factory-board"></section>',
+    objectiveIsland: '<section id="factory-objective"></section>',
+    liveIsland: '<section id="factory-live"></section>',
+    debugIsland: '<section id="factory-debug"></section>',
+  });
+
+  assert.match(markup, /\.factory-split \{ grid-template-columns: minmax\(0, 1\.4fr\) minmax\(280px, 1fr\); align-items: start; \}/);
+  assert.match(markup, /\.factory-item-list \{ grid-template-columns: repeat\(auto-fit, minmax\(280px, 1fr\)\); align-items: start; \}/);
+  assert.match(markup, /@media \(max-width: 1280px\) \{ \.factory-split \{ grid-template-columns: 1fr; \} \}/);
+  assert.match(markup, /@media \(max-width: 720px\) \{[\s\S]*?\.factory-item-list \{ grid-template-columns: 1fr; \}/);
+});
+
 test("factory objective island: blocked reasons are surfaced prominently", () => {
   const markup = factoryObjectiveIsland({
     objectiveId: "objective_demo",
@@ -449,4 +464,72 @@ test("factory objective island: blocked reasons are surfaced prominently", () =>
   assert.match(markup, /Why blocked:/);
   assert.match(markup, /factory task produced no tracked diff/);
   assert.match(markup, /Blocked tasks:/);
+});
+
+test("factory objective island: tasks and candidates render inside isolated list containers", () => {
+  const markup = factoryObjectiveIsland({
+    objectiveId: "objective_demo",
+    title: "Responsive task cards",
+    status: "active",
+    archivedAt: undefined,
+    updatedAt: 10,
+    latestSummary: "Task cards wrap correctly.",
+    blockedReason: undefined,
+    activeTaskCount: 1,
+    readyTaskCount: 1,
+    taskCount: 1,
+    integrationStatus: "idle",
+    latestCommitHash: "abc12345",
+    prompt: "Verify task card spacing.",
+    channel: "results",
+    baseHash: "abc1234",
+    checks: ["npm run build"],
+    policy: DEFAULT_FACTORY_OBJECTIVE_POLICY,
+    budgetState: {
+      taskRunsUsed: 1,
+      candidatePassesByTask: {},
+      reconciliationTasksUsed: 0,
+      elapsedMinutes: 1,
+      lastMutationAt: undefined,
+      lastDispatchAt: 10,
+      policyBlockedReason: undefined,
+    },
+    createdAt: 1,
+    tasks: [{
+      nodeId: "task_01",
+      taskId: "task_01",
+      taskKind: "planned",
+      title: "Task title with enough length to wrap across lines without colliding with the next card.",
+      prompt: "Adjust layout classes.",
+      workerType: "codex",
+      baseCommit: "abc1234",
+      dependsOn: [],
+      status: "ready",
+      skillBundlePaths: [],
+      contextRefs: [],
+      artifactRefs: {},
+      createdAt: 1,
+      completedAt: undefined,
+      blockedReason: undefined,
+      workspaceExists: true,
+      workspaceDirty: false,
+      latestSummary: "Longer task summary content lives inside the task card list container.",
+      candidateId: "candidate_01",
+      jobStatus: "queued",
+      elapsedMs: 1_500,
+      sourceTaskId: undefined,
+    }],
+    candidates: [],
+    integration: {
+      status: "idle",
+      queuedCandidateIds: [],
+      validationResults: [],
+      updatedAt: 10,
+    },
+    latestRebracket: undefined,
+  });
+
+  assert.match(markup, /class="factory-item-list factory-task-list"/);
+  assert.match(markup, /Task title with enough length to wrap across lines/);
+  assert.match(markup, /class="factory-item-list factory-candidate-list">\s*<div class="factory-empty">No candidates\.<\/div>/);
 });

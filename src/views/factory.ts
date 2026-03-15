@@ -216,14 +216,18 @@ export const factoryObjectiveIsland = (detail: FactoryObjectiveDetail | undefine
         <pre>${esc(JSON.stringify(detail.policy, null, 2))}</pre>
       </details>
       <div class="factory-split">
-        <div>
+        <section class="factory-section">
           <div class="factory-subhead">Tasks</div>
-          ${detail.tasks.map(renderTask).join("") || `<div class="factory-empty">No tasks.</div>`}
-        </div>
-        <div>
+          <div class="factory-item-list factory-task-list">
+            ${detail.tasks.map(renderTask).join("") || `<div class="factory-empty">No tasks.</div>`}
+          </div>
+        </section>
+        <section class="factory-section">
           <div class="factory-subhead">Candidates</div>
-          ${detail.candidates.map(renderCandidate).join("") || `<div class="factory-empty">No candidates.</div>`}
-        </div>
+          <div class="factory-item-list factory-candidate-list">
+            ${detail.candidates.map(renderCandidate).join("") || `<div class="factory-empty">No candidates.</div>`}
+          </div>
+        </section>
       </div>
     </section>
   `;
@@ -397,19 +401,27 @@ export const factoryShell = (opts: {
       .factory-grid { display: grid; gap: 12px; }
       .factory-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .factory-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .factory-form, .factory-split { display: grid; gap: 12px; }
-      .factory-split { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+      .factory-form, .factory-split, .factory-section, .factory-item-list { display: grid; gap: 12px; }
+      .factory-split { grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr); align-items: start; }
+      .factory-section { min-width: 0; align-content: start; }
+      .factory-item-list { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); align-items: start; }
       .factory-board-grid { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .factory-lane { border: 1px solid var(--line); border-radius: 14px; padding: 12px; background: rgba(17,20,28,0.72); display: grid; gap: 12px; }
       .factory-lane-body { display: grid; gap: 10px; }
       .factory-card { border: 1px solid var(--line); border-radius: 12px; background: rgba(24,29,39,0.92); padding: 12px; display: grid; gap: 8px; }
       .factory-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(132,212,255,0.25); }
-      .factory-card-top, .factory-card-meta, .factory-item-top, .factory-foot, .factory-actions, .factory-tags { display: flex; gap: 8px; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+      .factory-card-top, .factory-card-meta, .factory-foot, .factory-actions { display: flex; gap: 8px; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+      .factory-item-top, .factory-tags { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; }
+      .factory-item-top { justify-content: space-between; }
+      .factory-tags { justify-content: flex-start; }
       .factory-card-summary, .factory-muted { color: var(--muted); font-size: 13px; }
       .factory-card-title { font-size: 15px; font-weight: 600; }
-      .factory-item, .factory-stat { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: rgba(18,22,30,0.74); }
+      .factory-item, .factory-stat { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: rgba(18,22,30,0.74); min-width: 0; }
       .factory-item.compact { padding: 10px; }
-      .factory-item-body { display: grid; gap: 6px; }
+      .factory-item { display: grid; gap: 10px; align-content: start; overflow: hidden; }
+      .factory-item-top > strong { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+      .factory-item-body { display: grid; gap: 6px; min-width: 0; align-content: start; }
+      .factory-item-body > div, .factory-note, .tag { min-width: 0; overflow-wrap: anywhere; }
       .factory-actions form { margin: 0; }
       .factory-actions button, .factory-form button { cursor: pointer; border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--panel-2); color: var(--text); }
       .factory-actions .danger { border-color: rgba(255,143,143,0.45); color: var(--danger); }
@@ -420,13 +432,19 @@ export const factoryShell = (opts: {
       .factory-empty { padding: 18px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); }
       .factory-stat span { display: block; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
       .factory-stat strong { display: block; margin-top: 4px; font-size: 16px; }
-      .factory-subhead { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 8px; }
+      .factory-subhead { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
       .factory-detail { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: rgba(15,18,26,0.72); }
       .factory-detail summary { cursor: pointer; font-weight: 600; }
       .badge, .tag { border-radius: 999px; padding: 3px 8px; font-size: 11px; border: 1px solid var(--line); background: rgba(255,255,255,0.04); }
       pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
       pre.error { color: var(--danger); }
-      @media (max-width: 1100px) { .factory-board-grid, .factory-split, .factory-grid.two, .factory-grid.three { grid-template-columns: 1fr; } }
+      @media (max-width: 1280px) { .factory-split { grid-template-columns: 1fr; } }
+      @media (max-width: 1100px) { .factory-board-grid, .factory-grid.two, .factory-grid.three { grid-template-columns: 1fr; } }
+      @media (max-width: 720px) {
+        .factory-shell { padding: 16px; }
+        .factory-head { flex-direction: column; }
+        .factory-item-list { grid-template-columns: 1fr; }
+      }
     </style>
   </head>
   <body>
