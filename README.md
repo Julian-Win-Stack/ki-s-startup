@@ -64,6 +64,7 @@ Queue streams:
 - [docs/receipt-coding-runtime.md](./docs/receipt-coding-runtime.md)
 - [docs/receipt-cli-mvp-architecture.md](./docs/receipt-cli-mvp-architecture.md)
 - [docs/factory-on-receipt.md](./docs/factory-on-receipt.md)
+- [docs/factory-on-another-repo.md](./docs/factory-on-another-repo.md)
 - [docs/agent-framework.md](./docs/agent-framework.md)
 - [docs/axiom-theorem-prover.md](./docs/axiom-theorem-prover.md)
 - [docs/axiom-public-prover.md](./docs/axiom-public-prover.md)
