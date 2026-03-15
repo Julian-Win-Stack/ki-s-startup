@@ -312,9 +312,29 @@ export const factoryShell = (opts: {
           ["factory-live", () => "/factory/island/live" + window.location.search],
           ["factory-debug", () => "/factory/island/debug" + window.location.search],
         ];
+        const isDirtyField = (field) => {
+          if (!(field instanceof HTMLElement) || field.hasAttribute("disabled")) return false;
+          if (field instanceof HTMLInputElement) {
+            if (field.type === "checkbox" || field.type === "radio") return field.checked !== field.defaultChecked;
+            return field.value !== field.defaultValue;
+          }
+          if (field instanceof HTMLTextAreaElement) return field.value !== field.defaultValue;
+          if (field instanceof HTMLSelectElement) {
+            return Array.from(field.options).some((option) => option.selected !== option.defaultSelected);
+          }
+          return false;
+        };
+        const preserveComposeDraft = () => {
+          const compose = document.getElementById("factory-compose");
+          if (!compose) return false;
+          const form = compose.querySelector("form");
+          if (!(form instanceof HTMLFormElement)) return false;
+          return Array.from(form.elements).some((field) => isDirtyField(field));
+        };
         const loadIsland = async (id, url) => {
           const current = document.getElementById(id);
           if (!current) return;
+          if (id === "factory-compose" && preserveComposeDraft()) return;
           const res = await fetch(url, {
             headers: { "HX-Request": "true" },
             cache: "no-store",
