@@ -605,6 +605,12 @@ export type FactoryEvent =
       readonly adoptedAt: number;
     }
   | {
+      readonly type: "objective.operator.noted";
+      readonly objectiveId: string;
+      readonly message: string;
+      readonly notedAt: number;
+    }
+  | {
       readonly type: "objective.slot.queued";
       readonly objectiveId: string;
       readonly queuedAt: number;
@@ -1002,6 +1008,12 @@ export const reduceFactory: Reducer<FactoryState, FactoryEvent> = (state, event)
           summary: event.summary,
           fallback: event.fallback,
         },
+      };
+    case "objective.operator.noted":
+      return {
+        ...state,
+        latestSummary: event.message,
+        updatedAt: event.notedAt,
       };
     case "objective.slot.queued":
       return {

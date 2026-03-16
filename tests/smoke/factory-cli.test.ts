@@ -9,6 +9,7 @@ import React from "react";
 import { renderToString } from "ink";
 
 import { FactoryBoardScreen, FactoryObjectiveScreen } from "../../src/factory-cli/app.tsx";
+import { parseComposerDraft } from "../../src/factory-cli/composer.ts";
 import { loadFactoryConfig } from "../../src/factory-cli/config.ts";
 import { createFactoryCliRuntime } from "../../src/factory-cli/runtime.ts";
 import { FactoryThemeProvider } from "../../src/factory-cli/theme.tsx";
@@ -210,6 +211,37 @@ test("factory cli: run promotes changes and inspect exposes debug data", async (
   expect(inspectPayload.data.lastJobs.length >= 1).toBeTruthy();
 }, 120_000);
 
+test("factory cli: composer parser handles plain text and slash commands", () => {
+  expect(parseComposerDraft("Ship a better objective flow")).toEqual({
+    ok: true,
+    command: {
+      type: "new",
+      prompt: "Ship a better objective flow",
+      title: "Ship a better objective flow",
+    },
+  });
+  expect(parseComposerDraft("Need a tighter validation pass", "obj_123")).toEqual({
+    ok: true,
+    command: {
+      type: "react",
+      message: "Need a tighter validation pass",
+    },
+  });
+  expect(parseComposerDraft("/watch obj_123", "obj_456")).toEqual({
+    ok: true,
+    command: {
+      type: "watch",
+      objectiveId: "obj_123",
+    },
+  });
+  expect(parseComposerDraft("/help", "obj_123")).toEqual({
+    ok: true,
+    command: {
+      type: "help",
+    },
+  });
+});
+
 test("factory cli: mission control screens render from shared projections", async () => {
   const repoDir = await createRepo();
   const codexStub = await createCodexStub();
@@ -259,8 +291,9 @@ test("factory cli: mission control screens render from shared projections", asyn
     const normalizedBoard = boardScreen.toLowerCase();
     expect(normalizedBoard).toContain("mission control");
     expect(normalizedBoard).toContain("factory");
-    expect(normalizedBoard).toContain("mission control objective");
-    expect(normalizedBoard).toContain("queue activity");
+    expect(normalizedBoard).toContain("objective stream");
+    expect(normalizedBoard).toContain("objective rail");
+    expect(normalizedBoard).toContain("control rail");
 
     const objectiveScreen = stripAnsi(renderToString(
       React.createElement(FactoryThemeProvider, undefined,
@@ -274,10 +307,10 @@ test("factory cli: mission control screens render from shared projections", asyn
       ),
     ));
     const normalizedObjective = objectiveScreen.toLowerCase();
-    expect(normalizedObjective).toContain("objective workspace");
-    expect(normalizedObjective).toContain("overview");
-    expect(normalizedObjective).toContain("validation commands");
-    expect(normalizedObjective).toContain("action rail");
+    expect(normalizedObjective).toContain("objective stream");
+    expect(normalizedObjective).toContain("control rail");
+    expect(normalizedObjective).toContain("objective budget");
+    expect(normalizedObjective).toContain("objective prompt");
   } finally {
     runtime.stop();
   }

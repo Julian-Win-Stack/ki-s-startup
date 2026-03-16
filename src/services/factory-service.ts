@@ -215,6 +215,9 @@ export type FactoryTaskView = FactoryTaskRecord & {
   readonly workspaceDirty: boolean;
   readonly workspaceHead?: string;
   readonly elapsedMs?: number;
+  readonly stdoutPath?: string;
+  readonly stderrPath?: string;
+  readonly lastMessagePath?: string;
   readonly stdoutTail?: string;
   readonly stderrTail?: string;
   readonly lastMessage?: string;
@@ -870,6 +873,18 @@ export class FactoryService {
       activeTasks,
       recentJobs,
     };
+  }
+
+  async addObjectiveNote(objectiveId: string, message: string): Promise<void> {
+    await this.getObjectiveState(objectiveId);
+    const normalized = message.trim();
+    if (!normalized) return;
+    await this.emitObjective(objectiveId, {
+      type: "objective.operator.noted",
+      objectiveId,
+      message: normalized,
+      notedAt: Date.now(),
+    });
   }
 
   async promoteObjective(objectiveId: string): Promise<FactoryObjectiveDetail> {
@@ -2974,6 +2989,7 @@ export class FactoryService {
         const workspaceStatus = task?.workspacePath
           ? await this.git.worktreeStatus(task.workspacePath)
           : { exists: false, dirty: false };
+        const filePaths = task?.workspacePath ? this.taskFilePaths(task.workspacePath, task.taskId) : undefined;
         return {
           ...task,
           candidate: task?.candidateId ? state.candidates[task.candidateId] : undefined,
@@ -2983,9 +2999,12 @@ export class FactoryService {
           workspaceDirty: workspaceStatus.dirty,
           workspaceHead: workspaceStatus.head,
           elapsedMs: task?.startedAt ? Math.max(0, Date.now() - task.startedAt) : undefined,
-          stdoutTail: task?.workspacePath ? await this.readTextTail(this.taskFilePaths(task.workspacePath, task.taskId).stdoutPath, 900) : undefined,
-          stderrTail: task?.workspacePath ? await this.readTextTail(this.taskFilePaths(task.workspacePath, task.taskId).stderrPath, 600) : undefined,
-          lastMessage: task?.workspacePath ? await this.readTextTail(this.taskFilePaths(task.workspacePath, task.taskId).lastMessagePath, 400) : undefined,
+          stdoutPath: filePaths?.stdoutPath,
+          stderrPath: filePaths?.stderrPath,
+          lastMessagePath: filePaths?.lastMessagePath,
+          stdoutTail: filePaths ? await this.readTextTail(filePaths.stdoutPath, 900) : undefined,
+          stderrTail: filePaths ? await this.readTextTail(filePaths.stderrPath, 600) : undefined,
+          lastMessage: filePaths ? await this.readTextTail(filePaths.lastMessagePath, 400) : undefined,
         } satisfies FactoryTaskView;
       })
     );
@@ -3533,6 +3552,8 @@ export class FactoryService {
         return `Plan proposed: ${event.summary}`;
       case "objective.plan.adopted":
         return `Plan adopted: ${event.summary}`;
+      case "objective.operator.noted":
+        return `Operator note: ${event.message}`;
       case "objective.slot.queued":
         return "Objective queued for the repo execution slot.";
       case "objective.slot.admitted":

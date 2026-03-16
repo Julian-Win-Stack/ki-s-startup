@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-@source "../views/factory.ts";
+@source "../views/factory/";
 
 /* ── Caffeine dark theme · https://tweakcn.com/r/themes/caffeine ── */
 
@@ -58,7 +58,7 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
-/* ── Base ── */
+/* ── Base resets ── */
 
 @layer base {
   *, *::before, *::after { box-sizing: border-box; }
@@ -79,7 +79,7 @@
   ::selection { background: oklch(0.9247 0.0524 66.1732 / 0.25); }
 }
 
-/* ── Layout: 1px-gap grid creates hairline dividers between columns ── */
+/* ── 3-column layout with 1px hairline dividers via gap + background ── */
 
 .factory-layout {
   min-height: 100vh;
@@ -88,125 +88,62 @@
   grid-template-rows: 1fr;
   gap: 0 1px;
   background: var(--border);
+  overflow: hidden;
 }
+.factory-layout > * { background: var(--background); min-width: 0; overflow: hidden; }
 
-.factory-layout > * {
-  background: var(--background);
-}
+/* ── Sticky scrollable panels ── */
 
-.inspector-aside {
+.rail-panel, .inspector-aside {
   position: sticky;
   top: 0;
   max-height: 100vh;
   overflow-y: auto;
-  align-self: start;
-  display: flex;
-  flex-direction: column;
-  scrollbar-width: thin;
-  scrollbar-color: oklch(0.35 0 0) transparent;
-}
-
-.inspector-aside > *:not(:first-child) {
-  border-top: 1px solid var(--border);
-}
-
-.rail-panel {
-  position: sticky;
-  top: 0;
-  max-height: 100vh;
-  overflow-y: auto;
+  overflow-x: hidden;
   align-self: start;
   scrollbar-width: thin;
   scrollbar-color: oklch(0.35 0 0) transparent;
 }
 
-/* ── Overlay ── */
+/* ── Compose modal toggle ── */
 
-.compose-overlay {
-  position: fixed;
-  inset: 0;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: oklch(0 0 0 / 0.55);
-  backdrop-filter: blur(6px);
-  z-index: 20;
-}
+.compose-overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; background: oklch(0 0 0 / 0.55); backdrop-filter: blur(6px); z-index: 20; }
 .compose-open .compose-overlay { display: flex; }
 
-/* ── Tabs ── */
+/* ── Context panel ── */
 
-.tab-panel { display: none; gap: 12px; }
-.tab-panel.active {
-  display: grid;
-  animation: fade-in 180ms ease;
-}
-
-.tab-btn {
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: 13px;
-  font-weight: 500;
-  transition: color 120ms, border-color 120ms;
-  margin-bottom: -1px;
-}
-.tab-btn:hover { color: var(--foreground); }
-.tab-btn.active {
-  color: var(--primary);
-  border-bottom-color: var(--primary);
-}
-
-/* ── Forms ── */
-
-.form-grid-2 {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
+.context-section summary::-webkit-details-marker { display: none; }
+.context-section summary { list-style: none; }
+.context-section[open] summary .text-xs { transform: rotate(90deg); }
+#factory-context > *:last-child { border-bottom: none; }
 
 /* ── Responsive ── */
 
 @media (max-width: 1400px) {
-  .factory-layout {
-    grid-template-columns: 280px minmax(0, 1fr);
-    grid-template-rows: 1fr auto;
-    gap: 1px;
-  }
-  .inspector-aside {
-    position: static;
-    max-height: none;
-    overflow-y: visible;
-    grid-column: 1 / -1;
-    flex-direction: row;
-  }
-  .inspector-aside > *:not(:first-child) {
-    border-top: none;
-    border-left: 1px solid var(--border);
-  }
+  .factory-layout { grid-template-columns: 280px minmax(0, 1fr); grid-template-rows: 1fr auto; gap: 1px; }
+  .inspector-aside { position: static; max-height: none; overflow-y: visible; grid-column: 1 / -1; display: flex; flex-direction: row; }
   .inspector-aside > * { flex: 1; min-width: 0; }
 }
 
 @media (max-width: 1080px) {
-  .factory-layout {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto;
-    gap: 1px;
-  }
-  .rail-panel { position: static; max-height: none; overflow-y: visible; }
+  .factory-layout { grid-template-columns: 1fr; grid-template-rows: auto; gap: 1px; }
+  .rail-panel, .inspector-aside { position: static; max-height: none; overflow-y: visible; }
   .inspector-aside { flex-direction: column; }
-  .inspector-aside > *:not(:first-child) {
-    border-left: none;
-    border-top: 1px solid var(--border);
-  }
-  .form-grid-2 { grid-template-columns: 1fr; }
 }
 
-/* ── Animations ── */
+/* ── Keyframes ── */
 
 @keyframes fade-in {
   from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes urgency-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.4); }
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-color: oklch(0.6271 0.1936 33.339 / 0.25); }
+  50% { border-color: oklch(0.6271 0.1936 33.339 / 0.5); }
 }

@@ -22,7 +22,7 @@ import {
   type FactoryEvent,
 } from "../../src/modules/factory.ts";
 import { FactoryService } from "../../src/services/factory-service.ts";
-import { factoryObjectiveIsland, factoryShell } from "../../src/views/factory.ts";
+import { factoryStreamIsland, factoryShell } from "../../src/views/factory/index.ts";
 import type { BranchStore, Receipt, Store } from "../../src/core/types.ts";
 
 const stream = "factory/objectives/demo";
@@ -394,45 +394,45 @@ test("factory shell: hub shortcut link is not rendered", () => {
   const markup = factoryShell({
     composeIsland: '<section id="factory-compose"></section>',
     boardIsland: '<section id="factory-board"></section>',
-    objectiveIsland: '<section id="factory-objective"></section>',
-    liveIsland: '<section id="factory-live"></section>',
-    debugIsland: '<section id="factory-debug"></section>',
+    streamIsland: '<section id="factory-stream"></section>',
+    contextIsland: '<section id="factory-context"></section>',
   });
 
   expect(markup).not.toMatch(/Open Hub/);
   expect(markup).not.toMatch(/href="\/hub"/);
 });
 
-test("factory shell: objective detail lists use responsive grid layout", () => {
+test("factory shell: uses 3-column layout with HTMX SSE", () => {
   const markup = factoryShell({
     composeIsland: '<section id="factory-compose"></section>',
     boardIsland: '<section id="factory-board"></section>',
-    objectiveIsland: '<section id="factory-objective"></section>',
-    liveIsland: '<section id="factory-live"></section>',
-    debugIsland: '<section id="factory-debug"></section>',
+    streamIsland: '<section id="factory-stream"></section>',
+    contextIsland: '<section id="factory-context"></section>',
   });
 
-  expect(markup).toMatch(/\.factory-app \{\s*min-height: 100vh;\s*display: grid;\s*grid-template-columns: minmax\(280px, 340px\) minmax\(0, 1fr\) minmax\(320px, 380px\);/);
-  expect(markup).toMatch(/\.factory-task-grid/);
-  expect(markup).toMatch(/@media \(max-width: 1480px\) \{\s*\.factory-app \{\s*grid-template-columns: 300px minmax\(0, 1fr\);/);
-  expect(markup).toMatch(/@media \(max-width: 1080px\) \{\s*\.factory-app \{\s*grid-template-columns: 1fr;/);
+  expect(markup).toMatch(/class="factory-layout"/);
+  expect(markup).toMatch(/hx-ext="sse,morph"/);
+  expect(markup).toMatch(/sse-connect.*\/factory\/events/);
+  expect(markup).toMatch(/id="factory-board-wrap"/);
+  expect(markup).toMatch(/id="factory-stream-wrap"/);
+  expect(markup).toMatch(/id="factory-context-wrap"/);
 });
 
 test("factory objective island: blocked reasons are surfaced prominently", () => {
-  const markup = factoryObjectiveIsland({
+  const detail = {
     objectiveId: "objective_demo",
     title: "Blocked objective",
-    status: "blocked",
+    status: "blocked" as const,
     archivedAt: undefined,
     updatedAt: 10,
     latestSummary: "Blocked while waiting on a diff-producing task.",
     blockedReason: "factory task produced no tracked diff: located the file but changed nothing",
-    phase: "blocked",
-    scheduler: { slotState: "active" },
+    phase: "blocked" as const,
+    scheduler: { slotState: "active" as const },
     repoProfile: {
-      status: "ready",
+      status: "ready" as const,
       inferredChecks: ["npm run build"],
-      generatedSkillRefs: [],
+      generatedSkillRefs: [] as readonly string[],
       summary: "Repo profile ready.",
     },
     blockedExplanation: {
@@ -446,7 +446,7 @@ test("factory objective island: blocked reasons are surfaced prominently", () =>
     activeTaskCount: 0,
     readyTaskCount: 0,
     taskCount: 1,
-    integrationStatus: "idle",
+    integrationStatus: "idle" as const,
     latestCommitHash: undefined,
     prompt: "Remove the legacy header link from /factory.",
     channel: "results",
@@ -466,27 +466,27 @@ test("factory objective island: blocked reasons are surfaced prominently", () =>
     tasks: [{
       nodeId: "task_01",
       taskId: "task_01",
-      taskKind: "planned",
+      taskKind: "planned" as const,
       title: "Locate the header link source",
       prompt: "Search the repo and record the file path.",
-      workerType: "codex",
+      workerType: "codex" as const,
       baseCommit: "abc1234",
-      dependsOn: [],
-      status: "blocked",
-      skillBundlePaths: [],
-      contextRefs: [],
-      artifactRefs: {},
+      dependsOn: [] as readonly string[],
+      status: "blocked" as const,
+      skillBundlePaths: [] as readonly string[],
+      contextRefs: [] as readonly string[],
+      artifactRefs: {} as Record<string, string>,
       createdAt: 1,
       completedAt: 10,
       blockedReason: "factory task produced no tracked diff: located the file but changed nothing",
       workspaceExists: false,
       workspaceDirty: false,
     }],
-    candidates: [],
+    candidates: [] as readonly never[],
     integration: {
-      status: "idle",
-      queuedCandidateIds: [],
-      validationResults: [],
+      status: "idle" as const,
+      queuedCandidateIds: [] as readonly string[],
+      validationResults: [] as readonly never[],
       updatedAt: 10,
     },
     recentReceipts: [{
@@ -497,7 +497,7 @@ test("factory objective island: blocked reasons are surfaced prominently", () =>
       taskId: "task_01",
     }],
     evidenceCards: [{
-      kind: "blocked",
+      kind: "blocked" as const,
       title: "Blocked or conflicted",
       summary: "factory task produced no tracked diff: located the file but changed nothing",
       at: 10,
@@ -505,30 +505,31 @@ test("factory objective island: blocked reasons are surfaced prominently", () =>
       receiptHash: "hash_01",
       receiptType: "task.blocked",
     }],
-    activity: [],
+    activity: [] as readonly never[],
     latestRebracket: undefined,
-  });
+  };
+  const markup = factoryStreamIsland(detail as any, undefined);
 
-  expect(markup).toMatch(/Why blocked/);
+  expect(markup).toMatch(/Blocked/);
   expect(markup).toMatch(/factory task produced no tracked diff/);
-  expect(markup).toMatch(/href="#receipt-hash_01"/);
+  expect(markup).toMatch(/React to re-evaluate/);
 });
 
-test("factory objective island: tasks and candidates render inside isolated list containers", () => {
-  const markup = factoryObjectiveIsland({
+test("factory stream island: renders stream with objective detail", () => {
+  const detail = {
     objectiveId: "objective_demo",
     title: "Responsive task cards",
-    status: "active",
+    status: "active" as const,
     archivedAt: undefined,
     updatedAt: 10,
     latestSummary: "Task cards wrap correctly.",
     blockedReason: undefined,
-    phase: "executing",
-    scheduler: { slotState: "active" },
+    phase: "executing" as const,
+    scheduler: { slotState: "active" as const },
     repoProfile: {
-      status: "ready",
+      status: "ready" as const,
       inferredChecks: ["npm run build"],
-      generatedSkillRefs: [],
+      generatedSkillRefs: [] as readonly string[],
       summary: "Repo profile ready.",
     },
     blockedExplanation: undefined,
@@ -537,7 +538,7 @@ test("factory objective island: tasks and candidates render inside isolated list
     activeTaskCount: 1,
     readyTaskCount: 1,
     taskCount: 1,
-    integrationStatus: "idle",
+    integrationStatus: "idle" as const,
     latestCommitHash: "abc12345",
     prompt: "Verify task card spacing.",
     channel: "results",
@@ -557,16 +558,16 @@ test("factory objective island: tasks and candidates render inside isolated list
     tasks: [{
       nodeId: "task_01",
       taskId: "task_01",
-      taskKind: "planned",
+      taskKind: "planned" as const,
       title: "Task title with enough length to wrap across lines without colliding with the next card.",
       prompt: "Adjust layout classes.",
-      workerType: "codex",
+      workerType: "codex" as const,
       baseCommit: "abc1234",
-      dependsOn: [],
-      status: "ready",
-      skillBundlePaths: [],
-      contextRefs: [],
-      artifactRefs: {},
+      dependsOn: [] as readonly string[],
+      status: "ready" as const,
+      skillBundlePaths: [] as readonly string[],
+      contextRefs: [] as readonly string[],
+      artifactRefs: {} as Record<string, string>,
       createdAt: 1,
       completedAt: undefined,
       blockedReason: undefined,
@@ -574,24 +575,25 @@ test("factory objective island: tasks and candidates render inside isolated list
       workspaceDirty: false,
       latestSummary: "Longer task summary content lives inside the task card list container.",
       candidateId: "candidate_01",
-      jobStatus: "queued",
+      jobStatus: "queued" as const,
       elapsedMs: 1_500,
       sourceTaskId: undefined,
     }],
-    candidates: [],
+    candidates: [] as readonly never[],
     integration: {
-      status: "idle",
-      queuedCandidateIds: [],
-      validationResults: [],
+      status: "idle" as const,
+      queuedCandidateIds: [] as readonly string[],
+      validationResults: [] as readonly never[],
       updatedAt: 10,
     },
-    recentReceipts: [],
-    evidenceCards: [],
-    activity: [],
+    recentReceipts: [] as readonly never[],
+    evidenceCards: [] as readonly never[],
+    activity: [] as readonly never[],
     latestRebracket: undefined,
-  });
+  };
+  const markup = factoryStreamIsland(detail as any, undefined);
 
-  expect(markup).toMatch(/class="factory-task-grid"/);
-  expect(markup).toMatch(/Task title with enough length to wrap across lines/);
-  expect(markup).toMatch(/class="factory-candidate-grid">\s*<div class="factory-empty">No candidates yet\.<\/div>/);
+  expect(markup).toMatch(/id="factory-stream"/);
+  expect(markup).toMatch(/Responsive task cards/);
+  expect(markup).toMatch(/data-objective-id="objective_demo"/);
 });

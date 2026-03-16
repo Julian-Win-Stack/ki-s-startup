@@ -17,11 +17,10 @@ import { FactoryService, FactoryServiceError } from "../services/factory-service
 import {
   factoryBoardIsland,
   factoryComposeIsland,
-  factoryDebugIsland,
-  factoryLiveIsland,
-  factoryObjectiveIsland,
+  factoryContextIsland,
   factoryShell,
-} from "../views/factory.js";
+  factoryStreamIsland,
+} from "../views/factory/index.js";
 
 const parseChecks = (value: unknown): ReadonlyArray<string> | undefined => {
   if (typeof value === "string") {
@@ -120,20 +119,13 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             service.buildLiveProjection(resolvedObjectiveId),
             resolvedObjectiveId ? service.getObjectiveDebug(resolvedObjectiveId) : Promise.resolve(undefined),
           ]);
-          return {
-            compose,
-            board,
-            objective,
-            live,
-            debug,
-          };
+          return { compose, board, objective, live, debug };
         },
         (payload) => html(factoryShell({
           composeIsland: factoryComposeIsland(payload.compose),
           boardIsland: factoryBoardIsland(payload.board),
-          objectiveIsland: factoryObjectiveIsland(payload.objective),
-          liveIsland: factoryLiveIsland(payload.live),
-          debugIsland: factoryDebugIsland(payload.debug),
+          streamIsland: factoryStreamIsland(payload.objective, payload.live),
+          contextIsland: factoryContextIsland(payload.objective, payload.debug, payload.live),
         }))
       ));
 
@@ -145,35 +137,34 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         () => ctx.sse.subscribeMany([{ topic: "receipt" }, { topic: "jobs" }], c.req.raw.signal)
       ));
 
-      app.get("/factory/island/compose", async () => wrap(
-        async () => service.buildComposeModel(),
-        (model) => html(factoryComposeIsland(model))
-      ));
-
       app.get("/factory/island/board", async (c) => wrap(
         async () => service.buildBoardProjection(selectedObjectiveId(c.req.raw)),
         (board) => html(factoryBoardIsland(board))
       ));
 
-      app.get("/factory/island/objective", async (c) => wrap(
+      app.get("/factory/island/stream", async (c) => wrap(
         async () => {
           const objectiveId = selectedObjectiveId(c.req.raw);
-          return objectiveId ? service.getObjective(objectiveId) : Promise.resolve(undefined);
+          const [objective, live] = await Promise.all([
+            objectiveId ? service.getObjective(objectiveId) : Promise.resolve(undefined),
+            service.buildLiveProjection(objectiveId),
+          ]);
+          return { objective, live };
         },
-        (objective) => html(factoryObjectiveIsland(objective))
+        (payload) => html(factoryStreamIsland(payload.objective, payload.live))
       ));
 
-      app.get("/factory/island/live", async (c) => wrap(
-        async () => service.buildLiveProjection(selectedObjectiveId(c.req.raw)),
-        (live) => html(factoryLiveIsland(live))
-      ));
-
-      app.get("/factory/island/debug", async (c) => wrap(
+      app.get("/factory/island/context", async (c) => wrap(
         async () => {
           const objectiveId = selectedObjectiveId(c.req.raw);
-          return objectiveId ? service.getObjectiveDebug(objectiveId) : Promise.resolve(undefined);
+          const [objective, debug, live] = await Promise.all([
+            objectiveId ? service.getObjective(objectiveId) : Promise.resolve(undefined),
+            objectiveId ? service.getObjectiveDebug(objectiveId) : Promise.resolve(undefined),
+            service.buildLiveProjection(objectiveId),
+          ]);
+          return { objective, debug, live };
         },
-        (debug) => html(factoryDebugIsland(debug))
+        (payload) => html(factoryContextIsland(payload.objective, payload.debug, payload.live))
       ));
 
       app.get("/factory/api/objectives", async (c) => wrap(
@@ -307,6 +298,53 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           return c.req.param("id");
         },
         (objectiveId) => objectiveRedirect(c.req.raw, objectiveId)
+      ));
+
+      app.post("/factory/job/:id/steer", async (c) => wrap(
+        async () => {
+          const jobId = c.req.param("id");
+          const body = await readRecordBody(c.req.raw, (msg) => new FactoryServiceError(400, msg));
+          const payload: Record<string, unknown> = {};
+          const problem = optionalTrimmedString(body.problem);
+          const configRaw = optionalTrimmedString(body.config);
+          if (problem) payload.problem = problem;
+          if (configRaw) {
+            const parsed = parsePolicy(configRaw);
+            if (parsed) payload.config = parsed;
+          }
+          if (Object.keys(payload).length === 0) throw new FactoryServiceError(400, "provide problem and/or config");
+          const queued = await ctx.queue.queueCommand({ jobId, command: "steer", payload, by: "factory.ui" });
+          if (!queued) throw new FactoryServiceError(404, "job not found");
+          ctx.sse.publish("jobs", jobId);
+          return "Steer command queued.";
+        },
+        (msg) => text(202, msg)
+      ));
+
+      app.post("/factory/job/:id/follow-up", async (c) => wrap(
+        async () => {
+          const jobId = c.req.param("id");
+          const body = await readRecordBody(c.req.raw, (msg) => new FactoryServiceError(400, msg));
+          const note = requireTrimmedString(body.note, "note required");
+          const queued = await ctx.queue.queueCommand({ jobId, command: "follow_up", payload: { note }, by: "factory.ui" });
+          if (!queued) throw new FactoryServiceError(404, "job not found");
+          ctx.sse.publish("jobs", jobId);
+          return "Follow-up command queued.";
+        },
+        (msg) => text(202, msg)
+      ));
+
+      app.post("/factory/job/:id/abort", async (c) => wrap(
+        async () => {
+          const jobId = c.req.param("id");
+          const body = await readRecordBody(c.req.raw, (msg) => new FactoryServiceError(400, msg));
+          const reason = optionalTrimmedString(body.reason) ?? "abort requested";
+          const queued = await ctx.queue.queueCommand({ jobId, command: "abort", payload: { reason }, by: "factory.ui" });
+          if (!queued) throw new FactoryServiceError(404, "job not found");
+          ctx.sse.publish("jobs", jobId);
+          return "Abort command queued.";
+        },
+        (msg) => text(202, msg)
       ));
     },
   };

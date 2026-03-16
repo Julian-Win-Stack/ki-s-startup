@@ -1,11 +1,14 @@
-import { jsonBranchStore, jsonlStore } from "../adapters/jsonl.js";
+import fs from "node:fs";
+import path from "node:path";
+
+import { createStreamLocator, jsonBranchStore, jsonlStore } from "../adapters/jsonl.js";
 import { jsonlQueue } from "../adapters/jsonl-queue.js";
 import { createRuntime } from "../core/runtime.js";
 import { JobWorker } from "../engine/runtime/job-worker.js";
 import { SseHub } from "../framework/sse-hub.js";
 import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../modules/job.js";
 import { createFactoryServiceRuntime, createFactoryWorkerHandlers } from "../services/factory-runtime.js";
-import type { FactoryService } from "../services/factory-service.js";
+import type { FactoryService, FactoryTaskView } from "../services/factory-service.js";
 import type { FactoryCliConfig } from "./config.js";
 
 export type FactoryCliRuntime = {
@@ -14,6 +17,8 @@ export type FactoryCliRuntime = {
   readonly service: FactoryService;
   readonly worker: JobWorker;
   readonly subscribe: (listener: FactoryCliRuntimeListener) => () => void;
+  readonly focusObjective: (objectiveId?: string) => Promise<void>;
+  readonly trackTaskLogs: (objectiveId: string | undefined, tasks: ReadonlyArray<FactoryTaskView>) => void;
   readonly start: () => Promise<void>;
   readonly stop: () => void;
 };
@@ -22,6 +27,19 @@ export type FactoryCliRuntimeEvent =
   | {
     readonly type: "queue_changed";
     readonly jobIds: ReadonlyArray<string>;
+    readonly at: number;
+  }
+  | {
+    readonly type: "objective_changed";
+    readonly objectiveId: string;
+    readonly at: number;
+  }
+  | {
+    readonly type: "log_updated";
+    readonly objectiveId: string;
+    readonly taskId?: string;
+    readonly stream: "stdout" | "stderr" | "last_message";
+    readonly filePath: string;
     readonly at: number;
   }
   | {
@@ -41,6 +59,7 @@ export const createFactoryCliRuntime = (
   opts: FactoryCliRuntimeOptions = {},
 ): FactoryCliRuntime => {
   const sse = new SseHub();
+  const watchers = new Map<string, fs.FSWatcher>();
   const listeners = new Set<FactoryCliRuntimeListener>();
   const notify = (event: FactoryCliRuntimeEvent): void => {
     for (const listener of listeners) {
@@ -49,6 +68,26 @@ export const createFactoryCliRuntime = (
       } catch {
         // Listener failures must not break the worker/runtime.
       }
+    }
+  };
+  const closeWatcher = (key: string): void => {
+    const watcher = watchers.get(key);
+    if (!watcher) return;
+    watcher.close();
+    watchers.delete(key);
+  };
+  const watchPath = (key: string, filePath: string, onChange: () => void): void => {
+    const dir = path.dirname(filePath);
+    const base = path.basename(filePath);
+    closeWatcher(key);
+    try {
+      const watcher = fs.watch(dir, (_eventType, filename) => {
+        if (filename && String(filename) !== base) return;
+        onChange();
+      });
+      watchers.set(key, watcher);
+    } catch {
+      // Best-effort runtime watching only.
     }
   };
   const jobRuntime = createRuntime<JobCmd, JobEvent, JobState>(
@@ -95,6 +134,53 @@ export const createFactoryCliRuntime = (
       opts.onWorkerError?.(error);
     },
   });
+  const objectiveWatchKey = "objective_stream";
+  const focusObjective = async (objectiveId?: string): Promise<void> => {
+    closeWatcher(objectiveWatchKey);
+    if (!objectiveId) return;
+    const locator = createStreamLocator(config.dataDir);
+    const streamFile = await locator.fileFor(`factory/objectives/${objectiveId}`);
+    watchPath(objectiveWatchKey, streamFile, () => {
+      notify({
+        type: "objective_changed",
+        objectiveId,
+        at: Date.now(),
+      });
+    });
+  };
+  const trackTaskLogs = (objectiveId: string | undefined, tasks: ReadonlyArray<FactoryTaskView>): void => {
+    for (const key of [...watchers.keys()]) {
+      if (key.startsWith("log:")) closeWatcher(key);
+    }
+    if (!objectiveId) return;
+    const activeTasks = tasks.filter((task) =>
+      task.status === "running"
+      || task.status === "reviewing"
+      || task.jobStatus === "running"
+      || task.jobStatus === "leased",
+    );
+    for (const task of activeTasks) {
+      const streams = [
+        ["stdout", task.stdoutPath],
+        ["stderr", task.stderrPath],
+        ["last_message", task.lastMessagePath],
+      ] as const;
+      for (const [stream, filePath] of streams) {
+        if (!filePath) continue;
+        const key = `log:${task.taskId}:${stream}`;
+        watchPath(key, filePath, () => {
+          notify({
+            type: "log_updated",
+            objectiveId,
+            taskId: task.taskId,
+            stream,
+            filePath,
+            at: Date.now(),
+          });
+        });
+      }
+    }
+  };
 
   return {
     config,
@@ -107,6 +193,8 @@ export const createFactoryCliRuntime = (
         listeners.delete(listener);
       };
     },
+    focusObjective,
+    trackTaskLogs,
     start: async () => {
       await service.ensureBootstrap();
       worker.start();
@@ -114,6 +202,9 @@ export const createFactoryCliRuntime = (
     },
     stop: () => {
       worker.stop();
+      for (const key of [...watchers.keys()]) {
+        closeWatcher(key);
+      }
     },
   };
 };
