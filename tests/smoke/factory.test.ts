@@ -537,11 +537,13 @@ test("factory sidebar island: renders left rail navigation", () => {
 
   expect(markup).toMatch(/Control room/);
   expect(markup).toMatch(/Reviewer/);
+  expect(markup).toMatch(/Recent Thread/);
   expect(markup).toMatch(/href="\/factory\?profile=reviewer&objective=objective_demo"/);
   expect(markup).toMatch(/Profile-driven Factory UI/);
-  expect(markup).toMatch(/Objectives/);
+  expect(markup).toMatch(/Factory Objectives/);
   expect(markup).toMatch(/integration executing/);
   expect(markup).toMatch(/1 active/);
+  expect(markup).toMatch(/run_01/);
 });
 
 test("factory sidebar island: humanizes objective slot labels and avoids repeating status in the compact meta row", () => {

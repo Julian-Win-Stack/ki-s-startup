@@ -347,6 +347,21 @@ const renderObjectiveLink = (model: FactorySidebarModel, objective: FactoryChatO
   </a>`;
 };
 
+const renderThreadLink = (job: FactoryChatJobNav): string => {
+  const body = `<div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <div class="truncate text-sm font-semibold text-zinc-100">${esc(job.runId ?? job.jobId)}</div>
+        <div class="mt-2 line-clamp-2 text-sm leading-6 text-zinc-400">${esc(job.summary)}</div>
+      </div>
+      <div class="shrink-0">${badge(job.status)}</div>
+    </div>
+    <div class="mt-3 text-xs text-zinc-500">${esc(job.objectiveId ? `Objective ${job.objectiveId}` : job.agentId)}</div>`;
+  if (job.link) {
+    return `<a class="block rounded-[22px] border border-white/10 bg-black/10 px-4 py-4 transition hover:border-white/15 hover:bg-white/[0.05]" href="${esc(job.link)}">${body}</a>`;
+  }
+  return `<div class="rounded-[22px] border border-white/10 bg-black/10 px-4 py-4">${body}</div>`;
+};
+
 export const factoryRailIsland = (model: FactorySidebarModel): string => {
   const selectedObjectiveQuery = model.selectedObjective
     ? `&objective=${encodeURIComponent(model.selectedObjective.objectiveId)}`
@@ -364,6 +379,9 @@ export const factoryRailIsland = (model: FactorySidebarModel): string => {
   const objectives = model.objectives.length > 0
     ? model.objectives.map((objective) => renderObjectiveLink(model, objective)).join("")
     : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No objectives yet. Start in the composer and the profile can dispatch one.</div>`;
+  const threadJobs = model.jobs.length > 0
+    ? model.jobs.slice(0, 4).map(renderThreadLink).join("")
+    : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No recent thread activity.</div>`;
   return `<div class="space-y-5 px-4 py-5 md:px-5">
     <section class="${railCardClass}">
       <div class="flex items-start justify-between gap-3">
@@ -385,7 +403,16 @@ export const factoryRailIsland = (model: FactorySidebarModel): string => {
     </section>
     <section class="${railCardClass}">
       <div class="flex items-center justify-between gap-3">
-        <div class="${sectionLabelClass}">Objectives</div>
+        <div class="${sectionLabelClass}">Recent Thread</div>
+        <div class="text-xs text-zinc-500">${esc(`${model.jobs.length}`)}</div>
+      </div>
+      <div class="mt-4 grid gap-3">
+        ${threadJobs}
+      </div>
+    </section>
+    <section class="${railCardClass}">
+      <div class="flex items-center justify-between gap-3">
+        <div class="${sectionLabelClass}">Factory Objectives</div>
         <div class="text-xs text-zinc-500">${esc(`${model.objectives.length}`)}</div>
       </div>
       <div class="mt-4 grid gap-3">

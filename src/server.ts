@@ -342,6 +342,7 @@ const createAgentRunner = (spec: AgentRunnerSpec): AgentRunner =>
     const config = spec.normalizeConfig(configInput);
     const { apiReady, apiNote } = apiStatus();
     const runnerResult = await spec.runFn({
+      ...payload,
       stream, runId, runStream, problem, config,
       runtime: spec.runtime, prompts: spec.prompts,
       llmText: (opts: Record<string, unknown>) => llmText({
