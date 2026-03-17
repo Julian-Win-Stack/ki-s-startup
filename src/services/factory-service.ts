@@ -58,6 +58,7 @@ const FACTORY_STREAM_PREFIX = "factory/objectives";
 const DEFAULT_CHECKS = ["npm run build"] as const;
 const FACTORY_DATA_DIR = ".receipt/factory";
 const FACTORY_SHARED_REPO_PROFILE_DIR = path.join("factory", "repo-profile");
+export const FACTORY_CONTROL_AGENT_ID = "factory-control";
 const AGENT_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$/;
 const SUPPORTED_WORKER_TYPES = new Set<FactoryWorkerType>(["codex", "theorem", "writer", "inspector", "agent", "infra", "axiom"]);
 
@@ -1127,7 +1128,7 @@ export class FactoryService {
     reason: FactoryObjectiveControlJobPayload["reason"],
   ): Promise<void> {
     const created = await this.queue.enqueue({
-      agentId: "factory",
+      agentId: FACTORY_CONTROL_AGENT_ID,
       lane: "collect",
       sessionKey: `factory:objective:${objectiveId}`,
       singletonMode: "allow",

@@ -1,31 +1,28 @@
 @import "tailwindcss";
 
-@source "../views/factory/";
-
-/* ── Caffeine dark theme · https://tweakcn.com/r/themes/caffeine ── */
+@source "../views/factory-chat.ts";
 
 :root {
-  --background: oklch(0.1776 0 0);
-  --foreground: oklch(0.9491 0 0);
-  --card: oklch(0.2134 0 0);
-  --card-foreground: oklch(0.9491 0 0);
-  --popover: oklch(0.2134 0 0);
-  --popover-foreground: oklch(0.9491 0 0);
-  --primary: oklch(0.9247 0.0524 66.1732);
-  --primary-foreground: oklch(0.2029 0.024 200.1962);
-  --secondary: oklch(0.3163 0.019 63.6992);
-  --secondary-foreground: oklch(0.9247 0.0524 66.1732);
-  --muted: oklch(0.252 0 0);
-  --muted-foreground: oklch(0.7699 0 0);
-  --accent: oklch(0.285 0 0);
-  --accent-foreground: oklch(0.9491 0 0);
-  --destructive: oklch(0.6271 0.1936 33.339);
-  --destructive-foreground: oklch(1 0 0);
-  --border: oklch(0.2351 0.0115 91.7467);
-  --input: oklch(0.4017 0 0);
-  --ring: oklch(0.9247 0.0524 66.1732);
-  --warning: oklch(0.78 0.11 75);
-  --radius: 0.5rem;
+  --background: oklch(0.145 0.01 255);
+  --foreground: oklch(0.968 0 0);
+  --card: oklch(0.205 0.01 255);
+  --card-foreground: oklch(0.968 0 0);
+  --popover: oklch(0.205 0.01 255);
+  --popover-foreground: oklch(0.968 0 0);
+  --primary: oklch(0.87 0.13 151);
+  --primary-foreground: oklch(0.18 0.01 255);
+  --secondary: oklch(0.255 0.01 255);
+  --secondary-foreground: oklch(0.968 0 0);
+  --muted: oklch(0.245 0.01 255);
+  --muted-foreground: oklch(0.74 0.01 255);
+  --accent: oklch(0.28 0.01 255);
+  --accent-foreground: oklch(0.968 0 0);
+  --destructive: oklch(0.62 0.2 24);
+  --destructive-foreground: oklch(0.99 0 0);
+  --border: oklch(0.29 0.01 255);
+  --input: oklch(0.37 0.01 255);
+  --ring: oklch(0.87 0.13 151);
+  --radius: 1rem;
 }
 
 @theme inline {
@@ -45,105 +42,141 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
-  --color-warning: var(--warning);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) - 2px);
-  --radius-md: var(--radius);
-  --radius-lg: calc(var(--radius) + 4px);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 8px);
-  --shadow-panel: 0 8px 32px oklch(0 0 0 / 0.5);
-  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-sans: "Manrope", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", monospace;
 }
 
-/* ── Base resets ── */
-
 @layer base {
-  *, *::before, *::after { box-sizing: border-box; }
-  html { color-scheme: dark; }
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    color-scheme: dark;
+    background: var(--background);
+  }
+
   body {
     margin: 0;
+    min-height: 100vh;
     font-family: var(--font-sans);
     background: var(--background);
     color: var(--foreground);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
-  code, pre, textarea, input { font-family: var(--font-mono); }
-  a { color: inherit; text-decoration: none; }
-  button, input, textarea, summary { font: inherit; }
-  button { cursor: pointer; }
-  pre { margin: 0; }
-  ::selection { background: oklch(0.9247 0.0524 66.1732 / 0.25); }
+
+  code, pre, textarea, input {
+    font-family: var(--font-mono);
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  button, input, textarea {
+    font: inherit;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  textarea {
+    field-sizing: content;
+  }
+
+  ::selection {
+    background: oklch(0.87 0.13 151 / 0.25);
+  }
 }
 
-/* ── 3-column layout with 1px hairline dividers via gap + background ── */
+@layer components {
+  .factory-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  }
 
-.factory-layout {
-  min-height: 100vh;
-  display: grid;
-  grid-template-columns: 300px minmax(0, 1fr) 340px;
-  grid-template-rows: 1fr;
-  gap: 0 1px;
-  background: var(--border);
-  overflow: hidden;
-}
-.factory-layout > * { background: var(--background); min-width: 0; overflow: hidden; }
+  .factory-scrollbar::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
 
-/* ── Sticky scrollable panels ── */
+  .factory-scrollbar::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
+    background-color: rgba(255, 255, 255, 0.16);
+  }
 
-.rail-panel, .inspector-aside {
-  position: sticky;
-  top: 0;
-  max-height: 100vh;
-  overflow-y: auto;
-  overflow-x: hidden;
-  align-self: start;
-  scrollbar-width: thin;
-  scrollbar-color: oklch(0.35 0 0) transparent;
-}
+  .factory-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
 
-/* ── Compose modal toggle ── */
+  .factory-markdown {
+    @apply text-[15px] leading-7 text-zinc-100;
+  }
 
-.compose-overlay { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; background: oklch(0 0 0 / 0.55); backdrop-filter: blur(6px); z-index: 20; }
-.compose-open .compose-overlay { display: flex; }
+  .factory-markdown h1,
+  .factory-markdown h2,
+  .factory-markdown h3 {
+    @apply mt-5 text-base font-semibold text-white first:mt-0;
+  }
 
-/* ── Context panel ── */
+  .factory-markdown p {
+    @apply my-3;
+  }
 
-.context-section summary::-webkit-details-marker { display: none; }
-.context-section summary { list-style: none; }
-.context-section[open] summary .text-xs { transform: rotate(90deg); }
-#factory-context > *:last-child { border-bottom: none; }
+  .factory-markdown ul,
+  .factory-markdown ol {
+    @apply my-3 pl-6;
+  }
 
-/* ── Responsive ── */
+  .factory-markdown ul {
+    @apply list-disc;
+  }
 
-@media (max-width: 1400px) {
-  .factory-layout { grid-template-columns: 280px minmax(0, 1fr); grid-template-rows: 1fr auto; gap: 1px; }
-  .inspector-aside { position: static; max-height: none; overflow-y: visible; grid-column: 1 / -1; display: flex; flex-direction: row; }
-  .inspector-aside > * { flex: 1; min-width: 0; }
-}
+  .factory-markdown ol {
+    @apply list-decimal;
+  }
 
-@media (max-width: 1080px) {
-  .factory-layout { grid-template-columns: 1fr; grid-template-rows: auto; gap: 1px; }
-  .rail-panel, .inspector-aside { position: static; max-height: none; overflow-y: visible; }
-  .inspector-aside { flex-direction: column; }
-}
+  .factory-markdown li {
+    @apply my-1;
+  }
 
-/* ── Keyframes ── */
+  .factory-markdown blockquote {
+    @apply my-4 border-l-2 border-emerald-300/30 pl-4 text-zinc-300;
+  }
 
-@keyframes fade-in {
-  from { opacity: 0; transform: translateY(3px); }
-  to { opacity: 1; transform: translateY(0); }
-}
+  .factory-markdown pre {
+    @apply my-4 overflow-x-auto rounded-[20px] border border-white/10 bg-black/35 p-4 text-[13px] leading-6 text-zinc-200;
+  }
 
-@keyframes urgency-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(1.4); }
-}
+  .factory-markdown code {
+    @apply rounded bg-white/[0.08] px-1.5 py-0.5 text-[0.9em];
+  }
 
-@keyframes pulse-border {
-  0%, 100% { border-color: oklch(0.6271 0.1936 33.339 / 0.25); }
-  50% { border-color: oklch(0.6271 0.1936 33.339 / 0.5); }
+  .factory-markdown pre code {
+    @apply bg-transparent p-0;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
 }

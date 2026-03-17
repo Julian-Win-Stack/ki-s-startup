@@ -20,7 +20,7 @@ import type { SseHub } from "../framework/sse-hub.js";
 import { siblingPath } from "../lib/runtime-paths.js";
 import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../modules/job.js";
 import { createOpenAiFactoryOrchestrator, createTestFactoryOrchestrator } from "./factory-orchestrator.js";
-import { FactoryService } from "./factory-service.js";
+import { FACTORY_CONTROL_AGENT_ID, FactoryService } from "./factory-service.js";
 
 export type FactoryQueue = ReturnType<typeof jsonlQueue>;
 export type FactoryJobRuntime = ReturnType<typeof createRuntime<JobCmd, JobEvent, JobState>>;
@@ -97,8 +97,8 @@ export const createFactoryServiceRuntime = (opts: FactoryServiceRuntimeOptions):
   };
 };
 
-export const createFactoryWorkerHandlers = (service: FactoryService): Record<"factory" | "codex", JobHandler> => ({
-  factory: async (job, ctx) => {
+export const createFactoryWorkerHandlers = (service: FactoryService): Record<typeof FACTORY_CONTROL_AGENT_ID | "codex", JobHandler> => ({
+  [FACTORY_CONTROL_AGENT_ID]: async (job, ctx) => {
     await ctx.pullCommands(["abort"]);
     try {
       const result = await service.runObjectiveControl(job.payload as Record<string, unknown>);

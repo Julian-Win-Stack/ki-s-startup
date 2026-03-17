@@ -34,6 +34,12 @@ export type JobEvent =
       readonly leaseMs: number;
     }
   | {
+      readonly type: "job.progress";
+      readonly jobId: string;
+      readonly workerId: string;
+      readonly result?: Readonly<Record<string, unknown>>;
+    }
+  | {
       readonly type: "job.completed";
       readonly jobId: string;
       readonly workerId: string;
@@ -171,6 +177,20 @@ export const reduce: Reducer<JobState, JobEvent> = (state, event, ts) => {
         status: "running",
         workerId: event.workerId,
         leaseUntil: ts + event.leaseMs,
+        updatedAt: ts,
+      });
+    }
+    case "job.progress": {
+      const prev = state.jobs[event.jobId];
+      if (!prev) throw new Error(`Invariant: no job ${event.jobId} for ${event.type}`);
+      if (prev.status !== "leased" && prev.status !== "running") {
+        throw new Error(`Invariant: invalid progress status ${prev.status} for ${event.jobId}`);
+      }
+      return upsert(state, {
+        ...prev,
+        status: "running",
+        workerId: event.workerId,
+        result: event.result ? { ...(prev.result ?? {}), ...event.result } : prev.result,
         updatedAt: ts,
       });
     }

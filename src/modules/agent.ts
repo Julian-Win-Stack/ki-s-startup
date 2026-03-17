@@ -187,6 +187,31 @@ export type AgentEvent =
       readonly agentId?: string;
       readonly scope: string;
       readonly chars: number;
+    }
+  | {
+      readonly type: "profile.selected";
+      readonly runId: string;
+      readonly agentId?: string;
+      readonly profileId: string;
+      readonly reason: string;
+    }
+  | {
+      readonly type: "profile.resolved";
+      readonly runId: string;
+      readonly agentId?: string;
+      readonly rootProfileId: string;
+      readonly importedProfileIds: ReadonlyArray<string>;
+      readonly profilePaths: ReadonlyArray<string>;
+      readonly fileHashes: Readonly<Record<string, string>>;
+      readonly resolvedHash: string;
+    }
+  | {
+      readonly type: "profile.handoff";
+      readonly runId: string;
+      readonly agentId?: string;
+      readonly fromProfileId: string;
+      readonly toProfileId: string;
+      readonly reason: string;
     };
 
 export type AgentCmd = {
@@ -222,6 +247,13 @@ export type AgentState = {
     readonly promptPath?: string;
     readonly workflowId: string;
     readonly workflowVersion: string;
+    readonly updatedAt: number;
+  };
+  readonly profile?: {
+    readonly profileId: string;
+    readonly importedProfileIds: ReadonlyArray<string>;
+    readonly resolvedHash?: string;
+    readonly handoffTarget?: string;
     readonly updatedAt: number;
   };
 };
@@ -313,6 +345,39 @@ export const reduce: Reducer<AgentState, AgentEvent> = (state, event, ts) => {
         ...state,
         status: "completed",
         finalResponse: event.content,
+      };
+    case "profile.selected":
+      return {
+        ...state,
+        profile: {
+          profileId: event.profileId,
+          importedProfileIds: state.profile?.importedProfileIds ?? [],
+          resolvedHash: state.profile?.resolvedHash,
+          handoffTarget: state.profile?.handoffTarget,
+          updatedAt: ts,
+        },
+      };
+    case "profile.resolved":
+      return {
+        ...state,
+        profile: {
+          profileId: event.rootProfileId,
+          importedProfileIds: [...event.importedProfileIds],
+          resolvedHash: event.resolvedHash,
+          handoffTarget: state.profile?.handoffTarget,
+          updatedAt: ts,
+        },
+      };
+    case "profile.handoff":
+      return {
+        ...state,
+        profile: {
+          profileId: event.fromProfileId,
+          importedProfileIds: state.profile?.importedProfileIds ?? [],
+          resolvedHash: state.profile?.resolvedHash,
+          handoffTarget: event.toProfileId,
+          updatedAt: ts,
+        },
       };
     case "action.planned":
     case "tool.observed":

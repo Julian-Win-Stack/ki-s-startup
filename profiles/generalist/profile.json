@@ -1,0 +1,38 @@
+{
+  "id": "generalist",
+  "label": "Generalist",
+  "enabled": true,
+  "default": true,
+  "imports": [],
+  "toolAllowlist": [
+    "ls",
+    "read",
+    "write",
+    "bash",
+    "grep",
+    "memory.read",
+    "memory.search",
+    "memory.summarize",
+    "memory.commit",
+    "memory.diff",
+    "agent.delegate",
+    "agent.status",
+    "jobs.list",
+    "job.control",
+    "agent.inspect",
+    "skill.read",
+    "codex.run",
+    "factory.dispatch",
+    "factory.status",
+    "profile.handoff"
+  ],
+  "handoffTargets": [],
+  "routeHints": [
+    "factory",
+    "objective",
+    "implement",
+    "delivery",
+    "debug",
+    "ship"
+  ]
+}

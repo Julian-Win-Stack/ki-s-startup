@@ -177,14 +177,13 @@ test("factory routes: shell, policy, debug, and explicit promote work end to end
     expect(shellRes.status).toBe(200);
     const shellBody = await shellRes.text();
     expect(shellBody).toMatch(/<script src="\/assets\/htmx\.min\.js"><\/script>/);
-    expect(shellBody).toMatch(/id="factory-compose"/);
-    expect(shellBody).toMatch(/id="factory-board"/);
-    expect(shellBody).toMatch(/id="factory-objective"/);
-    expect(shellBody).toMatch(/id="factory-live"/);
-    expect(shellBody).toMatch(/id="factory-debug"/);
-    expect(shellBody).toMatch(/new EventSource\("\/factory\/events"\)/);
-    expect(shellBody).toMatch(/action="\/factory\/ui\/objectives"/);
+    expect(shellBody).toMatch(/Talk to Generalist/);
+    expect(shellBody).toMatch(/id="factory-chat"/);
+    expect(shellBody).toMatch(/id="factory-sidebar"/);
+    expect(shellBody).toMatch(/new EventSource\("\/factory\/events\?profile=/);
+    expect(shellBody).toMatch(/action="\/factory\/run"/);
     expect(shellBody).toMatch(/method="post"/);
+    expect(shellBody).not.toMatch(/id="factory-board"/);
 
     const htmxRes = await fetch(`${base}/assets/htmx.min.js`);
     expect(htmxRes.status).toBe(200);
@@ -244,17 +243,10 @@ test("factory routes: shell, policy, debug, and explicit promote work end to end
     const receiptsPayload = await receiptsRes.json() as { receipts: Array<{ type: string }> };
     expect(receiptsPayload.receipts.some((receipt) => receipt.type === "objective.created")).toBeTruthy();
 
-    const promoteFormRes = await fetch(`${base}/factory/ui/objectives/${created.objective.objectiveId}/promote`, {
+    const promoteFormRes = await fetch(`${base}/factory/api/objectives/${created.objective.objectiveId}/promote`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      redirect: "manual",
     });
-    expect(promoteFormRes.status).toBe(303);
-    expect(
-      promoteFormRes.headers.get("location"),
-    ).toBe(
-      `/factory?objective=${created.objective.objectiveId}`,
-    );
+    expect(promoteFormRes.status).toBe(200);
 
     const completed = await waitForFactoryObjective(
       base,

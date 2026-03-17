@@ -100,12 +100,15 @@ export type AgentRunInput = {
   readonly extraConfig?: Readonly<Record<string, unknown>>;
   readonly extraToolSpecs?: Readonly<Record<string, string>>;
   readonly extraTools?: Readonly<Record<string, AgentToolExecutor>>;
+  readonly toolAllowlist?: ReadonlyArray<string>;
+  readonly startupEvents?: ReadonlyArray<AgentEvent>;
   readonly finalizer?: AgentFinalizer;
 };
 
 export type AgentToolResult = {
   readonly output: string;
   readonly summary: string;
+  readonly events?: ReadonlyArray<AgentEvent>;
   readonly reports?: ReadonlyArray<Omit<Extract<AgentEvent, { type: "validation.report" }>, "type" | "runId" | "iteration" | "agentId">>;
 };
 
@@ -345,6 +348,7 @@ const createTools = (opts: {
   readonly delegationTools: DelegationTools;
   readonly extraToolSpecs?: Readonly<Record<string, string>>;
   readonly extraTools?: Readonly<Record<string, AgentToolExecutor>>;
+  readonly toolAllowlist?: ReadonlyArray<string>;
 }): { readonly toolSpecs: Readonly<Record<string, string>>; readonly tools: Readonly<Record<string, AgentToolExecutor>> } => {
   const workspaceRoot = path.resolve(opts.workspaceRoot);
   const defaultScope = opts.defaultMemoryScope;
@@ -508,12 +512,22 @@ const createTools = (opts: {
     ...opts.delegationTools,
   };
 
+  const mergedTools = {
+    ...builtins,
+    ...(opts.extraTools ?? {}),
+  } as Readonly<Record<string, AgentToolExecutor>>;
+  const allow = opts.toolAllowlist?.length ? new Set(opts.toolAllowlist) : undefined;
+  if (!allow) {
+    return {
+      toolSpecs,
+      tools: mergedTools,
+    };
+  }
+  const filteredToolSpecs = Object.fromEntries(Object.entries(toolSpecs).filter(([name]) => allow.has(name)));
+  const filteredTools = Object.fromEntries(Object.entries(mergedTools).filter(([name]) => allow.has(name)));
   return {
-    toolSpecs,
-    tools: {
-      ...builtins,
-      ...(opts.extraTools ?? {}),
-    },
+    toolSpecs: filteredToolSpecs,
+    tools: filteredTools as Readonly<Record<string, AgentToolExecutor>>,
   };
 };
 
@@ -537,6 +551,7 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
     delegationTools: input.delegationTools,
     extraToolSpecs: input.extraToolSpecs,
     extraTools: input.extraTools,
+    toolAllowlist: input.toolAllowlist,
   });
   const workflowId = input.workflowId ?? AGENT_WORKFLOW_ID;
   const workflowVersion = input.workflowVersion ?? AGENT_WORKFLOW_VERSION;
@@ -646,6 +661,9 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
       promptHash: input.promptHash,
       promptPath: input.promptPath,
     }, true);
+    for (const event of input.startupEvents ?? []) {
+      await emit(event, true);
+    }
 
     if (!input.apiReady) {
       await emitFailure({
@@ -1041,6 +1059,9 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
           output: clipped.text,
           truncated: clipped.truncated,
         });
+        for (const event of result.events ?? []) {
+          await emit(event, true);
+        }
         for (const report of result.reports ?? []) {
           await emit({
             type: "validation.report",

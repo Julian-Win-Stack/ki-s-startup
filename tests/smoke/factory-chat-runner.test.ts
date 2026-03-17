@@ -1,0 +1,284 @@
+import { test, expect } from "bun:test";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl.ts";
+import { jsonlQueue } from "../../src/adapters/jsonl-queue.ts";
+import type { MemoryTools } from "../../src/adapters/memory-tools.ts";
+import { createRuntime } from "../../src/core/runtime.ts";
+import type { JobCmd, JobEvent, JobState } from "../../src/modules/job.ts";
+import { decide as decideJob, initial as initialJob, reduce as reduceJob } from "../../src/modules/job.ts";
+import type { AgentCmd, AgentEvent, AgentState } from "../../src/modules/agent.ts";
+import { decide as decideAgent, initial as initialAgent, reduce as reduceAgent } from "../../src/modules/agent.ts";
+import { agentRunStream } from "../../src/agents/agent.streams.ts";
+import {
+  FACTORY_CHAT_DEFAULT_CONFIG,
+  runFactoryChat,
+  runFactoryCodexJob,
+} from "../../src/agents/factory-chat.ts";
+
+const createTempDir = async (label: string): Promise<string> =>
+  fs.mkdtemp(path.join(os.tmpdir(), `${label}-`));
+
+const createMemoryStub = (): MemoryTools => ({
+  read: async () => [],
+  search: async () => [],
+  summarize: async () => ({ summary: "", entries: [] }),
+  commit: async ({ scope, text, tags, meta }) => ({
+    id: `memory_${Date.now()}`,
+    scope,
+    text,
+    tags,
+    meta,
+    ts: Date.now(),
+  }),
+  diff: async () => [],
+  reindex: async () => 0,
+});
+
+const createNoopDelegationTools = () => ({
+  "agent.delegate": async () => ({ output: "unused", summary: "unused" }),
+  "agent.status": async () => ({ output: "unused", summary: "unused" }),
+  "agent.inspect": async () => ({ output: "unused", summary: "unused" }),
+});
+
+const createAgentRuntime = (dataDir: string) =>
+  createRuntime<AgentCmd, AgentEvent, AgentState>(
+    jsonlStore<AgentEvent>(dataDir),
+    jsonBranchStore(dataDir),
+    decideAgent,
+    reduceAgent,
+    initialAgent,
+  );
+
+const createJobRuntime = (dataDir: string) =>
+  createRuntime<JobCmd, JobEvent, JobState>(
+    jsonlStore<JobEvent>(dataDir),
+    jsonBranchStore(dataDir),
+    decideJob,
+    reduceJob,
+    initialJob,
+  );
+
+const writeProfile = async (root: string, input: {
+  readonly id: string;
+  readonly label: string;
+  readonly default?: boolean;
+  readonly toolAllowlist: ReadonlyArray<string>;
+}): Promise<void> => {
+  const dir = path.join(root, "profiles", input.id);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "PROFILE.md"), `# ${input.label}\n\nUse the async tools.\n`, "utf-8");
+  await fs.writeFile(path.join(dir, "profile.json"), JSON.stringify({
+    id: input.id,
+    label: input.label,
+    enabled: true,
+    default: input.default ?? false,
+    imports: [],
+    routeHints: [],
+    toolAllowlist: input.toolAllowlist,
+    handoffTargets: [],
+  }, null, 2), "utf-8");
+};
+
+test("factory chat runner: codex.run queues work asynchronously and returns immediately", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-codex");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  await writeProfile(profileRoot, {
+    id: "generalist",
+    label: "Generalist",
+    default: true,
+    toolAllowlist: ["codex.run"],
+  });
+
+  const actions = [
+    {
+      thought: "queue codex",
+      action: {
+        type: "tool",
+        name: "codex.run",
+        input: JSON.stringify({ prompt: "Inspect the repo and report status." }),
+        text: null,
+      },
+    },
+    {
+      thought: "respond to operator",
+      action: {
+        type: "final",
+        name: null,
+        input: "{}",
+        text: "Queued Codex. Ask for status while it runs.",
+      },
+    },
+  ];
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_async_codex",
+    problem: "Inspect the repo and report status.",
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: {} as never,
+    repoRoot,
+    profileRoot,
+  });
+
+  expect(result.status).toBe("completed");
+  expect(result.finalResponse).toContain("Queued Codex");
+
+  const jobs = await queue.listJobs({ limit: 10 });
+  expect(jobs).toHaveLength(1);
+  expect(jobs[0]?.agentId).toBe("factory-codex");
+  expect(jobs[0]?.status).toBe("queued");
+
+  const chain = await agentRuntime.chain(agentRunStream("agents/factory/demo", "run_async_codex"));
+  const observed = chain.find((receipt) => receipt.body.type === "tool.observed")?.body;
+  expect(observed && "output" in observed ? observed.output : "").toContain('"status": "queued"');
+});
+
+test("factory chat runner: agent.delegate queues work and agent.status sees the queued job", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-delegate");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  await writeProfile(profileRoot, {
+    id: "generalist",
+    label: "Generalist",
+    default: true,
+    toolAllowlist: ["agent.delegate", "agent.status"],
+  });
+
+  let delegatedJobId = "";
+  const actions = [
+    async () => ({
+      thought: "queue delegate",
+      action: {
+        type: "tool",
+        name: "agent.delegate",
+        input: JSON.stringify({ agentId: "writer", task: "Summarize the current objective." }),
+        text: null,
+      },
+    }),
+    async () => {
+      const jobs = await queue.listJobs({ limit: 10 });
+      delegatedJobId = jobs[0]?.id ?? delegatedJobId;
+      return {
+        thought: "inspect queued child",
+        action: {
+          type: "tool",
+          name: "agent.status",
+          input: JSON.stringify({ jobId: delegatedJobId }),
+          text: null,
+        },
+      };
+    },
+    async () => ({
+      thought: "respond",
+      action: {
+        type: "final",
+        name: null,
+        input: "{}",
+        text: "The writer subagent is queued and ready to run.",
+      },
+    }),
+  ];
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_async_delegate",
+    problem: "Use a writer subagent.",
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const nextFactory = actions.shift();
+      if (!nextFactory) throw new Error("no scripted action left");
+      const next = await nextFactory();
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: {} as never,
+    repoRoot,
+    profileRoot,
+    broadcast: async () => {
+      const jobs = await queue.listJobs({ limit: 10 });
+      delegatedJobId = jobs[0]?.id ?? delegatedJobId;
+    },
+  });
+
+  expect(result.status).toBe("completed");
+  expect(result.finalResponse).toContain("queued");
+
+  const jobs = await queue.listJobs({ limit: 10 });
+  expect(jobs).toHaveLength(1);
+  expect(jobs[0]?.agentId).toBe("writer");
+  expect(jobs[0]?.status).toBe("queued");
+
+  const chain = await agentRuntime.chain(agentRunStream("agents/factory/demo", "run_async_delegate"));
+  const observations = chain.filter((receipt) => receipt.body.type === "tool.observed").map((receipt) => receipt.body);
+  expect(observations.some((event) => "output" in event && event.output.includes('"status": "queued"'))).toBe(true);
+});
+
+test("factory chat runner: codex progress snapshots surface while the child is still running", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-progress");
+  const repoRoot = await createTempDir("receipt-factory-chat-progress-repo");
+  const updates: Array<Record<string, unknown>> = [];
+
+  const result = await runFactoryCodexJob({
+    dataDir,
+    repoRoot,
+    jobId: "job_progress",
+    prompt: "Inspect the repo and keep reporting progress.",
+    executor: {
+      run: async (input) => {
+        await fs.writeFile(input.stdoutPath, "Booting Codex\n", "utf-8");
+        await fs.writeFile(input.lastMessagePath, "Inspecting the repository.", "utf-8");
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        await fs.appendFile(input.stdoutPath, "Collected file list\n", "utf-8");
+        await fs.writeFile(input.lastMessagePath, "Prepared final answer.", "utf-8");
+        return {
+          exitCode: 0,
+          signal: null,
+          stdout: "Booting Codex\nCollected file list\n",
+          stderr: "",
+          lastMessage: "Prepared final answer.",
+        };
+      },
+    },
+    onProgress: async (update) => {
+      updates.push(update);
+    },
+  });
+
+  expect(result.status).toBe("completed");
+  expect(result.summary).toBe("Prepared final answer.");
+  expect(updates.length).toBeGreaterThan(0);
+  expect(updates.some((update) => update.status === "running")).toBe(true);
+  expect(updates.some((update) => String(update.summary ?? "").includes("Inspecting the repository."))).toBe(true);
+});

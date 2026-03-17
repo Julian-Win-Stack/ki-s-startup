@@ -68,6 +68,7 @@ import { runAgent, normalizeAgentConfig } from "./agents/agent.js";
 import { runInfra, normalizeInfraConfig } from "./agents/infra.js";
 import { runAxiom, normalizeAxiomConfig } from "./agents/axiom.js";
 import { runAxiomSimple, normalizeAxiomSimpleConfig, type AxiomSimpleWorkerLauncher } from "./agents/axiom-simple.js";
+import { runFactoryChat, normalizeFactoryChatConfig, runFactoryCodexJob } from "./agents/factory-chat.js";
 import { theoremRunStream } from "./agents/theorem.streams.js";
 import { writerRunStream } from "./agents/writer.streams.js";
 import { agentRunStream } from "./agents/agent.streams.js";
@@ -444,6 +445,24 @@ const axiomRunner = createAgentRunner({
   promptHash: AXIOM_PROMPTS_HASH, promptPath: AXIOM_PROMPTS_PATH,
   runFn: runAxiom as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
   extras: { memoryTools, delegationTools, workspaceRoot: WORKSPACE_ROOT, llmStructured },
+});
+
+const factoryRunner = createAgentRunner({
+  defaultStream: "agents/factory", sseTopic: "agent", sseTokenEvent: "agent-token",
+  normalizeConfig: normalizeFactoryChatConfig, runtime: agentRuntime,
+  prompts: AGENT_PROMPTS, model: AGENT_MODEL,
+  promptHash: AGENT_PROMPTS_HASH, promptPath: AGENT_PROMPTS_PATH,
+  runFn: runFactoryChat as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  extras: {
+    memoryTools,
+    delegationTools,
+    workspaceRoot: WORKSPACE_ROOT,
+    llmStructured,
+    queue,
+    factoryService,
+    repoRoot: factoryService.git.repoRoot,
+    profileRoot: process.cwd(),
+  },
 });
 
 const clipText = (value: string | undefined, max = 280): string | undefined => {
@@ -1285,6 +1304,62 @@ const worker = new JobWorker({
       },
       runtime: agentRuntime, runStreamFn: agentRunStream, runner: axiomRunner,
     }),
+    factory: createWorkerHandler({
+      defaultStream: "agents/factory", defaultAgentId: "factory", kind: "factory.run",
+      defaultSubConfig: {
+        maxIterations: 8,
+        maxToolOutputChars: 6000,
+        memoryScope: "repos/factory/profiles/generalist",
+        workspace: ".",
+      },
+      runtime: agentRuntime, runStreamFn: agentRunStream, runner: factoryRunner,
+    }),
+    "factory-codex": async (job, ctx) => {
+      await ctx.pullCommands(["steer", "follow_up"]);
+      const payload = job.payload as Record<string, unknown>;
+      const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
+      if (!prompt) {
+        return {
+          ok: false,
+          error: "factory-codex prompt required",
+          noRetry: true,
+          result: { status: "failed", summary: "factory-codex prompt required" },
+        };
+      }
+      const timeoutMs = typeof payload.timeoutMs === "number" && Number.isFinite(payload.timeoutMs)
+        ? Math.max(30_000, Math.min(Math.floor(payload.timeoutMs), 900_000))
+        : 180_000;
+      const shouldAbort = async (): Promise<boolean> => {
+        const latest = await queue.getJob(job.id);
+        return latest?.abortRequested === true;
+      };
+      try {
+        const result = await runFactoryCodexJob({
+          dataDir: DATA_DIR,
+          repoRoot: factoryService.git.repoRoot,
+          jobId: job.id,
+          prompt,
+          timeoutMs,
+          executor: factoryService.codexExecutor,
+          onProgress: async (update) => {
+            await queue.progress(job.id, ctx.workerId, update);
+          },
+        }, { shouldAbort });
+        return { ok: true, result };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const aborted = await shouldAbort();
+        return {
+          ok: !aborted,
+          error: aborted ? undefined : message,
+          noRetry: true,
+          result: {
+            status: aborted ? "canceled" : "failed",
+            summary: message,
+          },
+        };
+      }
+    },
     inspector: async (job, ctx) => {
       await ctx.pullCommands(["steer", "follow_up"]);
       await inspectorRunner(job.payload);
@@ -1399,6 +1474,7 @@ const routes = await loadAgentRoutes({
     delegationTools,
     factoryService,
     hubService,
+    profileRoot: process.cwd(),
   },
 });
 

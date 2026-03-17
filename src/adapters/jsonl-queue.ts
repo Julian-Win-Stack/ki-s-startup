@@ -71,6 +71,11 @@ export type JsonlQueue = {
   readonly enqueue: (input: EnqueueJobInput) => Promise<QueueJob>;
   readonly leaseNext: (opts: LeaseOptions) => Promise<QueueJob | undefined>;
   readonly heartbeat: (jobId: string, workerId: string, leaseMs: number) => Promise<QueueJob | undefined>;
+  readonly progress: (
+    jobId: string,
+    workerId: string,
+    result?: Record<string, unknown>
+  ) => Promise<QueueJob | undefined>;
   readonly complete: (jobId: string, workerId: string, result?: Record<string, unknown>) => Promise<QueueJob | undefined>;
   readonly fail: (
     jobId: string,
@@ -369,6 +374,20 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
         jobId,
         workerId,
         leaseMs: Math.max(1_000, leaseMs),
+      });
+      return getQueueJob(jobId);
+    }),
+
+    progress: async (jobId, workerId, result) => withLock(async () => {
+      const current = await getQueueJob(jobId);
+      if (!current) return undefined;
+      if (TERMINAL.has(current.status)) return cloneJob(current);
+      if (current.leaseOwner && current.leaseOwner !== workerId) return undefined;
+      await emitEvent({
+        type: "job.progress",
+        jobId,
+        workerId,
+        result,
       });
       return getQueueJob(jobId);
     }),

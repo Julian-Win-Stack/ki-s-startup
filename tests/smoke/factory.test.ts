@@ -22,7 +22,7 @@ import {
   type FactoryEvent,
 } from "../../src/modules/factory.ts";
 import { FactoryService } from "../../src/services/factory-service.ts";
-import { factoryStreamIsland, factoryShell, type FactoryObjectiveDetail } from "../../src/views/factory/index.ts";
+import { factoryChatIsland, factoryChatShell, factoryInspectorIsland, factorySidebarIsland } from "../../src/views/factory-chat.ts";
 import type { BranchStore, Receipt, Store } from "../../src/core/types.ts";
 
 const stream = "factory/objectives/demo";
@@ -120,6 +120,31 @@ test("runtime cache: repeated state and chain reads reuse the in-process snapsho
   expect(await runtime.state("demo")).toBe(2);
   expect(await runtime.chain("demo").then((chain) => chain.length)).toBe(1);
   expect(readCount).toBe(1);
+});
+
+test("factory service: objective control jobs use a dedicated worker id so /factory chat jobs are not hijacked", async () => {
+  const dataDir = await createTempDir("receipt-factory-control-worker");
+  const repoRoot = await createSourceRepo();
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime,
+    sse: new SseHub(),
+    codexExecutor: { run: async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "" }) },
+    repoRoot,
+  });
+
+  await service.createObjective({
+    title: "Control worker isolation",
+    prompt: "Make sure objective control does not reuse the factory chat worker id.",
+    checks: ["git status --short"],
+  });
+
+  const jobs = await queue.listJobs({ limit: 10 });
+  expect(jobs[0]?.agentId).toBe("factory-control");
+  expect(jobs[0]?.payload.kind).toBe("factory.objective.control");
 });
 
 test("factory reducer: replay reconstructs task, candidate, and integration state deterministically", () => {
@@ -390,210 +415,188 @@ test("factory decomposition: search-only discovery steps collapse into implement
   ]);
 });
 
-test("factory shell: hub shortcut link is not rendered", () => {
-  const markup = factoryShell({
-    composeIsland: '<section id="factory-compose"></section>',
-    boardIsland: '<section id="factory-board"></section>',
-    streamIsland: '<section id="factory-stream"></section>',
-    contextIsland: '<section id="factory-context"></section>',
+test("factory shell: renders chat-first UI without the legacy dashboard", () => {
+  const markup = factoryChatShell({
+    activeProfileId: "generalist",
+    activeProfileLabel: "Generalist",
+    objectiveId: "objective_demo",
+    chat: {
+      activeProfileId: "generalist",
+      activeProfileLabel: "Generalist",
+      items: [],
+    },
+    sidebar: {
+      activeProfileId: "generalist",
+      activeProfileLabel: "Generalist",
+      profiles: [{ id: "generalist", label: "Generalist", selected: true }],
+      objectives: [],
+      jobs: [],
+    },
   });
 
-  expect(markup).not.toMatch(/Open Hub/);
+  expect(markup).toMatch(/Talk to/);
+  expect(markup).toMatch(/Generalist/);
+  expect(markup).toMatch(/href="\/assets\/factory\.css"/);
+  expect(markup).toMatch(/id="factory-chat"/);
+  expect(markup).toMatch(/id="factory-sidebar"/);
+  expect(markup).toMatch(/id="factory-inspector"/);
+  expect(markup).toMatch(/new EventSource\("\/factory\/events\?profile=/);
+  expect(markup).toMatch(/action="\/factory\/run"/);
+  expect(markup).not.toMatch(/id="factory-board"/);
+  expect(markup).not.toMatch(/id="factory-stream"/);
+  expect(markup).not.toMatch(/id="factory-context"/);
   expect(markup).not.toMatch(/href="\/hub"/);
 });
 
-test("factory shell: uses 3-column layout with HTMX SSE", () => {
-  const markup = factoryShell({
-    composeIsland: '<section id="factory-compose"></section>',
-    boardIsland: '<section id="factory-board"></section>',
-    streamIsland: '<section id="factory-stream"></section>',
-    contextIsland: '<section id="factory-context"></section>',
+test("factory chat island: renders chat rows and work cards", () => {
+  const markup = factoryChatIsland({
+    activeProfileId: "generalist",
+    activeProfileLabel: "Generalist",
+    items: [
+      {
+        key: "u1",
+        kind: "user",
+        body: "Ship the profile-driven Factory UI.",
+        meta: "Run run_01 · completed",
+      },
+      {
+        key: "w1",
+        kind: "work",
+        card: {
+          key: "codex-1",
+          title: "Codex run",
+          worker: "codex",
+          status: "running",
+          summary: "Investigating the route swap.",
+          detail: "stdout tail",
+          jobId: "job_01",
+          running: true,
+        },
+      },
+      {
+        key: "a1",
+        kind: "assistant",
+        body: "I replaced the old `/factory` dashboard with a chat shell and kept the objective APIs intact.",
+        meta: "completed",
+      },
+    ],
   });
 
-  expect(markup).toMatch(/class="factory-layout"/);
-  expect(markup).toMatch(/hx-ext="sse,morph"/);
-  expect(markup).toMatch(/sse-connect.*\/factory\/events/);
-  expect(markup).toMatch(/id="factory-board-wrap"/);
-  expect(markup).toMatch(/id="factory-stream-wrap"/);
-  expect(markup).toMatch(/id="factory-context-wrap"/);
+  expect(markup).toMatch(/Ship the profile-driven Factory UI/);
+  expect(markup).toMatch(/Codex run/);
+  expect(markup).toMatch(/job_01/);
+  expect(markup).toMatch(/Abort/);
+  expect(markup).toMatch(/replaced the old <code>\/factory<\/code> dashboard/);
 });
 
-test("factory objective island: blocked reasons are surfaced prominently", () => {
-  const detail: FactoryObjectiveDetail = {
-    objectiveId: "objective_demo",
-    title: "Blocked objective",
-    status: "blocked" as const,
-    archivedAt: undefined,
-    updatedAt: 10,
-    latestSummary: "Blocked while waiting on a diff-producing task.",
-    blockedReason: "factory task produced no tracked diff: located the file but changed nothing",
-    phase: "blocked" as const,
-    scheduler: { slotState: "active" as const },
-    repoProfile: {
-      status: "ready" as const,
-      inferredChecks: ["npm run build"],
-      generatedSkillRefs: [] as readonly string[],
-      summary: "Repo profile ready.",
-    },
-    blockedExplanation: {
-      summary: "factory task produced no tracked diff: located the file but changed nothing",
-      taskId: "task_01",
-      receiptType: "task.blocked",
-      receiptHash: "hash_01",
-    },
-    latestDecision: undefined,
-    nextAction: "Review the blocking receipt and react or cancel the objective.",
-    activeTaskCount: 0,
-    readyTaskCount: 0,
-    taskCount: 1,
-    integrationStatus: "idle" as const,
-    latestCommitHash: undefined,
-    prompt: "Remove the legacy header link from /factory.",
-    channel: "results",
-    baseHash: "abc1234",
-    checks: ["npm run build"],
-    policy: DEFAULT_FACTORY_OBJECTIVE_POLICY,
-    budgetState: {
-      taskRunsUsed: 1,
-      candidatePassesByTask: {},
-      reconciliationTasksUsed: 0,
-      elapsedMinutes: 1,
-      lastMutationAt: undefined,
-      lastDispatchAt: 10,
-      policyBlockedReason: undefined,
-    },
-    createdAt: 1,
-    tasks: [{
-      nodeId: "task_01",
-      taskId: "task_01",
-      taskKind: "planned" as const,
-      title: "Locate the header link source",
-      prompt: "Search the repo and record the file path.",
-      workerType: "codex" as const,
-      baseCommit: "abc1234",
-      dependsOn: [] as readonly string[],
-      status: "blocked" as const,
-      skillBundlePaths: [] as readonly string[],
-      contextRefs: [] as readonly string[],
-      artifactRefs: {} as Record<string, string>,
-      createdAt: 1,
-      completedAt: 10,
-      blockedReason: "factory task produced no tracked diff: located the file but changed nothing",
-      workspaceExists: false,
-      workspaceDirty: false,
-    }],
-    candidates: [] as readonly never[],
-    integration: {
-      status: "idle" as const,
-      queuedCandidateIds: [] as readonly string[],
-      validationResults: [] as readonly never[],
+test("factory sidebar island: renders left rail navigation", () => {
+  const markup = factorySidebarIsland({
+    activeProfileId: "generalist",
+    activeProfileLabel: "Generalist",
+    profiles: [
+      { id: "generalist", label: "Generalist", selected: true },
+      { id: "reviewer", label: "Reviewer", selected: false },
+    ],
+    objectives: [{
+      objectiveId: "objective_demo",
+      title: "Profile-driven Factory UI",
+      status: "executing",
+      phase: "executing",
+      summary: "Chat shell is wired to the worker path.",
       updatedAt: 10,
+      selected: true,
+      slotState: "active",
+      activeTaskCount: 1,
+      readyTaskCount: 2,
+      taskCount: 5,
+      integrationStatus: "executing",
+    }],
+    jobs: [{
+      jobId: "job_01",
+      agentId: "factory",
+      status: "running",
+      summary: "Ship the profile-driven Factory UI.",
+      runId: "run_01",
+      objectiveId: "objective_demo",
+      updatedAt: 1000,
+      link: "/factory?profile=generalist&objective=objective_demo",
+    }],
+    selectedObjective: {
+      objectiveId: "objective_demo",
+      title: "Profile-driven Factory UI",
+      status: "executing",
+      phase: "executing",
+      summary: "Chat shell is wired to the worker path.",
+      debugLink: "/factory/api/objectives/objective_demo/debug",
+      receiptsLink: "/factory/api/objectives/objective_demo/receipts?limit=50",
     },
-    recentReceipts: [{
-      type: "task.blocked",
-      hash: "hash_01",
-      ts: 10,
-      summary: "factory task produced no tracked diff: located the file but changed nothing",
-      taskId: "task_01",
-    }],
-    evidenceCards: [{
-      kind: "blocked" as const,
-      title: "Blocked or conflicted",
-      summary: "factory task produced no tracked diff: located the file but changed nothing",
-      at: 10,
-      taskId: "task_01",
-      receiptHash: "hash_01",
-      receiptType: "task.blocked",
-    }],
-    activity: [] as readonly never[],
-    latestRebracket: undefined,
-  };
-  const markup = factoryStreamIsland(detail, undefined);
+  });
 
-  expect(markup).toMatch(/Blocked/);
-  expect(markup).toMatch(/factory task produced no tracked diff/);
-  expect(markup).toMatch(/React to re-evaluate/);
+  expect(markup).toMatch(/Control room/);
+  expect(markup).toMatch(/Reviewer/);
+  expect(markup).toMatch(/href="\/factory\?profile=reviewer&objective=objective_demo"/);
+  expect(markup).toMatch(/Profile-driven Factory UI/);
+  expect(markup).toMatch(/Objectives/);
+  expect(markup).toMatch(/integration executing/);
+  expect(markup).toMatch(/1 active/);
 });
 
-test("factory stream island: renders stream with objective detail", () => {
-  const detail: FactoryObjectiveDetail = {
-    objectiveId: "objective_demo",
-    title: "Responsive task cards",
-    status: "active" as const,
-    archivedAt: undefined,
-    updatedAt: 10,
-    latestSummary: "Task cards wrap correctly.",
-    blockedReason: undefined,
-    phase: "executing" as const,
-    scheduler: { slotState: "active" as const },
-    repoProfile: {
-      status: "ready" as const,
-      inferredChecks: ["npm run build"],
-      generatedSkillRefs: [] as readonly string[],
-      summary: "Repo profile ready.",
-    },
-    blockedExplanation: undefined,
-    latestDecision: undefined,
-    nextAction: "One task is ready to dispatch.",
-    activeTaskCount: 1,
-    readyTaskCount: 1,
-    taskCount: 1,
-    integrationStatus: "idle" as const,
-    latestCommitHash: "abc12345",
-    prompt: "Verify task card spacing.",
-    channel: "results",
-    baseHash: "abc1234",
-    checks: ["npm run build"],
-    policy: DEFAULT_FACTORY_OBJECTIVE_POLICY,
-    budgetState: {
-      taskRunsUsed: 1,
-      candidatePassesByTask: {},
-      reconciliationTasksUsed: 0,
-      elapsedMinutes: 1,
-      lastMutationAt: undefined,
-      lastDispatchAt: 10,
-      policyBlockedReason: undefined,
-    },
-    createdAt: 1,
-    tasks: [{
-      nodeId: "task_01",
-      taskId: "task_01",
-      taskKind: "planned" as const,
-      title: "Task title with enough length to wrap across lines without colliding with the next card.",
-      prompt: "Adjust layout classes.",
-      workerType: "codex" as const,
-      baseCommit: "abc1234",
-      dependsOn: [] as readonly string[],
-      status: "ready" as const,
-      skillBundlePaths: [] as readonly string[],
-      contextRefs: [] as readonly string[],
-      artifactRefs: {} as Record<string, string>,
-      createdAt: 1,
-      completedAt: undefined,
-      blockedReason: undefined,
-      workspaceExists: true,
-      workspaceDirty: false,
-      latestSummary: "Longer task summary content lives inside the task card list container.",
-      candidateId: "candidate_01",
-      jobStatus: "queued" as const,
-      elapsedMs: 1_500,
-      sourceTaskId: undefined,
-    }],
-    candidates: [] as readonly never[],
-    integration: {
-      status: "idle" as const,
-      queuedCandidateIds: [] as readonly string[],
-      validationResults: [] as readonly never[],
+test("factory inspector island: renders selected objective controls and recent jobs", () => {
+  const markup = factoryInspectorIsland({
+    activeProfileId: "generalist",
+    activeProfileLabel: "Generalist",
+    profiles: [
+      { id: "generalist", label: "Generalist", selected: true },
+      { id: "reviewer", label: "Reviewer", selected: false },
+    ],
+    objectives: [{
+      objectiveId: "objective_demo",
+      title: "Profile-driven Factory UI",
+      status: "executing",
+      phase: "executing",
+      summary: "Chat shell is wired to the worker path.",
       updatedAt: 10,
+      selected: true,
+      slotState: "active",
+    }],
+    jobs: [{
+      jobId: "job_01",
+      agentId: "factory",
+      status: "running",
+      summary: "Ship the profile-driven Factory UI.",
+      runId: "run_01",
+      objectiveId: "objective_demo",
+      updatedAt: 1000,
+      link: "/factory?profile=generalist&objective=objective_demo",
+    }],
+    selectedObjective: {
+      objectiveId: "objective_demo",
+      title: "Profile-driven Factory UI",
+      status: "executing",
+      phase: "executing",
+      summary: "Chat shell is wired to the worker path.",
+      debugLink: "/factory/api/objectives/objective_demo/debug",
+      receiptsLink: "/factory/api/objectives/objective_demo/receipts?limit=50",
+      nextAction: "Run the next codex candidate.",
+      slotState: "active",
+      integrationStatus: "executing",
+      activeTaskCount: 1,
+      readyTaskCount: 2,
+      taskCount: 5,
+      repoProfileStatus: "ready",
+      latestCommitHash: "1234567890abcdef",
+      checks: ["bun test"],
+      latestDecisionSummary: "Keep working the current branch.",
+      latestDecisionAt: 2000,
     },
-    recentReceipts: [] as readonly never[],
-    evidenceCards: [] as readonly never[],
-    activity: [] as readonly never[],
-    latestRebracket: undefined,
-  };
-  const markup = factoryStreamIsland(detail, undefined);
+  });
 
-  expect(markup).toMatch(/id="factory-stream"/);
-  expect(markup).toMatch(/Responsive task cards/);
-  expect(markup).toMatch(/data-objective-id="objective_demo"/);
+  expect(markup).toMatch(/Objective inspector/);
+  expect(markup).toMatch(/Debug JSON/);
+  expect(markup).toMatch(/Receipts/);
+  expect(markup).toMatch(/Latest decision/);
+  expect(markup).toMatch(/Run run_01/);
+  expect(markup).toMatch(/job_01/);
+  expect(markup).toMatch(/Open related view/);
+  expect(markup).toMatch(/Ship the profile-driven Factory UI/);
 });
