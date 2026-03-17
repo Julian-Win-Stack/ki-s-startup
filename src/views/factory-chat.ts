@@ -8,6 +8,8 @@ const panelClass = "rounded-[28px] border border-white/10 bg-white/[0.04] shadow
 const softPanelClass = "rounded-[24px] border border-white/10 bg-black/20 backdrop-blur-xl";
 const sectionLabelClass = "text-[11px] font-medium uppercase tracking-[0.28em] text-zinc-500";
 const badgeBaseClass = "inline-flex max-w-full items-center justify-center gap-2 rounded-full border px-3 py-1 text-center text-[11px] font-medium uppercase tracking-[0.18em] whitespace-normal leading-4 break-words [overflow-wrap:anywhere]";
+const iconBadgeChipClass = "inline-flex min-w-0 max-w-full items-center gap-2 rounded-full border px-2.5 py-1.5 text-left";
+const iconBadgeCardClass = "flex min-h-[46px] w-full min-w-0 items-center gap-3 rounded-[18px] border px-3.5 py-2.5 text-left";
 const buttonBaseClass = "inline-flex items-center justify-center rounded-full border px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] transition";
 const inputClass = "w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-emerald-300/40 focus:bg-white/[0.06]";
 const railCardClass = `${softPanelClass} p-4`;
@@ -30,7 +32,17 @@ const displayLabel = (value?: string): string => {
   return text.replace(/[_-]+/g, " ");
 };
 
+const startCase = (value?: string): string => {
+  const text = value?.trim();
+  if (!text) return "";
+  return text
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+};
+
 type Tone = "neutral" | "info" | "success" | "warning" | "danger";
+type BadgeIcon = "profile" | "objective" | "codex" | "terminal" | "search" | "read" | "write" | "status" | "inspect" | "dispatch" | "tool";
 
 const toneForValue = (value?: string): Tone => {
   const normalized = value?.trim().toLowerCase() ?? "";
@@ -90,6 +102,67 @@ const badgeToneClass = (tone: Tone): string => {
 const badge = (label: string, tone: Tone = toneForValue(label)): string =>
   `<span class="${badgeBaseClass} ${badgeToneClass(tone)}">${esc(label)}</span>`;
 
+const iconBadgeToneClass = (tone: Tone): string => {
+  switch (tone) {
+    case "success":
+      return "border-emerald-300/20 bg-emerald-300/10 text-emerald-100";
+    case "warning":
+      return "border-amber-300/20 bg-amber-300/10 text-amber-100";
+    case "danger":
+      return "border-rose-300/20 bg-rose-300/10 text-rose-100";
+    case "info":
+      return "border-sky-300/20 bg-sky-300/10 text-sky-100";
+    default:
+      return "border-white/10 bg-white/[0.04] text-zinc-200";
+  }
+};
+
+const renderIcon = (icon: BadgeIcon): string => {
+  const common = 'fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"';
+  switch (icon) {
+    case "profile":
+      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="M20 21a8 8 0 0 0-16 0"></path><circle cx="12" cy="8" r="4"></circle></svg>`;
+    case "objective":
+      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><circle cx="12" cy="12" r="8"></circle><circle cx="12" cy="12" r="3"></circle></svg>`;
+    case "codex":
+      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="m8 8-4 4 4 4"></path><path d="m16 8 4 4-4 4"></path><path d="m14 4-4 16"></path></svg>`;
+    case "terminal":
+      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="m7 10 3 3-3 3"></path><path d="M13 16h4"></path></svg>`;
+    case "search":
+      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><circle cx="11" cy="11" r="6"></circle><path d="m20 20-4.2-4.2"></path></svg>`;
+    case "read":
+      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="M8 3h7l4 4v14H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"></path><path d="M15 3v5h5"></path><path d="M10 12h7"></path><path d="M10 16h7"></path></svg>`;
+    case "write":
+      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="M12 20h9"></path><path d="m16.5 3.5 4 4"></path><path d="M4 20l3.5-1 10-10a2.8 2.8 0 0 0-4-4l-10 10L2 20Z"></path></svg>`;
+    case "status":
+      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="M3 12h4l3-6 4 12 3-6h4"></path></svg>`;
+    case "inspect":
+      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6S2 12 2 12Z"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
+    case "dispatch":
+      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="M4 12h14"></path><path d="m13 5 7 7-7 7"></path></svg>`;
+    default:
+      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><circle cx="12" cy="12" r="8"></circle><path d="M12 8v4"></path><path d="M12 16h.01"></path></svg>`;
+  }
+};
+
+const iconBadge = (input: {
+  readonly icon: BadgeIcon;
+  readonly text: string;
+  readonly tone?: Tone;
+  readonly mode?: "chip" | "card";
+}): string => {
+  const mode = input.mode ?? "chip";
+  const rootClass = mode === "card" ? iconBadgeCardClass : iconBadgeChipClass;
+  const iconSizeClass = mode === "card" ? "h-7 w-7" : "h-5 w-5";
+  const textClass = mode === "card"
+    ? "min-w-0 break-words text-sm font-medium leading-5 [overflow-wrap:anywhere]"
+    : "min-w-0 break-words text-xs font-medium leading-5 [overflow-wrap:anywhere]";
+  return `<span class="${rootClass} ${iconBadgeToneClass(input.tone ?? "neutral")}">
+    <span class="flex ${iconSizeClass} shrink-0 items-center justify-center rounded-full bg-black/25">${renderIcon(input.icon)}</span>
+    <span class="${textClass}">${esc(input.text)}</span>
+  </span>`;
+};
+
 const primaryButtonClass = `${buttonBaseClass} border-emerald-300/40 bg-emerald-300 text-zinc-950 hover:bg-emerald-200`;
 const ghostButtonClass = `${buttonBaseClass} border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.09]`;
 const dangerButtonClass = `${buttonBaseClass} border-rose-300/25 bg-rose-400/10 text-rose-100 hover:bg-rose-400/20`;
@@ -106,6 +179,127 @@ const objectiveMetaPill = (label: string, value?: string, tone: Tone = "neutral"
   const text = displayLabel(value);
   if (!text) return "";
   return `<span class="${badgeBaseClass} ${badgeToneClass(tone)} px-2.5 py-1 text-[10px] tracking-[0.14em]">${esc(`${label} ${text}`)}</span>`;
+};
+
+const toolBadgeSpec = (tool: string): { readonly icon: BadgeIcon; readonly label: string; readonly tone: Tone } => {
+  const normalized = tool.trim().toLowerCase();
+  if (normalized === "codex.run" || normalized.includes("codex")) {
+    return { icon: "codex", label: "Codex", tone: "info" };
+  }
+  if (normalized === "factory.dispatch") {
+    return { icon: "dispatch", label: "Dispatch", tone: "success" };
+  }
+  if (normalized === "agent.delegate") {
+    return { icon: "dispatch", label: "Delegate", tone: "success" };
+  }
+  if (normalized === "profile.handoff") {
+    return { icon: "dispatch", label: "Profile", tone: "success" };
+  }
+  if (normalized === "factory.status") {
+    return { icon: "inspect", label: "Objective", tone: "info" };
+  }
+  if (normalized === "agent.status") {
+    return { icon: "status", label: "Status", tone: "info" };
+  }
+  if (normalized === "agent.inspect") {
+    return { icon: "inspect", label: "Inspect", tone: "info" };
+  }
+  if (normalized === "ls") {
+    return { icon: "read", label: "Files", tone: "neutral" };
+  }
+  if (normalized === "jobs.list") {
+    return { icon: "status", label: "Jobs", tone: "neutral" };
+  }
+  if (normalized === "job.control") {
+    return { icon: "status", label: "Control", tone: "neutral" };
+  }
+  if (normalized === "skill.read") {
+    return { icon: "read", label: "Skills", tone: "neutral" };
+  }
+  if (normalized === "memory.read") {
+    return { icon: "read", label: "Memory", tone: "neutral" };
+  }
+  if (normalized === "memory.search") {
+    return { icon: "search", label: "Mem search", tone: "info" };
+  }
+  if (normalized === "memory.commit") {
+    return { icon: "write", label: "Mem write", tone: "warning" };
+  }
+  if (normalized === "bash" || normalized.includes("shell") || normalized.includes("terminal")) {
+    return { icon: "terminal", label: "Shell", tone: "neutral" };
+  }
+  if (normalized === "grep" || normalized.includes("search")) {
+    return { icon: "search", label: "Search", tone: "info" };
+  }
+  if (normalized === "read" || normalized.endsWith(".read")) {
+    return { icon: "read", label: "Read", tone: "neutral" };
+  }
+  if (normalized === "write" || normalized.endsWith(".write") || normalized.includes("edit")) {
+    return { icon: "write", label: "Write", tone: "warning" };
+  }
+  if (normalized.endsWith(".status")) {
+    return { icon: "status", label: "Status", tone: "info" };
+  }
+  if (normalized.includes("inspect")) {
+    return { icon: "inspect", label: "Inspect", tone: "info" };
+  }
+  if (normalized.includes("dispatch") || normalized.includes("delegate") || normalized.includes("handoff")) {
+    return { icon: "dispatch", label: "Dispatch", tone: "success" };
+  }
+  return { icon: "tool", label: startCase(tool), tone: "neutral" };
+};
+
+const renderSelectedProfileSummary = (input: {
+  readonly profileLabel: string;
+  readonly profileId: string;
+  readonly tools: ReadonlyArray<string>;
+  readonly objectiveId?: string;
+  readonly includeObjective?: boolean;
+  readonly layout?: "header" | "panel";
+}): string => {
+  const layout = input.layout ?? "header";
+  const badgeMode = layout === "panel" ? "card" : "chip";
+  const contextContainerClass = layout === "panel" ? "grid gap-2" : "mt-3 flex flex-wrap gap-2";
+  const toolContainerClass = layout === "panel" ? "mt-3 grid grid-cols-2 gap-2" : "mt-3 flex flex-wrap gap-1.5";
+  const contextBadges = [
+    iconBadge({
+      icon: "profile",
+      text: input.profileLabel,
+      tone: "neutral",
+      mode: badgeMode,
+    }),
+  ];
+  if (input.includeObjective ?? true) {
+    contextBadges.push(iconBadge({
+      icon: "objective",
+      text: input.objectiveId ? "Objective thread" : "No objective",
+      tone: input.objectiveId ? "info" : "neutral",
+      mode: badgeMode,
+    }));
+  }
+  return `<div class="space-y-4">
+    <div class="space-y-2">
+      <div class="${sectionLabelClass}">Selected profile</div>
+      <div class="${contextContainerClass}">
+        ${contextBadges.join("")}
+      </div>
+      <div class="font-mono text-[11px] text-zinc-500">${esc(input.profileId)}</div>
+    </div>
+    ${input.tools.length > 0 ? `<div class="space-y-2">
+      <div class="${sectionLabelClass}">Tools in scope</div>
+      <div class="${toolContainerClass}">
+        ${input.tools.map((tool) => {
+          const badgeSpec = toolBadgeSpec(tool);
+          return iconBadge({
+            icon: badgeSpec.icon,
+            text: badgeSpec.label,
+            tone: badgeSpec.tone,
+            mode: badgeMode,
+          });
+        }).join("")}
+      </div>
+    </div>` : ""}
+  </div>`;
 };
 
 export type FactoryChatProfileNav = {
@@ -164,13 +358,30 @@ export type FactorySelectedObjectiveCard = {
   readonly latestDecisionAt?: number;
 };
 
+export type FactoryLiveCodexCard = {
+  readonly jobId: string;
+  readonly status: string;
+  readonly summary: string;
+  readonly latestNote?: string;
+  readonly stderrTail?: string;
+  readonly stdoutTail?: string;
+  readonly runId?: string;
+  readonly task?: string;
+  readonly updatedAt?: number;
+  readonly abortRequested?: boolean;
+  readonly rawLink: string;
+  readonly running: boolean;
+};
+
 export type FactorySidebarModel = {
   readonly activeProfileId: string;
   readonly activeProfileLabel: string;
+  readonly activeProfileTools: ReadonlyArray<string>;
   readonly profiles: ReadonlyArray<FactoryChatProfileNav>;
   readonly objectives: ReadonlyArray<FactoryChatObjectiveNav>;
   readonly jobs: ReadonlyArray<FactoryChatJobNav>;
   readonly selectedObjective?: FactorySelectedObjectiveCard;
+  readonly activeCodex?: FactoryLiveCodexCard;
 };
 
 export type FactoryWorkCard = {
@@ -250,7 +461,7 @@ const renderWorkControls = (card: FactoryWorkCard): string => {
   </div>`;
 };
 
-const renderChatItem = (item: FactoryChatItem): string => {
+const renderChatItem = (item: FactoryChatItem, activeProfileLabel: string, activeProfileId: string): string => {
   if (item.kind === "user") {
     return `<section class="flex justify-end">
       <div class="max-w-3xl space-y-2">
@@ -263,11 +474,15 @@ const renderChatItem = (item: FactoryChatItem): string => {
   }
   if (item.kind === "assistant") {
     return `<section class="space-y-3">
-      <div class="flex items-center gap-3">
+      <div class="flex items-start gap-3">
         <div class="flex h-10 w-10 items-center justify-center rounded-2xl border border-emerald-300/20 bg-emerald-300/10 text-sm font-semibold text-emerald-100">AI</div>
-        <div>
-          <div class="text-sm font-medium text-zinc-100">Factory profile</div>
-          ${item.meta ? `<div class="text-xs text-zinc-500">${esc(item.meta)}</div>` : ""}
+        <div class="min-w-0 flex-1">
+          <div class="text-sm font-medium text-zinc-100">Selected profile</div>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            ${iconBadge({ icon: "profile", text: activeProfileLabel, tone: "neutral" })}
+            <span class="text-xs text-zinc-500">${esc(activeProfileId)}</span>
+            ${item.meta ? `<span class="text-xs text-zinc-500">${esc(item.meta)}</span>` : ""}
+          </div>
         </div>
       </div>
       <div class="${panelClass} px-5 py-4">
@@ -308,7 +523,7 @@ const renderChatItem = (item: FactoryChatItem): string => {
 
 export const factoryChatIsland = (model: FactoryChatIslandModel): string => {
   const body = model.items.length > 0
-    ? model.items.map(renderChatItem).join("")
+    ? model.items.map((item) => renderChatItem(item, model.activeProfileLabel, model.activeProfileId)).join("")
     : `<section class="${panelClass} px-6 py-6 text-center">
       <div class="mx-auto max-w-2xl">
         <div class="text-base font-semibold text-zinc-100">${esc(model.activeProfileLabel)} is ready.</div>
@@ -347,21 +562,6 @@ const renderObjectiveLink = (model: FactorySidebarModel, objective: FactoryChatO
   </a>`;
 };
 
-const renderThreadLink = (job: FactoryChatJobNav): string => {
-  const body = `<div class="flex min-w-0 items-start justify-between gap-3 overflow-hidden">
-      <div class="min-w-0 flex-1 overflow-hidden">
-        <div class="truncate text-sm font-semibold text-zinc-100">${esc(job.runId ?? job.jobId)}</div>
-        <div class="mt-2 line-clamp-2 break-words text-sm leading-6 text-zinc-400 [overflow-wrap:anywhere]">${esc(job.summary)}</div>
-      </div>
-      <div class="shrink-0">${badge(job.status)}</div>
-    </div>
-    <div class="mt-3 break-words text-xs text-zinc-500 [overflow-wrap:anywhere]">${esc(job.objectiveId ? `Objective ${job.objectiveId}` : job.agentId)}</div>`;
-  if (job.link) {
-    return `<a class="block min-w-0 overflow-hidden rounded-[22px] border border-white/10 bg-black/10 px-4 py-4 transition hover:border-white/15 hover:bg-white/[0.05]" href="${esc(job.link)}">${body}</a>`;
-  }
-  return `<div class="min-w-0 overflow-hidden rounded-[22px] border border-white/10 bg-black/10 px-4 py-4">${body}</div>`;
-};
-
 export const factoryRailIsland = (model: FactorySidebarModel): string => {
   const selectedObjectiveQuery = model.selectedObjective
     ? `&objective=${encodeURIComponent(model.selectedObjective.objectiveId)}`
@@ -379,9 +579,6 @@ export const factoryRailIsland = (model: FactorySidebarModel): string => {
   const objectives = model.objectives.length > 0
     ? model.objectives.map((objective) => renderObjectiveLink(model, objective)).join("")
     : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No objectives yet. Start in the composer and the profile can dispatch one.</div>`;
-  const threadJobs = model.jobs.length > 0
-    ? model.jobs.slice(0, 4).map(renderThreadLink).join("")
-    : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No recent thread activity.</div>`;
   return `<div class="space-y-5 px-4 py-5 md:px-5">
     <section class="${railCardClass}">
       <div class="flex items-start justify-between gap-3">
@@ -403,16 +600,7 @@ export const factoryRailIsland = (model: FactorySidebarModel): string => {
     </section>
     <section class="${railCardClass}">
       <div class="flex items-center justify-between gap-3">
-        <div class="${sectionLabelClass}">Recent Thread</div>
-        <div class="text-xs text-zinc-500">${esc(`${model.jobs.length}`)}</div>
-      </div>
-      <div class="mt-4 grid gap-3">
-        ${threadJobs}
-      </div>
-    </section>
-    <section class="${railCardClass}">
-      <div class="flex items-center justify-between gap-3">
-        <div class="${sectionLabelClass}">Factory Objectives</div>
+        <div class="${sectionLabelClass}">Objective Pipeline</div>
         <div class="text-xs text-zinc-500">${esc(`${model.objectives.length}`)}</div>
       </div>
       <div class="mt-4 grid gap-3">
@@ -497,20 +685,82 @@ const renderJobRow = (job: FactoryChatJobNav): string => `<div class="factory-jo
   ${job.link ? `<a class="mt-3 inline-flex text-xs font-medium uppercase tracking-[0.16em] text-emerald-200 transition hover:text-emerald-100" href="${esc(job.link)}">Open related view</a>` : ""}
 </div>`;
 
+const renderActiveCodexCard = (card?: FactoryLiveCodexCard): string => {
+  if (!card) {
+    return `<div class="mt-4 text-sm leading-6 text-zinc-500">No Codex worker has been queued in this thread yet. When one starts, its latest note and log tail will stream here automatically.</div>`;
+  }
+  const latestNote = card.latestNote && card.latestNote !== card.summary
+    ? card.latestNote
+    : undefined;
+  const stderrTail = card.stderrTail?.trim();
+  const stdoutTail = card.stdoutTail?.trim();
+  return `<div class="mt-4 space-y-4">
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <div class="text-base font-semibold text-white">Latest child</div>
+        <div class="mt-2 font-mono text-[11px] text-zinc-500">${esc(card.jobId)}</div>
+      </div>
+      ${badge(displayLabel(card.status), toneForValue(card.status))}
+    </div>
+    ${card.task ? `<div>
+      <div class="${sectionLabelClass}">Task</div>
+      <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(card.task)}</div>
+    </div>` : ""}
+    <div>
+      <div class="${sectionLabelClass}">Summary</div>
+      <div class="mt-2 text-sm leading-6 text-zinc-100">${esc(card.summary)}</div>
+    </div>
+    ${latestNote ? `<div>
+      <div class="${sectionLabelClass}">Latest note</div>
+      <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(latestNote)}</div>
+    </div>` : ""}
+    ${stderrTail ? `<div>
+      <div class="${sectionLabelClass}">stderr tail</div>
+      <pre class="mt-2 max-h-36 overflow-auto rounded-[20px] border border-white/10 bg-black/25 px-3 py-3 text-[12px] leading-5 text-zinc-300 whitespace-pre-wrap [overflow-wrap:anywhere]">${esc(stderrTail)}</pre>
+    </div>` : ""}
+    ${stdoutTail && stdoutTail !== stderrTail ? `<div>
+      <div class="${sectionLabelClass}">stdout tail</div>
+      <pre class="mt-2 max-h-32 overflow-auto rounded-[20px] border border-white/10 bg-black/25 px-3 py-3 text-[12px] leading-5 text-zinc-300 whitespace-pre-wrap [overflow-wrap:anywhere]">${esc(stdoutTail)}</pre>
+    </div>` : ""}
+    ${card.abortRequested ? `<div class="rounded-[20px] border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-50">Abort requested. Waiting for the worker to stop cleanly.</div>` : ""}
+    <div class="flex flex-wrap gap-2 text-xs text-zinc-500">
+      ${card.runId ? `<span>Run ${esc(card.runId)}</span>` : ""}
+      ${card.updatedAt ? `<span>Updated ${esc(formatTs(card.updatedAt))}</span>` : ""}
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <a class="${ghostButtonClass}" href="${esc(card.rawLink)}" target="_blank" rel="noreferrer">Job JSON</a>
+      ${card.running && !card.abortRequested ? `<form action="/factory/job/${encodeURIComponent(card.jobId)}/abort" method="post" hx-post="/factory/job/${encodeURIComponent(card.jobId)}/abort" hx-swap="none">
+        <input type="hidden" name="reason" value="abort requested from /factory codex panel" />
+        <button class="${dangerButtonClass}" type="submit">Abort</button>
+      </form>` : ""}
+    </div>
+  </div>`;
+};
+
 export const factoryInspectorIsland = (model: FactorySidebarModel): string => {
   const objective = model.selectedObjective;
-  const jobs = model.jobs.length > 0
-    ? model.jobs.map(renderJobRow).join("")
+  const visibleJobs = model.activeCodex
+    ? model.jobs.filter((job) => job.jobId !== model.activeCodex?.jobId)
+    : model.jobs;
+  const jobs = visibleJobs.length > 0
+    ? visibleJobs.map(renderJobRow).join("")
     : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No recent jobs.</div>`;
   return `<div class="space-y-5 px-4 py-5 md:px-5">
     <section class="${railCardClass}">
+      ${renderSelectedProfileSummary({
+        profileLabel: model.activeProfileLabel,
+        profileId: model.activeProfileId,
+        tools: model.activeProfileTools,
+        includeObjective: false,
+        layout: "panel",
+      })}
+    </section>
+    <section class="${railCardClass}">
       <div class="flex items-center justify-between gap-3">
-        <div>
-          <div class="${sectionLabelClass}">Active profile</div>
-          <div class="mt-3 text-lg font-semibold text-white">${esc(model.activeProfileLabel)}</div>
-        </div>
-        ${badge(model.activeProfileId, "neutral")}
+        <div class="${sectionLabelClass}">Codex worker</div>
+        ${model.activeCodex ? badge(displayLabel(model.activeCodex.status), toneForValue(model.activeCodex.status)) : ""}
       </div>
+      ${renderActiveCodexCard(model.activeCodex)}
     </section>
     <section class="${railCardClass}">
       <div class="flex items-center justify-between gap-3">
@@ -557,7 +807,7 @@ export const factoryInspectorIsland = (model: FactorySidebarModel): string => {
     <section class="${railCardClass} factory-job-panel">
       <div class="flex items-center justify-between gap-3">
         <div class="${sectionLabelClass}">Recent jobs</div>
-        <div class="text-xs text-zinc-500">${esc(`${model.jobs.length}`)}</div>
+        <div class="text-xs text-zinc-500">${esc(`${visibleJobs.length}`)}</div>
       </div>
       <div class="factory-job-list mt-4 grid gap-3">
         ${jobs}
@@ -595,10 +845,8 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
 	            <div class="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-4 px-4 py-4 md:px-8 xl:px-10">
 	              <div class="min-w-0">
 	                <div class="${sectionLabelClass}">${model.objectiveId ? "Objective thread" : "Factory chat"}</div>
-	                <div class="mt-3 flex flex-wrap items-center gap-2">
+	                <div class="mt-3">
 	                  <h1 class="text-lg font-semibold text-white">Talk to <span data-profile-label>${esc(model.activeProfileLabel)}</span></h1>
-	                  ${badge(model.activeProfileId, "neutral")}
-	                  ${model.objectiveId ? badge(`objective ${model.objectiveId}`, "info") : badge("no objective selected", "neutral")}
 	                </div>
 	                <div class="mt-3 text-sm leading-6 text-zinc-400">${esc(model.objectiveId
                     ? "Messages, runs, and recent jobs in this view are scoped to the selected objective."
@@ -623,7 +871,7 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
                     <button class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.08]" type="button" data-prompt-fill="Summarize the current Factory status and the next best action.">Status</button>
                     <button class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.08]" type="button" data-prompt-fill="Plan the work in a clean sequence and call out risks before dispatching anything.">Plan</button>
                     <button class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.08]" type="button" data-prompt-fill="Debug the selected objective and explain what is blocking it.">Debug</button>
-                    <button class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.08]" type="button" data-prompt-fill="Dispatch a Factory objective and keep delivery moving until there is a concrete result.">Dispatch</button>
+                    <button class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.08]" type="button" data-prompt-fill="Create a Factory objective for this request, then keep delivery moving with Codex workers until there is a concrete result.">New objective</button>
                   </div>
                   <div class="flex flex-wrap items-center gap-3">
                     <button class="${primaryButtonClass}" data-send-label="Send" type="submit">Send</button>

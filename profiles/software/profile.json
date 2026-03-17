@@ -7,15 +7,12 @@
   "toolAllowlist": [
     "ls",
     "read",
-    "write",
-    "bash",
     "grep",
-    "agent.status",
     "jobs.list",
-    "job.control",
     "agent.inspect",
     "skill.read",
-    "codex.run",
+    "factory.dispatch",
+    "factory.status",
     "profile.handoff"
   ],
   "orchestration": {

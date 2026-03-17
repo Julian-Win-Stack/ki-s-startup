@@ -429,6 +429,7 @@ test("factory shell: renders chat-first UI without the legacy dashboard", () => 
     sidebar: {
       activeProfileId: "generalist",
       activeProfileLabel: "Generalist",
+      activeProfileTools: ["codex.run", "bash", "grep", "read", "write", "agent.status", "agent.inspect", "factory.dispatch"],
       profiles: [{ id: "generalist", label: "Generalist", selected: true }],
       objectives: [],
       jobs: [],
@@ -490,6 +491,7 @@ test("factory chat island: renders chat rows and work cards", () => {
   expect(markup).toMatch(/Codex run/);
   expect(markup).toMatch(/job_01/);
   expect(markup).toMatch(/Abort/);
+  expect(markup).toMatch(/Selected profile/);
   expect(markup).toMatch(/replaced the old <code>\/factory<\/code> dashboard/);
 });
 
@@ -580,6 +582,7 @@ test("factory sidebar island: renders left rail navigation", () => {
   const markup = factorySidebarIsland({
     activeProfileId: "generalist",
     activeProfileLabel: "Generalist",
+    activeProfileTools: [],
     profiles: [
       { id: "generalist", label: "Generalist", selected: true },
       { id: "reviewer", label: "Reviewer", selected: false },
@@ -621,19 +624,91 @@ test("factory sidebar island: renders left rail navigation", () => {
 
   expect(markup).toMatch(/Control room/);
   expect(markup).toMatch(/Reviewer/);
-  expect(markup).toMatch(/Recent Thread/);
   expect(markup).toMatch(/href="\/factory\?profile=reviewer&objective=objective_demo"/);
   expect(markup).toMatch(/Profile-driven Factory UI/);
-  expect(markup).toMatch(/Factory Objectives/);
+  expect(markup).toMatch(/Objective Pipeline/);
   expect(markup).toMatch(/integration executing/);
   expect(markup).toMatch(/1 active/);
-  expect(markup).toMatch(/run_01/);
+  expect(markup).not.toMatch(/Recent Thread/);
+  expect(markup).not.toMatch(/run_01/);
+});
+
+test("factory chat items: structured supervisor snapshots render as live child state instead of raw JSON", () => {
+  const runStream = "agents/factory/demo/runs/run_structured";
+  let prev: string | undefined;
+  const push = <T extends object>(body: T, index: number) => {
+    const next = receipt(runStream, prev, body, index);
+    prev = next.hash;
+    return next;
+  };
+  const chain = [
+    push({
+      type: "problem.set",
+      runId: "run_structured",
+      problem: "Update the chat center panel UI.",
+      agentId: "orchestrator",
+    }, 1),
+    push({
+      type: "response.finalized",
+      runId: "run_structured",
+      agentId: "orchestrator",
+      content: JSON.stringify({
+        codex: {
+          jobId: "job_codex_live",
+          status: "running",
+          task: "Update the chat center panel UI.",
+          latestNote: "Inspecting src/views/factory-chat.ts.",
+        },
+        otherRelevant: {
+          layoutFixJob: {
+            jobId: "job_layout_done",
+            status: "completed",
+            result: "Stopped after hitting max iterations (8); no files changed.",
+          },
+        },
+      }),
+    }, 2),
+  ];
+
+  const childJob: QueueJob = {
+    id: "job_codex_live",
+    agentId: "factory-codex",
+    lane: "collect",
+    sessionKey: "factory-codex:demo",
+    singletonMode: "allow",
+    payload: {
+      kind: "factory.codex.run",
+      stream: "agents/factory/demo",
+      task: "Update the chat center panel UI.",
+    },
+    status: "running",
+    attempt: 1,
+    maxAttempts: 1,
+    createdAt: 1,
+    updatedAt: 2,
+    result: {
+      worker: "codex",
+      status: "running",
+      summary: "Inspecting src/views/factory-chat.ts.",
+    },
+    commands: [],
+  };
+
+  const items = buildChatItemsForRun("run_structured", chain, new Map([[childJob.id, childJob]]));
+  const waiting = items.find((item) => item.kind === "system" && item.title === "Supervisor waiting on child");
+  expect(waiting && waiting.kind === "system" ? waiting.body : "").toContain("job_codex_live is running");
+  expect(waiting && waiting.kind === "system" ? waiting.body : "").toContain("layoutFixJob: job_layout_done is completed");
+
+  const childCard = items.find((item) => item.kind === "work" && item.card.jobId === "job_codex_live");
+  expect(childCard && childCard.kind === "work" ? childCard.card.summary : "").toContain("Inspecting src/views/factory-chat.ts.");
+  expect(items.some((item) => item.kind === "assistant")).toBe(false);
 });
 
 test("factory sidebar island: humanizes objective slot labels and avoids repeating status in the compact meta row", () => {
   const markup = factorySidebarIsland({
     activeProfileId: "software",
     activeProfileLabel: "Software",
+    activeProfileTools: [],
     profiles: [
       { id: "generalist", label: "Generalist", selected: false },
       { id: "software", label: "Software", selected: true },
@@ -671,9 +746,11 @@ test("factory sidebar island: humanizes objective slot labels and avoids repeati
 
 test("factory inspector island: renders selected objective controls and recent jobs", () => {
   const longJobId = "job_with_a_name_that_used_to_force_the_recent_jobs_card_past_the_inspector_width_when_it_rendered";
+  const codexJobId = "job_codex_live_panel";
   const markup = factoryInspectorIsland({
     activeProfileId: "generalist",
     activeProfileLabel: "Generalist",
+    activeProfileTools: ["codex.run", "bash", "agent.status", "factory.dispatch"],
     profiles: [
       { id: "generalist", label: "Generalist", selected: true },
       { id: "reviewer", label: "Reviewer", selected: false },
@@ -689,6 +766,14 @@ test("factory inspector island: renders selected objective controls and recent j
       slotState: "active",
     }],
     jobs: [{
+      jobId: codexJobId,
+      agentId: "factory-codex",
+      status: "running",
+      summary: "Applying the latest profile summary UI patch.",
+      runId: "run_codex_01",
+      objectiveId: "objective_demo",
+      updatedAt: 999,
+    }, {
       jobId: longJobId,
       agentId: "factory-agent-with-an-overly-verbose-name-for-overflow-repro",
       status: "running",
@@ -718,9 +803,29 @@ test("factory inspector island: renders selected objective controls and recent j
       latestDecisionSummary: "Keep working the current branch.",
       latestDecisionAt: 2000,
     },
+    activeCodex: {
+      jobId: codexJobId,
+      status: "running",
+      summary: "Applying the latest profile summary UI patch.",
+      latestNote: "Inspecting src/views/factory-chat.ts and refreshing the right rail.",
+      stderrTail: "updated inspector panel",
+      stdoutTail: "build ok",
+      runId: "run_parent_01",
+      task: "Patch the right rail to show live Codex progress.",
+      updatedAt: 3000,
+      rawLink: `/jobs/${codexJobId}`,
+      running: true,
+    },
   });
 
+  expect(markup).toMatch(/Codex worker/);
   expect(markup).toMatch(/Objective inspector/);
+  expect(markup).toMatch(/Selected profile/);
+  expect(markup).toMatch(/Tools in scope/);
+  expect(markup).toMatch(/Codex/);
+  expect(markup).toMatch(/Shell/);
+  expect(markup).toMatch(/Status/);
+  expect(markup).toMatch(/Dispatch/);
   expect(markup).toMatch(/Debug JSON/);
   expect(markup).toMatch(/Receipts/);
   expect(markup).toMatch(/Resume work/);
@@ -729,8 +834,14 @@ test("factory inspector island: renders selected objective controls and recent j
   expect(markup).toMatch(/Cancel objective/);
   expect(markup).toMatch(/Archive record/);
   expect(markup).toMatch(/Latest decision/);
+  expect(markup).toMatch(/Latest child/);
+  expect(markup).toMatch(/Patch the right rail to show live Codex progress/);
+  expect(markup).toMatch(/Inspecting src\/views\/factory-chat.ts and refreshing the right rail/);
+  expect(markup).toMatch(/stderr tail/);
+  expect(markup).toMatch(/Job JSON/);
   expect(markup).toMatch(/Run run_01/);
   expect(markup).toContain(longJobId);
+  expect(markup).toMatch(/Recent jobs[\s\S]*?>1<\/div>/);
   expect(markup).toMatch(/Open related view/);
   expect(markup).toMatch(/Ship the profile-driven Factory UI/);
   expect(markup).toMatch(/factory-inspector-panel|factory-job-panel/);

@@ -48,6 +48,7 @@ import {
   type FactoryChatShellModel,
   type FactoryChatJobNav,
   type FactorySidebarModel,
+  type FactoryLiveCodexCard,
   type FactorySelectedObjectiveCard,
   type FactoryWorkCard,
 } from "../views/factory-chat.js";
@@ -124,8 +125,54 @@ const summarizeJob = (job: QueueJob): string => {
   return `${job.agentId} job`;
 };
 
+const isRelevantShellJob = (job: QueueJob, stream: string, objectiveId?: string): boolean => {
+  const payloadObjectiveId = asString(job.payload.objectiveId);
+  const payloadStream = asString(job.payload.stream);
+  const parentStream = asString(job.payload.parentStream);
+  return payloadStream === stream
+    || parentStream === stream
+    || (Boolean(objectiveId) && payloadObjectiveId === objectiveId);
+};
+
 const isTerminalJobStatus = (status: string | undefined): boolean =>
   status === "completed" || status === "failed" || status === "canceled";
+
+const codexJobPriority = (job: QueueJob): number => {
+  if (!isTerminalJobStatus(job.status)) return 0;
+  if (job.status === "failed") return 1;
+  if (job.status === "completed") return 2;
+  return 3;
+};
+
+const buildActiveCodexCard = (jobs: ReadonlyArray<QueueJob>): FactoryLiveCodexCard | undefined => {
+  const codexJob = [...jobs]
+    .filter((job) => job.agentId === "factory-codex" || job.agentId === "codex")
+    .sort((left, right) =>
+      codexJobPriority(left) - codexJobPriority(right)
+      || right.updatedAt - left.updatedAt
+      || right.createdAt - left.createdAt
+      || right.id.localeCompare(left.id)
+    )[0];
+  if (!codexJob) return undefined;
+  const result = asObject(codexJob.result);
+  return {
+    jobId: codexJob.id,
+    status: codexJob.status,
+    summary: summarizeJob(codexJob),
+    latestNote: asString(result?.lastMessage) ?? asString(result?.message),
+    stderrTail: asString(result?.stderrTail),
+    stdoutTail: asString(result?.stdoutTail),
+    runId: asString(codexJob.payload.parentRunId) ?? asString(codexJob.payload.runId),
+    task: asString(codexJob.payload.task)
+      ?? asString(codexJob.payload.prompt)
+      ?? asString(codexJob.payload.problem)
+      ?? asString(codexJob.payload.taskId),
+    updatedAt: codexJob.updatedAt,
+    abortRequested: codexJob.abortRequested === true,
+    rawLink: `/jobs/${encodeURIComponent(codexJob.id)}`,
+    running: !isTerminalJobStatus(codexJob.status),
+  };
+};
 
 const interestingTools = new Set([
   "agent.delegate",
@@ -176,6 +223,66 @@ const overlayLiveJobState = (card: FactoryWorkCard, job: QueueJob | undefined): 
     summary,
     detail: detail || undefined,
     running: !isTerminalJobStatus(job.status),
+  };
+};
+
+const summarizeStructuredSupervisorFinal = (
+  content: string,
+  jobsById: ReadonlyMap<string, QueueJob>,
+  fallbackChildCard?: FactoryWorkCard,
+): { readonly title: string; readonly body: string; readonly childCard?: FactoryWorkCard } | undefined => {
+  const parsed = tryParseJson(content);
+  if (!parsed) return undefined;
+  const codex = asObject(parsed.codex);
+  const otherRelevant = asObject(parsed.otherRelevant);
+  if (!codex && !otherRelevant) return undefined;
+
+  let childCard = fallbackChildCard;
+  const lines: string[] = [];
+  const codexJobId = asString(codex?.jobId);
+  const codexJob = codexJobId ? jobsById.get(codexJobId) : undefined;
+  const codexStatus = asString(codex?.status) ?? codexJob?.status;
+  const codexTask = asString(codex?.task);
+  const codexLatestNote = asString(codex?.latestNote);
+  if (codex) {
+    const synthesizedCard: FactoryWorkCard = {
+      key: `codex-final-${codexJobId ?? "snapshot"}`,
+      title: "Codex child status",
+      worker: "codex",
+      status: codexStatus ?? "running",
+      summary: codexLatestNote ?? codexTask ?? "Codex child is still processing this request.",
+      detail: [codexTask, codexLatestNote]
+        .filter((value, index, list) => value && list.indexOf(value) === index)
+        .join("\n\n") || undefined,
+      jobId: codexJobId,
+      running: !isTerminalJobStatus(codexStatus),
+    };
+    childCard = childCard
+      ? overlayLiveJobState(childCard, codexJob)
+      : overlayLiveJobState(synthesizedCard, codexJob);
+    lines.push(`Codex child ${childCard.jobId ?? codexJobId ?? "unknown"} is ${childCard.status}.`);
+    if (childCard.summary) lines.push(`Latest child summary: ${childCard.summary}`);
+  }
+
+  const relevantLines = Object.entries(otherRelevant ?? {})
+    .map(([label, value]) => {
+      const entry = asObject(value);
+      if (!entry) return undefined;
+      const jobId = asString(entry.jobId) ?? "unknown";
+      const status = asString(entry.status) ?? "unknown";
+      const result = asString(entry.result) ?? asString(entry.summary);
+      return `${label}: ${jobId} is ${status}${result ? ` — ${result}` : ""}`;
+    })
+    .filter((value): value is string => Boolean(value));
+  if (relevantLines.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(...relevantLines);
+  }
+
+  return {
+    title: childCard?.running ? "Supervisor waiting on child" : "Supervisor snapshot",
+    body: lines.join("\n"),
+    childCard,
   };
 };
 
@@ -421,7 +528,23 @@ export const buildChatItemsForRun = (
     item.kind === "work" && Boolean(item.card.jobId) && item.card.worker === "codex"
   )?.card;
   if (final?.type === "response.finalized") {
-    if (state.failure?.failureClass === "iteration_budget_exhausted" && latestChildCard) {
+    const structuredFinal = summarizeStructuredSupervisorFinal(final.content, jobsById, latestChildCard);
+    if (structuredFinal) {
+      items.push({
+        key: `${runId}-structured-final`,
+        kind: "system",
+        title: structuredFinal.title,
+        body: structuredFinal.body,
+        meta: structuredFinal.childCard?.running ? "child running" : (state.statusNote ?? state.status),
+      });
+      if (!latestChildCard && structuredFinal.childCard) {
+        items.push({
+          key: `${runId}-structured-final-card`,
+          kind: "work",
+          card: structuredFinal.childCard,
+        });
+      }
+    } else if (state.failure?.failureClass === "iteration_budget_exhausted" && latestChildCard) {
       const childStatus = latestChildCard.running
         ? `still running as ${latestChildCard.jobId}`
         : `${latestChildCard.status}${latestChildCard.jobId ? ` (${latestChildCard.jobId})` : ""}`;
@@ -551,15 +674,9 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         taskCount: objective.taskCount,
         integrationStatus: objective.integrationStatus,
       }));
-    const relevantJobs = jobs
-      .filter((job) => {
-        const payloadObjectiveId = asString(job.payload.objectiveId);
-        const payloadStream = asString(job.payload.stream);
-        const parentStream = asString(job.payload.parentStream);
-        return payloadStream === stream
-          || parentStream === stream
-          || (Boolean(input.objectiveId) && payloadObjectiveId === input.objectiveId);
-      })
+    const relevantQueueJobs = jobs.filter((job) => isRelevantShellJob(job, stream, input.objectiveId));
+    const activeCodex = buildActiveCodexCard(relevantQueueJobs);
+    const relevantJobs = relevantQueueJobs
       .slice(0, 12)
       .map((job) => ({
         jobId: job.id,
@@ -608,10 +725,12 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     const sidebarModel: FactorySidebarModel = {
       activeProfileId: resolved.root.id,
       activeProfileLabel: resolved.root.label,
+      activeProfileTools: resolved.toolAllowlist,
       profiles: profileNav,
       objectives: objectiveNav,
       jobs: relevantJobs,
       selectedObjective: selectedObjectiveCard,
+      activeCodex,
     };
     return {
       activeProfileId: resolved.root.id,
