@@ -60,7 +60,7 @@ Use `Factory` when you want to:
 - debug objective runtime behavior
 - use profile-driven orchestration and handoff
 
-There is no separate Hub UI anymore. Factory still reuses `HubGit` as its Git/worktree adapter, but objective execution, debugging, and operator interaction all go through `/factory`.
+There is no separate Hub UI anymore. Factory still reuses `HubGit` as its Git/worktree adapter, but operator interaction now splits between `/factory` Mission Control and `/factory/chat` profile chat.
 
 ## Thesis
 
@@ -194,12 +194,18 @@ It exposes:
 
 - `GET /factory`
 - `GET /factory/events`
-- `GET /factory/island/compose`
-- `GET /factory/island/board`
-- `GET /factory/island/objective`
-- `GET /factory/island/live`
-- `GET /factory/island/debug`
+- `GET /factory/island/rail`
+- `GET /factory/island/main`
+- `GET /factory/island/inspector`
+- `GET /factory/island/live-output`
+- `POST /factory/compose`
+- `GET /factory/chat`
+- `GET /factory/chat/events`
+- `GET /factory/chat/island/chat`
+- `GET /factory/chat/island/sidebar`
+- `GET /factory/chat/island/inspector`
 - `GET /factory/api/objectives`
+- `GET /factory/api/live-output`
 - `POST /factory/api/objectives`
 - `GET /factory/api/objectives/:id`
 - `GET /factory/api/objectives/:id/debug`

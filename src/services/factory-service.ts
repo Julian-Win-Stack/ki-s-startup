@@ -332,6 +332,24 @@ export type FactoryLiveProjection = {
   readonly recentJobs: ReadonlyArray<QueueJob>;
 };
 
+export type FactoryLiveOutputTargetKind = "task" | "job";
+
+export type FactoryLiveOutputSnapshot = {
+  readonly objectiveId: string;
+  readonly focusKind: FactoryLiveOutputTargetKind;
+  readonly focusId: string;
+  readonly title: string;
+  readonly status: string;
+  readonly active: boolean;
+  readonly summary?: string;
+  readonly taskId?: string;
+  readonly candidateId?: string;
+  readonly jobId?: string;
+  readonly lastMessage?: string;
+  readonly stdoutTail?: string;
+  readonly stderrTail?: string;
+};
+
 export type FactoryDebugProjection = {
   readonly objectiveId: string;
   readonly title: string;
@@ -875,6 +893,84 @@ export class FactoryService {
       phase: detail.phase,
       activeTasks,
       recentJobs,
+    };
+  }
+
+  async getObjectiveLiveOutput(
+    objectiveId: string,
+    focusKind: FactoryLiveOutputTargetKind,
+    focusId: string,
+  ): Promise<FactoryLiveOutputSnapshot> {
+    await this.getObjectiveState(objectiveId);
+    if (focusKind === "task") {
+      const detail = await this.getObjective(objectiveId);
+      const task = detail.tasks.find((item) => item.taskId === focusId);
+      if (!task) throw new FactoryServiceError(404, "factory task not found");
+      return {
+        objectiveId,
+        focusKind,
+        focusId,
+        title: task.title,
+        status: task.jobStatus ?? task.status,
+        active: isActiveJobStatus(task.jobStatus),
+        summary: task.latestSummary ?? task.candidate?.summary,
+        taskId: task.taskId,
+        candidateId: task.candidateId,
+        jobId: task.jobId,
+        lastMessage: task.lastMessage,
+        stdoutTail: task.stdoutTail,
+        stderrTail: task.stderrTail,
+      };
+    }
+
+    const job = await this.queue.getJob(focusId);
+    if (!job) throw new FactoryServiceError(404, "job not found");
+    const payload = job.payload as Record<string, unknown>;
+    if (optionalTrimmedString(payload.objectiveId) !== objectiveId) {
+      throw new FactoryServiceError(404, "job does not belong to objective");
+    }
+
+    const result = isRecord(job.result) ? job.result : undefined;
+    const payloadKind = optionalTrimmedString(payload.kind);
+    const summary = optionalTrimmedString(result?.summary)
+      ?? optionalTrimmedString(result?.message)
+      ?? job.lastError
+      ?? optionalTrimmedString(payload.problem)
+      ?? optionalTrimmedString(payload.task)
+      ?? payloadKind
+      ?? `${job.agentId} job`;
+    let title = `${job.agentId} job`;
+    let taskId = optionalTrimmedString(payload.taskId);
+    let candidateId = optionalTrimmedString(payload.candidateId);
+    let lastMessage: string | undefined;
+    let stdoutTail: string | undefined;
+    let stderrTail: string | undefined;
+
+    if (payloadKind === "factory.task.run") {
+      title = taskId ? `Task ${taskId}` : "Task run";
+      lastMessage = await this.readTextTail(optionalTrimmedString(payload.lastMessagePath), 400);
+      stdoutTail = await this.readTextTail(optionalTrimmedString(payload.stdoutPath), 900);
+      stderrTail = await this.readTextTail(optionalTrimmedString(payload.stderrPath), 600);
+    } else if (payloadKind === "factory.integration.validate") {
+      title = candidateId ? `Integration ${candidateId}` : "Integration validation";
+      stdoutTail = await this.readTextTail(optionalTrimmedString(payload.stdoutPath), 900);
+      stderrTail = await this.readTextTail(optionalTrimmedString(payload.stderrPath), 600);
+    }
+
+    return {
+      objectiveId,
+      focusKind,
+      focusId,
+      title,
+      status: job.status,
+      active: isActiveJobStatus(job.status),
+      summary,
+      taskId,
+      candidateId,
+      jobId: job.id,
+      lastMessage,
+      stdoutTail,
+      stderrTail,
     };
   }
 
@@ -3174,6 +3270,7 @@ export class FactoryService {
       }
       throw err;
     }
+    this.sse.publish("factory", objectiveId);
     this.sse.publish("receipt");
   }
 

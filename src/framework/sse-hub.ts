@@ -1,4 +1,4 @@
-export type Topic = "theorem" | "writer" | "agent" | "receipt" | "jobs";
+export type Topic = "theorem" | "writer" | "agent" | "receipt" | "jobs" | "factory";
 export type SseSubscription = {
   readonly topic: Topic;
   readonly stream?: string;
@@ -15,6 +15,7 @@ const topicEvent: Record<Topic, string> = {
   agent: "agent-refresh",
   receipt: "receipt-refresh",
   jobs: "job-refresh",
+  factory: "factory-refresh",
 };
 
 const globalTopicKey = (topic: Topic): string | undefined => (

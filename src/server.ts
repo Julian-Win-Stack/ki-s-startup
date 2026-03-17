@@ -250,12 +250,35 @@ const memoryTools = createMemoryTools({
 });
 const eventId = (stream: string): string => makeEventId(stream);
 
-const queue = jsonlQueue({
+const objectiveIdForJob = (job: { readonly payload: Record<string, unknown>; readonly result?: unknown } | undefined): string | undefined => {
+  if (!job) return undefined;
+  const payloadObjectiveId = typeof job.payload.objectiveId === "string" && job.payload.objectiveId.trim()
+    ? job.payload.objectiveId.trim()
+    : undefined;
+  if (payloadObjectiveId) return payloadObjectiveId;
+  const result = job.result && typeof job.result === "object" && !Array.isArray(job.result)
+    ? job.result as Record<string, unknown>
+    : undefined;
+  return typeof result?.objectiveId === "string" && result.objectiveId.trim()
+    ? result.objectiveId.trim()
+    : undefined;
+};
+
+let queue!: ReturnType<typeof jsonlQueue>;
+queue = jsonlQueue({
   runtime: jobRuntime,
   stream: JOB_STREAM,
   onJobChange: async (jobIds) => {
     for (const jobId of jobIds) {
       sse.publish("jobs", jobId);
+      const job = await queue.getJob(jobId);
+      const objectiveId = objectiveIdForJob(job
+        ? {
+            payload: job.payload as Record<string, unknown>,
+            result: job.result,
+          }
+        : undefined);
+      if (objectiveId) sse.publish("factory", objectiveId);
     }
     sse.publish("receipt");
   },

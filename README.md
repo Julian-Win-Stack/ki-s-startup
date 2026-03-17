@@ -86,6 +86,7 @@ Queue streams:
 
 Use `/factory` for:
 
+- Mission Control
 - creating objectives
 - repo preparation and inferred validation defaults
 - task DAG decomposition
@@ -93,9 +94,16 @@ Use `/factory` for:
 - per-repo objective queueing and slot admission
 - candidate review
 - integration, validation, and promotion
-- objective debugging, receipts, and runtime control
-- profile-driven orchestration and handoff
+- mission debugging, receipts, runtime control, and live output
+- operator notes and mission reactivation
 - repo-local customization through `profiles/<id>/PROFILE.md` and `profiles/<id>/profile.json`
+
+Use `/factory/chat` for:
+
+- profile chat
+- profile-driven orchestration and handoff
+- run- and job-scoped profile conversations
+- deep links back into Mission Control for the same objective
 
 The older Hub UI is gone. Factory still reuses `src/adapters/hub-git.ts` internally as its Git/worktree adapter, but there is no separate `/hub` product surface.
 
@@ -113,4 +121,4 @@ npm run test:smoke
 
 The server auto-loads route modules from `src/agents/*.agent.ts`.
 
-The factory objective surface is mounted at `/factory` and is the only objective control surface in v1.
+The web UI uses `Mission` / `Mission Control` terminology while the durable code, HTTP APIs, receipts, and CLI still use `objective`.
