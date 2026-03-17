@@ -139,6 +139,35 @@ test("factory chat profiles: route hints match whole words and phrases instead o
   expect(resolved.selectionReason).toBe("route_hint");
 });
 
+test("factory chat profiles: allowDefaultOverride lets the default profile yield to software for bug-fix prompts", async () => {
+  const profileRoot = await createTempDir("receipt-factory-profile-root");
+  const repoRoot = await createTempDir("receipt-factory-target-repo");
+  await writeProfile(profileRoot, {
+    id: "generalist",
+    label: "Generalist",
+    default: true,
+    routeHints: ["status", "planning"],
+    toolAllowlist: ["jobs.list"],
+  });
+  await writeProfile(profileRoot, {
+    id: "software",
+    label: "Software",
+    routeHints: ["bug", "fix", "ui"],
+    toolAllowlist: ["codex.run"],
+  });
+
+  const resolved = await resolveFactoryChatProfile({
+    repoRoot,
+    profileRoot,
+    requestedId: "generalist",
+    problem: "Fix the UI bug in the sidebar.",
+    allowDefaultOverride: true,
+  });
+
+  expect(resolved.root.id).toBe("software");
+  expect(resolved.selectionReason).toBe("route_hint");
+});
+
 test("factory chat profiles: repo-scoped stream key depends on the target repo root", async () => {
   const repoRoot = "/tmp/factory-target";
   const stream = factoryProfileStream(repoRoot, "generalist");

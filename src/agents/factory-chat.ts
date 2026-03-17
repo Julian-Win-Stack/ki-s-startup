@@ -477,6 +477,9 @@ const createProfileHandoffTool = (input: {
   readonly profileRoot: string;
   readonly runId: string;
   readonly repoKey: string;
+  readonly queue: JsonlQueue;
+  readonly problem: string;
+  readonly config: FactoryChatRunConfig;
   readonly memoryTools: MemoryTools;
 }): AgentToolExecutor =>
   async (toolInput) => {
@@ -491,22 +494,54 @@ const createProfileHandoffTool = (input: {
       requestedId: targetProfileId,
     });
     const reason = asString(toolInput.reason) ?? `handoff from ${input.currentProfile.root.id}`;
+    const handoffRunId = nextId("run");
+    const stream = factoryProfileStream(input.repoRoot, target.root.id);
+    const config = normalizeFactoryChatConfig({
+      maxIterations: input.config.maxIterations,
+      maxToolOutputChars: input.config.maxToolOutputChars,
+      workspace: input.config.workspace,
+      memoryScope: FACTORY_CHAT_DEFAULT_CONFIG.memoryScope,
+    });
+    const created = await input.queue.enqueue({
+      agentId: "factory",
+      lane: "collect",
+      sessionKey: `factory-chat:${stream}`,
+      singletonMode: "allow",
+      maxAttempts: 1,
+      payload: {
+        kind: "factory.run",
+        stream,
+        runId: handoffRunId,
+        problem: input.problem,
+        profileId: target.root.id,
+        config,
+      },
+    });
     await commitWorkerSummary(
       input.memoryTools,
       profileMemoryScope(input.repoKey, input.currentProfile.root.id),
       `handoff to ${target.root.id}: ${reason}`,
-      { runId: input.runId, fromProfileId: input.currentProfile.root.id, toProfileId: target.root.id },
+      {
+        runId: input.runId,
+        fromProfileId: input.currentProfile.root.id,
+        toProfileId: target.root.id,
+        handoffJobId: created.id,
+        handoffRunId,
+      },
     );
     return {
       output: JSON.stringify({
         worker: "profile",
-        status: "handoff",
+        status: created.status,
         fromProfileId: input.currentProfile.root.id,
         toProfileId: target.root.id,
         summary: reason,
-        link: `/factory?profile=${encodeURIComponent(target.root.id)}`,
+        jobId: created.id,
+        runId: handoffRunId,
+        stream,
+        link: `/factory?profile=${encodeURIComponent(target.root.id)}&job=${encodeURIComponent(created.id)}&run=${encodeURIComponent(handoffRunId)}`,
       }, null, 2),
-      summary: `handoff to ${target.root.label}`,
+      summary: `queued handoff to ${target.root.label}`,
       events: [{
         type: "profile.handoff",
         runId: input.runId,
@@ -638,6 +673,9 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
         profileRoot,
         runId: input.runId,
         repoKey,
+        queue: input.queue,
+        problem: input.problem,
+        config: input.config,
         memoryTools: input.memoryTools,
       }),
       ...(input.extraTools ?? {}),

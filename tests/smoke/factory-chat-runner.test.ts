@@ -66,6 +66,7 @@ const writeProfile = async (root: string, input: {
   readonly label: string;
   readonly default?: boolean;
   readonly toolAllowlist: ReadonlyArray<string>;
+  readonly handoffTargets?: ReadonlyArray<string>;
 }): Promise<void> => {
   const dir = path.join(root, "profiles", input.id);
   await fs.mkdir(dir, { recursive: true });
@@ -78,7 +79,7 @@ const writeProfile = async (root: string, input: {
     imports: [],
     routeHints: [],
     toolAllowlist: input.toolAllowlist,
-    handoffTargets: [],
+    handoffTargets: input.handoffTargets ?? [],
   }, null, 2), "utf-8");
 };
 
@@ -243,6 +244,82 @@ test("factory chat runner: agent.delegate queues work and agent.status sees the 
   const chain = await agentRuntime.chain(agentRunStream("agents/factory/demo", "run_async_delegate"));
   const observations = chain.filter((receipt) => receipt.body.type === "tool.observed").map((receipt) => receipt.body);
   expect(observations.some((event) => "output" in event && event.output.includes('"status": "queued"'))).toBe(true);
+});
+
+test("factory chat runner: profile.handoff queues continuation work on the target profile", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-handoff");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  await writeProfile(profileRoot, {
+    id: "generalist",
+    label: "Generalist",
+    default: true,
+    toolAllowlist: ["profile.handoff"],
+    handoffTargets: ["software"],
+  });
+  await writeProfile(profileRoot, {
+    id: "software",
+    label: "Software",
+    toolAllowlist: ["codex.run"],
+  });
+
+  const actions = [
+    {
+      thought: "handoff to software",
+      action: {
+        type: "tool",
+        name: "profile.handoff",
+        input: JSON.stringify({ profileId: "software", reason: "Ship the repo fix." }),
+        text: null,
+      },
+    },
+    {
+      thought: "respond",
+      action: {
+        type: "final",
+        name: null,
+        input: "{}",
+        text: "Queued the software profile.",
+      },
+    },
+  ];
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_async_handoff",
+    problem: "Fix the UI bug in the sidebar.",
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: {} as never,
+    repoRoot,
+    profileRoot,
+  });
+
+  expect(result.status).toBe("completed");
+  const jobs = await queue.listJobs({ limit: 10 });
+  expect(jobs).toHaveLength(1);
+  expect(jobs[0]?.agentId).toBe("factory");
+  expect(jobs[0]?.payload.profileId).toBe("software");
+
+  const chain = await agentRuntime.chain(agentRunStream("agents/factory/demo", "run_async_handoff"));
+  const observed = chain.find((receipt) => receipt.body.type === "tool.observed")?.body;
+  expect(observed && "output" in observed ? observed.output : "").toContain('"toProfileId": "software"');
 });
 
 test("factory chat runner: codex progress snapshots surface while the child is still running", async () => {

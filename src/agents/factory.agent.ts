@@ -270,12 +270,13 @@ const workCardFromObservation = (observation: ToolObservation): FactoryWorkCard 
       key: `${observation.tool}-${asString(parsed?.toProfileId) ?? observation.summary ?? "handoff"}`,
       title: "Profile handoff",
       worker: "profile",
-      status: asString(parsed?.status) ?? "handoff",
-      summary: asString(parsed?.summary) ?? observation.summary ?? "Conversation handed off.",
+      status: asString(parsed?.status) ?? "queued",
+      summary: asString(parsed?.summary) ?? observation.summary ?? "Continuation queued on another profile.",
       detail: observation.output,
       meta: durationLabel,
       link: asString(parsed?.link),
-      running: false,
+      jobId: asString(parsed?.jobId),
+      running: !isTerminalJobStatus(asString(parsed?.status)),
     };
   }
   return undefined;
@@ -656,6 +657,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             profileRoot,
             requestedId: requestedProfile,
             problem,
+            allowDefaultOverride: true,
           });
           const stream = factoryProfileStream(service.git.repoRoot, resolved.root.id);
           const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;

@@ -66,6 +66,26 @@ const ensureProfileDir = (profileRoot: string): string =>
 const normalizeHintText = (value: string): string =>
   value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
+const bestRouteHintMatch = (
+  profiles: ReadonlyArray<FactoryChatProfile>,
+  problem: string | undefined,
+): { readonly profile: FactoryChatProfile; readonly reason: string } | undefined => {
+  const haystack = normalizeHintText(problem?.trim().toLowerCase() ?? "");
+  if (!haystack) return undefined;
+  const paddedHaystack = ` ${haystack} `;
+  const scored = profiles.map((profile) => ({
+    profile,
+    score: profile.routeHints.reduce((total, hint) => {
+      const normalizedHint = normalizeHintText(hint);
+      if (!normalizedHint) return total;
+      return total + (paddedHaystack.includes(` ${normalizedHint} `) ? 1 : 0);
+    }, 0),
+  })).sort((a, b) => b.score - a.score || Number(b.profile.isDefault) - Number(a.profile.isDefault));
+  return (scored[0]?.score ?? 0) > 0
+    ? { profile: scored[0]!.profile, reason: "route_hint" }
+    : undefined;
+};
+
 const parseManifest = (raw: FactoryChatProfileManifest, dirName: string): FactoryChatProfileManifest => ({
   id: (raw.id ?? dirName).trim(),
   label: (raw.label ?? raw.id ?? dirName).trim(),
@@ -124,26 +144,21 @@ const selectProfile = (
   profiles: ReadonlyArray<FactoryChatProfile>,
   requestedId: string | undefined,
   problem: string | undefined,
+  allowDefaultOverride = false,
 ): { readonly profile: FactoryChatProfile; readonly reason: string } => {
   const requested = requestedId?.trim();
   if (requested) {
     const match = profiles.find((profile) => profile.id === requested);
     if (!match) throw new Error(`unknown factory profile '${requested}'`);
+    if (!allowDefaultOverride || !match.isDefault) {
+      return { profile: match, reason: "requested" };
+    }
+    const routed = bestRouteHintMatch(profiles, problem);
+    if (routed && routed.profile.id !== match.id) return routed;
     return { profile: match, reason: "requested" };
   }
-  const haystack = normalizeHintText(problem?.trim().toLowerCase() ?? "");
-  if (haystack) {
-    const paddedHaystack = ` ${haystack} `;
-    const scored = profiles.map((profile) => ({
-      profile,
-      score: profile.routeHints.reduce((total, hint) => {
-        const normalizedHint = normalizeHintText(hint);
-        if (!normalizedHint) return total;
-        return total + (paddedHaystack.includes(` ${normalizedHint} `) ? 1 : 0);
-      }, 0),
-    })).sort((a, b) => b.score - a.score || Number(b.profile.isDefault) - Number(a.profile.isDefault));
-    if ((scored[0]?.score ?? 0) > 0) return { profile: scored[0].profile, reason: "route_hint" };
-  }
+  const routed = bestRouteHintMatch(profiles, problem);
+  if (routed) return routed;
   return { profile: profiles.find((profile) => profile.isDefault) ?? profiles[0], reason: "default" };
 };
 
@@ -152,6 +167,7 @@ export const resolveFactoryChatProfile = async (input: {
   readonly profileRoot?: string;
   readonly requestedId?: string;
   readonly problem?: string;
+  readonly allowDefaultOverride?: boolean;
 }): Promise<FactoryChatResolvedProfile> => {
   const repoRoot = path.resolve(input.repoRoot);
   const profileRoot = path.resolve(input.profileRoot ?? repoRoot);
@@ -160,7 +176,12 @@ export const resolveFactoryChatProfile = async (input: {
     throw new Error(`no enabled factory profiles found under ${ensureProfileDir(profileRoot)}`);
   }
   const byId = new Map(profiles.map((profile) => [profile.id, profile] as const));
-  const selection = selectProfile(profiles, input.requestedId, input.problem);
+  const selection = selectProfile(
+    profiles,
+    input.requestedId,
+    input.problem,
+    input.allowDefaultOverride === true,
+  );
   const seen = new Set<string>();
   const imported: FactoryChatProfile[] = [];
   const walkImports = (profile: FactoryChatProfile): void => {
