@@ -188,7 +188,7 @@ const structuredAgentActionSchema = z.object({
   action: z.object({
     type: z.enum(["tool", "final"]),
     name: z.string().nullable(),
-    input: z.string(),
+    input: z.union([z.string(), z.record(z.string(), z.unknown())]),
     text: z.string().nullable(),
   }).strict(),
 }).strict();
@@ -200,7 +200,7 @@ const normalizeStructuredInput = (raw: unknown): Record<string, unknown> => {
     return raw as Record<string, unknown>;
   }
   if (typeof raw !== "string") {
-    throw new Error("Model tool action input must be a JSON object string");
+    throw new Error("Model tool action input must be a JSON object or JSON object string");
   }
   const trimmed = raw.trim();
   if (!trimmed) return {};
@@ -235,6 +235,15 @@ const normalizeStructuredAction = (value: StructuredAgentAction): ParsedAction =
     name,
     input: normalizeStructuredInput((value.action as { input: unknown }).input),
   };
+};
+
+const isStructuredInputParseError = (err: unknown): boolean => {
+  const message = err instanceof Error ? err.message : String(err);
+  return [
+    "Model tool action input must be a JSON object or JSON object string",
+    "Model tool action input is not valid JSON",
+    "Model tool action input must decode to a JSON object",
+  ].includes(message);
 };
 
 const safeJson = (value: unknown): string => {
@@ -819,16 +828,30 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
         schemaName: "agent_action",
       });
 
+      const parseResult = (result: { readonly parsed: StructuredAgentAction; readonly raw: string }) => ({
+        parsed: normalizeStructuredAction(result.parsed),
+        raw: result.raw,
+      });
+
       try {
         const result = await invoke(promptText);
         if (await checkAbort(`iteration-${iteration}.after_llm`)) {
           throw new Error(`canceled at iteration-${iteration}.after_llm`);
         }
-        return {
-          parsed: normalizeStructuredAction(result.parsed),
-          raw: result.raw,
-        };
+        return parseResult(result);
       } catch (err) {
+        if (isStructuredInputParseError(err)) {
+          const repairedPrompt = [
+            promptText,
+            "",
+            "Correction: for tool actions, set action.input to a JSON object when possible. Do not wrap it in prose or markdown.",
+          ].join("\n");
+          const repaired = await invoke(repairedPrompt);
+          if (await checkAbort(`iteration-${iteration}.after_json_retry`)) {
+            throw new Error(`canceled at iteration-${iteration}.after_json_retry`);
+          }
+          return parseResult(repaired);
+        }
         if (!isContextOverflow(err)) throw err;
         const compacted = compactPrompt(promptText, 8_000);
         await emit({
@@ -852,10 +875,7 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
         if (await checkAbort(`iteration-${iteration}.after_overflow_retry`)) {
           throw new Error(`canceled at iteration-${iteration}.after_overflow_retry`);
         }
-        return {
-          parsed: normalizeStructuredAction(result.parsed),
-          raw: result.raw,
-        };
+        return parseResult(result);
       }
     };
 

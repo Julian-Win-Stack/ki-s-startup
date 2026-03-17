@@ -399,23 +399,58 @@ export const factorySidebarIsland = (model: FactorySidebarModel): string => fact
 
 const renderObjectiveActions = (objective: FactorySelectedObjectiveCard): string => {
   const objectiveId = encodeURIComponent(objective.objectiveId);
-  return `<div class="grid gap-2 sm:grid-cols-2">
-    <form action="/factory/api/objectives/${objectiveId}/react" method="post" hx-post="/factory/api/objectives/${objectiveId}/react" hx-swap="none">
-      <button class="${primaryButtonClass} w-full" type="submit">React</button>
-    </form>
-    <form action="/factory/api/objectives/${objectiveId}/promote" method="post" hx-post="/factory/api/objectives/${objectiveId}/promote" hx-swap="none">
-      <button class="${ghostButtonClass} w-full" type="submit">Promote</button>
-    </form>
-    <form action="/factory/api/objectives/${objectiveId}/cleanup" method="post" hx-post="/factory/api/objectives/${objectiveId}/cleanup" hx-swap="none">
-      <button class="${ghostButtonClass} w-full" type="submit">Cleanup</button>
-    </form>
-    <form action="/factory/api/objectives/${objectiveId}/cancel" method="post" hx-post="/factory/api/objectives/${objectiveId}/cancel" hx-swap="none">
-      <input type="hidden" name="reason" value="cancel requested from /factory inspector" />
-      <button class="${dangerButtonClass} w-full" type="submit">Cancel</button>
-    </form>
-    <form action="/factory/api/objectives/${objectiveId}/archive" method="post" hx-post="/factory/api/objectives/${objectiveId}/archive" hx-swap="none">
-      <button class="${ghostButtonClass} w-full sm:col-span-2" type="submit">Archive</button>
-    </form>
+  const actionCard = (input: {
+    readonly action: string;
+    readonly label: string;
+    readonly description: string;
+    readonly buttonClass: string;
+    readonly hiddenReason?: string;
+    readonly span?: string;
+  }): string => `<form class="${input.span ?? ""}" action="/factory/api/objectives/${objectiveId}/${input.action}" method="post" hx-post="/factory/api/objectives/${objectiveId}/${input.action}" hx-swap="none">
+      ${input.hiddenReason ? `<input type="hidden" name="reason" value="${esc(input.hiddenReason)}" />` : ""}
+      <button class="w-full rounded-[22px] border border-white/10 bg-white/[0.03] px-4 py-4 text-left transition hover:bg-white/[0.06]" type="submit">
+        <span class="flex items-start justify-between gap-3">
+          <span class="min-w-0">
+            <span class="block text-sm font-semibold text-zinc-100">${esc(input.label)}</span>
+            <span class="mt-2 block text-sm leading-6 text-zinc-400">${esc(input.description)}</span>
+          </span>
+          <span class="${input.buttonClass} shrink-0">Run</span>
+        </span>
+      </button>
+    </form>`;
+  return `<div class="grid gap-3 sm:grid-cols-2">
+    ${actionCard({
+      action: "react",
+      label: "Resume work",
+      description: "Re-evaluate this objective and dispatch the next eligible work.",
+      buttonClass: primaryButtonClass,
+    })}
+    ${actionCard({
+      action: "promote",
+      label: "Promote to source",
+      description: "Merge the ready integration branch into the source branch.",
+      buttonClass: ghostButtonClass,
+    })}
+    ${actionCard({
+      action: "cleanup",
+      label: "Remove workspaces",
+      description: "Delete objective worktrees and integration workspaces from disk.",
+      buttonClass: ghostButtonClass,
+    })}
+    ${actionCard({
+      action: "cancel",
+      label: "Cancel objective",
+      description: "Stop active jobs and mark this objective as canceled.",
+      buttonClass: dangerButtonClass,
+      hiddenReason: "cancel requested from /factory inspector",
+    })}
+    ${actionCard({
+      action: "archive",
+      label: "Archive record",
+      description: "Hide this objective from the main list without deleting its receipts.",
+      buttonClass: ghostButtonClass,
+      span: "sm:col-span-2",
+    })}
   </div>`;
 };
 
@@ -529,18 +564,21 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
       </aside>
       <main class="order-1 min-w-0 bg-black/20 lg:order-none lg:min-h-0">
         <div class="flex min-h-screen flex-col lg:h-screen lg:min-h-0">
-          <header class="border-b border-white/10 bg-black/20 backdrop-blur-xl">
-            <div class="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-4 px-4 py-4 md:px-8 xl:px-10">
-              <div class="min-w-0">
-                <div class="${sectionLabelClass}">Factory chat</div>
-                <div class="mt-3 flex flex-wrap items-center gap-2">
-                  <h1 class="text-lg font-semibold text-white">Talk to <span data-profile-label>${esc(model.activeProfileLabel)}</span></h1>
-                  ${badge(model.activeProfileId, "neutral")}
-                  ${model.objectiveId ? badge(`objective ${model.objectiveId}`, "info") : badge("no objective selected", "neutral")}
-                </div>
-              </div>
-            </div>
-          </header>
+	          <header class="border-b border-white/10 bg-black/20 backdrop-blur-xl">
+	            <div class="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-4 px-4 py-4 md:px-8 xl:px-10">
+	              <div class="min-w-0">
+	                <div class="${sectionLabelClass}">${model.objectiveId ? "Objective thread" : "Factory chat"}</div>
+	                <div class="mt-3 flex flex-wrap items-center gap-2">
+	                  <h1 class="text-lg font-semibold text-white">Talk to <span data-profile-label>${esc(model.activeProfileLabel)}</span></h1>
+	                  ${badge(model.activeProfileId, "neutral")}
+	                  ${model.objectiveId ? badge(`objective ${model.objectiveId}`, "info") : badge("no objective selected", "neutral")}
+	                </div>
+	                <div class="mt-3 text-sm leading-6 text-zinc-400">${esc(model.objectiveId
+                    ? "Messages, runs, and recent jobs in this view are scoped to the selected objective."
+                    : "No objective is pinned yet. Profile-level messages stay visible until you select an objective.")}</div>
+	              </div>
+	            </div>
+	          </header>
           <section id="factory-chat-scroll" class="factory-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <div id="factory-chat" hx-get="/factory/island/chat?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:700ms" hx-swap="innerHTML">
               ${factoryChatIsland(model.chat)}
@@ -655,14 +693,15 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
         });
         updateIslandUrls();
       };
-      const connect = function () {
-        const profile = document.body.dataset.profile || "generalist";
-        if (source) source.close();
-        source = new EventSource("/factory/events?profile=" + encodeURIComponent(profile));
-        ["agent-refresh", "receipt-refresh", "job-refresh"].forEach(function (eventName) {
-          source.addEventListener(eventName, refresh);
-        });
-      };
+	      const connect = function () {
+	        const profile = document.body.dataset.profile || "generalist";
+	        const objective = document.body.dataset.objective || "";
+	        if (source) source.close();
+	        source = new EventSource("/factory/events?profile=" + encodeURIComponent(profile) + (objective ? "&objective=" + encodeURIComponent(objective) : ""));
+	        ["agent-refresh", "receipt-refresh", "job-refresh"].forEach(function (eventName) {
+	          source.addEventListener(eventName, refresh);
+	        });
+	      };
       document.addEventListener("click", function (event) {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;

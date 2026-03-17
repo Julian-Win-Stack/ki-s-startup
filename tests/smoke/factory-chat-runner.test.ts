@@ -309,6 +309,7 @@ test("factory chat runner: profile.handoff queues continuation work on the targe
     factoryService: {} as never,
     repoRoot,
     profileRoot,
+    objectiveId: "objective_demo",
   });
 
   expect(result.status).toBe("completed");
@@ -316,10 +317,148 @@ test("factory chat runner: profile.handoff queues continuation work on the targe
   expect(jobs).toHaveLength(1);
   expect(jobs[0]?.agentId).toBe("factory");
   expect(jobs[0]?.payload.profileId).toBe("software");
+  expect(jobs[0]?.payload.objectiveId).toBe("objective_demo");
+  expect(jobs[0]?.payload.stream).toBeTruthy();
+  expect(String(jobs[0]?.payload.stream)).toContain("/objectives/objective_demo");
 
   const chain = await agentRuntime.chain(agentRunStream("agents/factory/demo", "run_async_handoff"));
   const observed = chain.find((receipt) => receipt.body.type === "tool.observed")?.body;
   expect(observed && "output" in observed ? observed.output : "").toContain('"toProfileId": "software"');
+});
+
+test("factory chat runner: accepts object-shaped tool input without requiring a nested JSON string", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-object-input");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  await writeProfile(profileRoot, {
+    id: "generalist",
+    label: "Generalist",
+    default: true,
+    toolAllowlist: ["jobs.list"],
+  });
+
+  const actions = [
+    {
+      thought: "list jobs",
+      action: {
+        type: "tool",
+        name: "jobs.list",
+        input: { limit: 3 },
+        text: null,
+      },
+    },
+    {
+      thought: "respond",
+      action: {
+        type: "final",
+        name: null,
+        input: {},
+        text: "Listed the recent jobs.",
+      },
+    },
+  ];
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_object_input",
+    problem: "List recent jobs.",
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: {} as never,
+    repoRoot,
+    profileRoot,
+  });
+
+  expect(result.status).toBe("completed");
+  expect(result.finalResponse).toContain("Listed the recent jobs.");
+});
+
+test("factory chat runner: retries once when the model emits malformed tool-input JSON", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-json-repair");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  await writeProfile(profileRoot, {
+    id: "generalist",
+    label: "Generalist",
+    default: true,
+    toolAllowlist: ["jobs.list"],
+  });
+
+  const actions = [
+    {
+      thought: "first try is malformed",
+      action: {
+        type: "tool",
+        name: "jobs.list",
+        input: "{\"limit\":",
+        text: null,
+      },
+    },
+    {
+      thought: "repair and list jobs",
+      action: {
+        type: "tool",
+        name: "jobs.list",
+        input: { limit: 2 },
+        text: null,
+      },
+    },
+    {
+      thought: "respond",
+      action: {
+        type: "final",
+        name: null,
+        input: {},
+        text: "Recovered from the malformed tool input.",
+      },
+    },
+  ];
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_json_repair",
+    problem: "List recent jobs.",
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: {} as never,
+    repoRoot,
+    profileRoot,
+  });
+
+  expect(result.status).toBe("completed");
+  expect(result.finalResponse).toContain("Recovered from the malformed tool input.");
 });
 
 test("factory chat runner: codex progress snapshots surface while the child is still running", async () => {

@@ -19,7 +19,7 @@ import type { AgentEvent } from "../modules/agent.js";
 import type { JsonlQueue, QueueJob } from "../adapters/jsonl-queue.js";
 import type { FactoryService, FactoryObjectiveInput } from "../services/factory-service.js";
 import {
-  factoryProfileStream,
+  factoryChatStream,
   repoKeyForRoot,
   resolveFactoryChatProfile,
   type FactoryChatResolvedProfile,
@@ -47,6 +47,7 @@ export type FactoryChatRunInput = Omit<AgentRunInput, "config" | "prompts" | "ll
   readonly factoryService: FactoryService;
   readonly repoRoot: string;
   readonly profileRoot?: string;
+  readonly objectiveId?: string;
   readonly llmStructured: <Schema extends ZodTypeAny>(opts: {
     readonly system?: string;
     readonly user: string;
@@ -81,14 +82,14 @@ const FACTORY_CHAT_LOOP_TEMPLATE = [
   "  \"action\": {",
   "    \"type\": \"tool\" | \"final\",",
   "    \"name\": \"tool name when type=tool, otherwise null\",",
-  "    \"input\": \"JSON object string for tool args\",",
+  "    \"input\": {\"tool\": \"args\"} | \"JSON object string for tool args\",",
   "    \"text\": \"final answer when type=final, otherwise null\"",
   "  }",
   "}",
   "",
-  "For final actions, set \"name\": null and \"input\": \"{}\".",
+  "For final actions, set \"name\": null and \"input\": {}.",
   "For tool actions, set \"text\": null.",
-  "The input field must always be a JSON object encoded as a string.",
+  "The input field must be a JSON object. A JSON object string is accepted only as a fallback.",
 ].join("\n");
 
 const asString = (value: unknown): string | undefined =>
@@ -130,6 +131,8 @@ const deriveObjectiveTitle = (prompt: string): string => {
 
 const repoMemoryScope = (repoKey: string): string => `repos/${repoKey}`;
 const profileMemoryScope = (repoKey: string, profileId: string): string => `repos/${repoKey}/profiles/${profileId}`;
+const objectiveMemoryScope = (repoKey: string, profileId: string, objectiveId: string): string =>
+  `${profileMemoryScope(repoKey, profileId)}/objectives/${objectiveId}`;
 const workerMemoryScope = (repoKey: string, worker: string): string => `repos/${repoKey}/subagents/${worker}`;
 
 const toolSummary = (worker: string, status: string, summary: string): string =>
@@ -227,6 +230,7 @@ const createCodexRunTool = (input: {
   readonly queue: JsonlQueue;
   readonly runId: string;
   readonly stream: string;
+  readonly objectiveId?: string;
   readonly memoryTools: MemoryTools;
   readonly profile: FactoryChatResolvedProfile;
 }): AgentToolExecutor =>
@@ -248,6 +252,7 @@ const createCodexRunTool = (input: {
         parentStream: input.stream,
         stream: input.stream,
         profileId: input.profile.root.id,
+        ...(input.objectiveId ? { objectiveId: input.objectiveId } : {}),
         task: prompt,
         prompt,
         timeoutMs,
@@ -271,6 +276,7 @@ const createAsyncDelegateTool = (input: {
   readonly runId: string;
   readonly stream: string;
   readonly repoKey: string;
+  readonly objectiveId?: string;
   readonly memoryTools: MemoryTools;
   readonly profile: FactoryChatResolvedProfile;
 }): AgentToolExecutor =>
@@ -300,6 +306,7 @@ const createAsyncDelegateTool = (input: {
         parentRunId: input.runId,
         parentStream: input.stream,
         profileId: input.profile.root.id,
+        ...(input.objectiveId ? { objectiveId: input.objectiveId } : {}),
       },
     });
     const snapshot = normalizeJobSnapshot(created);
@@ -481,6 +488,7 @@ const createProfileHandoffTool = (input: {
   readonly problem: string;
   readonly config: FactoryChatRunConfig;
   readonly memoryTools: MemoryTools;
+  readonly objectiveId?: string;
 }): AgentToolExecutor =>
   async (toolInput) => {
     const targetProfileId = asString(toolInput.profileId) ?? asString(toolInput.targetProfileId);
@@ -495,7 +503,7 @@ const createProfileHandoffTool = (input: {
     });
     const reason = asString(toolInput.reason) ?? `handoff from ${input.currentProfile.root.id}`;
     const handoffRunId = nextId("run");
-    const stream = factoryProfileStream(input.repoRoot, target.root.id);
+    const stream = factoryChatStream(input.repoRoot, target.root.id, input.objectiveId);
     const config = normalizeFactoryChatConfig({
       maxIterations: input.config.maxIterations,
       maxToolOutputChars: input.config.maxToolOutputChars,
@@ -514,6 +522,7 @@ const createProfileHandoffTool = (input: {
         runId: handoffRunId,
         problem: input.problem,
         profileId: target.root.id,
+        ...(input.objectiveId ? { objectiveId: input.objectiveId } : {}),
         config,
       },
     });
@@ -539,7 +548,7 @@ const createProfileHandoffTool = (input: {
         jobId: created.id,
         runId: handoffRunId,
         stream,
-        link: `/factory?profile=${encodeURIComponent(target.root.id)}&job=${encodeURIComponent(created.id)}&run=${encodeURIComponent(handoffRunId)}`,
+        link: `/factory?profile=${encodeURIComponent(target.root.id)}${input.objectiveId ? `&objective=${encodeURIComponent(input.objectiveId)}` : ""}&job=${encodeURIComponent(created.id)}&run=${encodeURIComponent(handoffRunId)}`,
       }, null, 2),
       summary: `queued handoff to ${target.root.label}`,
       events: [{
@@ -569,8 +578,11 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
     problem: input.problem,
   });
   const repoKey = repoKeyForRoot(repoRoot);
+  const resolvedStream = factoryChatStream(repoRoot, resolvedProfile.root.id, input.objectiveId);
   const resolvedMemoryScope = input.config.memoryScope === FACTORY_CHAT_DEFAULT_CONFIG.memoryScope
-    ? profileMemoryScope(repoKey, resolvedProfile.root.id)
+    ? (input.objectiveId
+      ? objectiveMemoryScope(repoKey, resolvedProfile.root.id, input.objectiveId)
+      : profileMemoryScope(repoKey, resolvedProfile.root.id))
     : input.config.memoryScope;
   return runAgent({
     ...input,
@@ -614,9 +626,10 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
       repoMemoryScope: repoMemoryScope(repoKey),
       profileMemoryScope: resolvedMemoryScope,
       profileId: resolvedProfile.root.id,
+      objectiveId: input.objectiveId,
       importedProfiles: resolvedProfile.imports.map((profile) => profile.id),
       resolvedProfileHash: resolvedProfile.resolvedHash,
-      stream: factoryProfileStream(repoRoot, resolvedProfile.root.id),
+      stream: resolvedStream,
     },
     extraToolSpecs: {
       "agent.delegate": "{\"agentId\": string, \"task\": string, \"config\"?: object} — Queue a Receipt-native subagent and return its live job handle immediately.",
@@ -624,7 +637,7 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
       "jobs.list": "{\"limit\"?: number, \"status\"?: string, \"includeCompleted\"?: boolean} — List recent jobs related to the current Factory profile thread.",
       "job.control": "{\"jobId\": string, \"command\": \"steer\"|\"follow_up\"|\"abort\", \"problem\"?: string, \"config\"?: object, \"note\"?: string, \"reason\"?: string} — Queue a steer, follow-up, or abort command for a running child job.",
       "codex.run": "{\"prompt\": string, \"timeoutMs\"?: number} — Queue a focused Codex run against the repo and return its live job handle immediately.",
-      "factory.dispatch": "{\"action\"?: \"create\"|\"react\"|\"promote\"|\"cancel\"|\"cleanup\"|\"archive\", \"objectiveId\"?: string, \"prompt\"?: string, \"title\"?: string, \"baseHash\"?: string, \"checks\"?: string[], \"channel\"?: string, \"reason\"?: string} — Create or operate on a Factory objective using the existing Factory backend.",
+      "factory.dispatch": "{\"action\"?: \"create\"|\"react\"|\"promote\"|\"cancel\"|\"cleanup\"|\"archive\", \"objectiveId\"?: string, \"prompt\"?: string, \"title\"?: string, \"baseHash\"?: string, \"checks\"?: string[], \"channel\"?: string, \"reason\"?: string} — Create or operate on a Factory objective. 'react' means re-evaluate the objective and dispatch the next eligible work.",
       "factory.status": "{\"objectiveId\": string} — Inspect an existing Factory objective and return a concise status summary.",
       "profile.handoff": "{\"profileId\": string, \"reason\"?: string} — Hand off the conversation to another Factory profile thread.",
       ...(input.extraToolSpecs ?? {}),
@@ -635,6 +648,7 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
         runId: input.runId,
         stream: input.stream,
         repoKey,
+        objectiveId: input.objectiveId,
         memoryTools: input.memoryTools,
         profile: resolvedProfile,
       }),
@@ -655,6 +669,7 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
         queue: input.queue,
         runId: input.runId,
         stream: input.stream,
+        objectiveId: input.objectiveId,
         memoryTools: input.memoryTools,
         profile: resolvedProfile,
       }),
@@ -677,6 +692,7 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
         problem: input.problem,
         config: input.config,
         memoryTools: input.memoryTools,
+        objectiveId: input.objectiveId,
       }),
       ...(input.extraTools ?? {}),
     },

@@ -443,6 +443,7 @@ test("factory shell: renders chat-first UI without the legacy dashboard", () => 
   expect(markup).toMatch(/new EventSource\("\/factory\/events\?profile=/);
   expect(markup).toMatch(/factory-run-started/);
   expect(markup).toMatch(/Message Factory/);
+  expect(markup).toMatch(/Messages, runs, and recent jobs in this view are scoped to the selected objective\./);
   expect(markup).toMatch(/action="\/factory\/run"/);
   expect(markup).not.toMatch(/id="factory-board"/);
   expect(markup).not.toMatch(/id="factory-stream"/);
@@ -636,6 +637,11 @@ test("factory inspector island: renders selected objective controls and recent j
   expect(markup).toMatch(/Objective inspector/);
   expect(markup).toMatch(/Debug JSON/);
   expect(markup).toMatch(/Receipts/);
+  expect(markup).toMatch(/Resume work/);
+  expect(markup).toMatch(/Promote to source/);
+  expect(markup).toMatch(/Remove workspaces/);
+  expect(markup).toMatch(/Cancel objective/);
+  expect(markup).toMatch(/Archive record/);
   expect(markup).toMatch(/Latest decision/);
   expect(markup).toMatch(/Run run_01/);
   expect(markup).toContain(longJobId);

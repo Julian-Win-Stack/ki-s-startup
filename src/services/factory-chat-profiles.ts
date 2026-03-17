@@ -103,6 +103,14 @@ export const repoKeyForRoot = (repoRoot: string): string =>
 export const factoryProfileStream = (repoRoot: string, profileId: string): string =>
   `agents/factory/${repoKeyForRoot(repoRoot)}/${profileId}`;
 
+export const factoryObjectiveStream = (repoRoot: string, profileId: string, objectiveId: string): string =>
+  `${factoryProfileStream(repoRoot, profileId)}/objectives/${encodeURIComponent(objectiveId)}`;
+
+export const factoryChatStream = (repoRoot: string, profileId: string, objectiveId?: string): string =>
+  objectiveId?.trim()
+    ? factoryObjectiveStream(repoRoot, profileId, objectiveId)
+    : factoryProfileStream(repoRoot, profileId);
+
 export const discoverFactoryChatProfiles = async (profileRoot: string): Promise<ReadonlyArray<FactoryChatProfile>> => {
   const profilesDir = ensureProfileDir(profileRoot);
   const entries = await fs.readdir(profilesDir, { withFileTypes: true }).catch(() => []);

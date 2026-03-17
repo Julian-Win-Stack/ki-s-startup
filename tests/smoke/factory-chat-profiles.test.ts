@@ -5,6 +5,8 @@ import path from "node:path";
 
 import {
   discoverFactoryChatProfiles,
+  factoryChatStream,
+  factoryObjectiveStream,
   factoryProfileStream,
   repoKeyForRoot,
   resolveFactoryChatProfile,
@@ -172,4 +174,17 @@ test("factory chat profiles: repo-scoped stream key depends on the target repo r
   const repoRoot = "/tmp/factory-target";
   const stream = factoryProfileStream(repoRoot, "generalist");
   expect(stream).toBe(`agents/factory/${repoKeyForRoot(repoRoot)}/generalist`);
+});
+
+test("factory chat profiles: objective stream key nests under the selected profile stream", async () => {
+  const repoRoot = "/tmp/factory-target";
+  expect(factoryObjectiveStream(repoRoot, "software", "objective_demo")).toBe(
+    `agents/factory/${repoKeyForRoot(repoRoot)}/software/objectives/objective_demo`,
+  );
+  expect(factoryChatStream(repoRoot, "software", "objective_demo")).toBe(
+    `agents/factory/${repoKeyForRoot(repoRoot)}/software/objectives/objective_demo`,
+  );
+  expect(factoryChatStream(repoRoot, "software")).toBe(
+    `agents/factory/${repoKeyForRoot(repoRoot)}/software`,
+  );
 });

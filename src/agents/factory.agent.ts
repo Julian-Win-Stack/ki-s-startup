@@ -28,8 +28,8 @@ import {
 import type { AgentCmd, AgentEvent, AgentState } from "../modules/agent.js";
 import { initial as initialAgent, reduce as reduceAgent } from "../modules/agent.js";
 import {
+  factoryChatStream,
   discoverFactoryChatProfiles,
-  factoryProfileStream,
   resolveFactoryChatProfile,
 } from "../services/factory-chat-profiles.js";
 import {
@@ -471,7 +471,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       profileRoot,
       requestedId: input.profileId,
     });
-    const stream = factoryProfileStream(repoRoot, resolved.root.id);
+    const stream = factoryChatStream(repoRoot, resolved.root.id, input.objectiveId);
     const [profiles, objectives, selectedObjective, jobs, indexChain] = await Promise.all([
       discoverFactoryChatProfiles(profileRoot),
       service.listObjectives(),
@@ -513,8 +513,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         const parentStream = asString(job.payload.parentStream);
         return payloadStream === stream
           || parentStream === stream
-          || payloadObjectiveId === input.objectiveId
-          || job.agentId === "factory-codex";
+          || (Boolean(input.objectiveId) && payloadObjectiveId === input.objectiveId);
       })
       .slice(0, 12)
       .map((job) => ({
@@ -603,7 +602,11 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             profileRoot,
             requestedId: requestedProfileId(c.req.raw),
           });
-          return factoryProfileStream(service.git.repoRoot, resolved.root.id);
+          return factoryChatStream(
+            service.git.repoRoot,
+            resolved.root.id,
+            requestedObjectiveId(c.req.raw),
+          );
         },
         (stream) => ctx.sse.subscribeMany([
           { topic: "agent", stream },
@@ -659,7 +662,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             problem,
             allowDefaultOverride: true,
           });
-          const stream = factoryProfileStream(service.git.repoRoot, resolved.root.id);
+          const stream = factoryChatStream(service.git.repoRoot, resolved.root.id, objectiveId);
           const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           const config: AgentRunConfig = normalizeFactoryChatConfig(FACTORY_CHAT_DEFAULT_CONFIG);
           const created = await ctx.queue.enqueue({
@@ -674,6 +677,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
               runId,
               problem,
               profileId: resolved.root.id,
+              ...(objectiveId ? { objectiveId } : {}),
               config,
             },
           });
