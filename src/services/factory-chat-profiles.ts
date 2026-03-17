@@ -63,6 +63,9 @@ const unique = (items: ReadonlyArray<string>): ReadonlyArray<string> => [...new 
 const ensureProfileDir = (profileRoot: string): string =>
   path.join(profileRoot, PROFILE_DIR);
 
+const normalizeHintText = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
 const parseManifest = (raw: FactoryChatProfileManifest, dirName: string): FactoryChatProfileManifest => ({
   id: (raw.id ?? dirName).trim(),
   label: (raw.label ?? raw.id ?? dirName).trim(),
@@ -128,11 +131,16 @@ const selectProfile = (
     if (!match) throw new Error(`unknown factory profile '${requested}'`);
     return { profile: match, reason: "requested" };
   }
-  const haystack = problem?.trim().toLowerCase() ?? "";
+  const haystack = normalizeHintText(problem?.trim().toLowerCase() ?? "");
   if (haystack) {
+    const paddedHaystack = ` ${haystack} `;
     const scored = profiles.map((profile) => ({
       profile,
-      score: profile.routeHints.reduce((total, hint) => total + (haystack.includes(hint) ? 1 : 0), 0),
+      score: profile.routeHints.reduce((total, hint) => {
+        const normalizedHint = normalizeHintText(hint);
+        if (!normalizedHint) return total;
+        return total + (paddedHaystack.includes(` ${normalizedHint} `) ? 1 : 0);
+      }, 0),
     })).sort((a, b) => b.score - a.score || Number(b.profile.isDefault) - Number(a.profile.isDefault));
     if ((scored[0]?.score ?? 0) > 0) return { profile: scored[0].profile, reason: "route_hint" };
   }

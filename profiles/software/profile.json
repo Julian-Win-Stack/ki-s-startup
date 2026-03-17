@@ -1,0 +1,41 @@
+{
+  "id": "software",
+  "label": "Software",
+  "enabled": true,
+  "default": false,
+  "imports": [],
+  "toolAllowlist": [
+    "ls",
+    "read",
+    "write",
+    "bash",
+    "grep",
+    "agent.status",
+    "jobs.list",
+    "job.control",
+    "agent.inspect",
+    "skill.read",
+    "codex.run",
+    "profile.handoff"
+  ],
+  "handoffTargets": [
+    "generalist"
+  ],
+  "routeHints": [
+    "bug",
+    "fix",
+    "ui",
+    "css",
+    "tailwind",
+    "layout",
+    "overflow",
+    "scrollbar",
+    "truncate",
+    "wrapping",
+    "wrap",
+    "patch",
+    "regression",
+    "failing test",
+    "broken"
+  ]
+}

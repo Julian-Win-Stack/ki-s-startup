@@ -84,6 +84,61 @@ test("factory chat profiles: resolves imports, route hints, and profile hashes s
   expect(resolved.repoRoot).toBe(path.resolve(repoRoot));
 });
 
+test("factory chat profiles: routes concrete bug-fix prompts to the software profile", async () => {
+  const profileRoot = await createTempDir("receipt-factory-profile-root");
+  const repoRoot = await createTempDir("receipt-factory-target-repo");
+  await writeProfile(profileRoot, {
+    id: "generalist",
+    label: "Generalist",
+    default: true,
+    routeHints: ["factory", "status", "delivery"],
+    toolAllowlist: ["jobs.list"],
+  });
+  await writeProfile(profileRoot, {
+    id: "software",
+    label: "Software",
+    routeHints: ["bug", "fix", "ui", "tailwind", "truncate"],
+    toolAllowlist: ["codex.run", "write"],
+  });
+
+  const resolved = await resolveFactoryChatProfile({
+    repoRoot,
+    profileRoot,
+    problem: "Fix this UI bug in the factory left rail and truncate long titles.",
+  });
+
+  expect(resolved.root.id).toBe("software");
+  expect(resolved.selectionReason).toBe("route_hint");
+  expect(resolved.toolAllowlist).toEqual(["codex.run", "write"]);
+});
+
+test("factory chat profiles: route hints match whole words and phrases instead of loose substrings", async () => {
+  const profileRoot = await createTempDir("receipt-factory-profile-root");
+  const repoRoot = await createTempDir("receipt-factory-target-repo");
+  await writeProfile(profileRoot, {
+    id: "generalist",
+    label: "Generalist",
+    default: true,
+    routeHints: ["status"],
+    toolAllowlist: ["jobs.list"],
+  });
+  await writeProfile(profileRoot, {
+    id: "software",
+    label: "Software",
+    routeHints: ["ui", "failing test"],
+    toolAllowlist: ["codex.run"],
+  });
+
+  const resolved = await resolveFactoryChatProfile({
+    repoRoot,
+    profileRoot,
+    problem: "Show me the build status.",
+  });
+
+  expect(resolved.root.id).toBe("generalist");
+  expect(resolved.selectionReason).toBe("route_hint");
+});
+
 test("factory chat profiles: repo-scoped stream key depends on the target repo root", async () => {
   const repoRoot = "/tmp/factory-target";
   const stream = factoryProfileStream(repoRoot, "generalist");
