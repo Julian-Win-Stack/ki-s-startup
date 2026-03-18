@@ -13,8 +13,7 @@ import type {
 import { reduce as reduceInspector, initial as initialInspector } from "../modules/inspector.js";
 import type { ReceiptRecord } from "../adapters/receipt-tools.js";
 import { renderPrompt, type InspectorPromptConfig } from "../prompts/inspector.js";
-import type { RunLifecycle, WorkflowSpec } from "../engine/runtime/workflow.js";
-import { defineAgent, runDefinedAgent } from "../sdk/agent.js";
+import { runWorkflow, type RunLifecycle, type WorkflowSpec } from "../engine/runtime/workflow.js";
 
 // ============================================================================
 // Types
@@ -263,25 +262,6 @@ const INSPECTOR_WORKFLOW: WorkflowSpec<InspectorWorkflowDeps, InspectorWorkflowC
   },
 };
 
-const INSPECTOR_RECEIPT_RUNTIME = defineAgent<
-  InspectorCmd,
-  InspectorWorkflowDeps,
-  InspectorEvent,
-  InspectorState,
-  InspectorWorkflowConfig
->({
-  id: INSPECTOR_WORKFLOW.id,
-  version: INSPECTOR_WORKFLOW.version,
-  reducer: reduceInspector,
-  initial: initialInspector,
-  lifecycle: {
-    init: INSPECTOR_LIFECYCLE.init,
-    resume: INSPECTOR_LIFECYCLE.resume,
-    shouldIndex: INSPECTOR_LIFECYCLE.shouldIndex,
-  },
-  run: INSPECTOR_WORKFLOW.run,
-});
-
 // ============================================================================
 // Runner
 // ============================================================================
@@ -318,25 +298,21 @@ export const runReceiptInspector = async (input: InspectorRunInput): Promise<voi
     if (broadcast) broadcast();
   };
 
-  await runDefinedAgent({
-    spec: INSPECTOR_RECEIPT_RUNTIME,
-    ctx: {
-      stream,
-      runId,
-      emit,
-      now: Date.now,
-      runtime,
-      prompts,
-      llmText,
-      model,
-      promptHash,
-      promptPath,
-      apiReady,
-      apiNote,
-      tools,
-      dataDir,
-      broadcast,
-    },
-    config: { groupId, agentId, agentName, source, order, limit, question, mode, depth },
-  });
+  await runWorkflow<InspectorCmd, InspectorWorkflowDeps, InspectorWorkflowConfig, InspectorEvent, InspectorState>(INSPECTOR_WORKFLOW, {
+    stream,
+    runId,
+    emit,
+    now: Date.now,
+    runtime,
+    prompts,
+    llmText,
+    model,
+    promptHash,
+    promptPath,
+    apiReady,
+    apiNote,
+    tools,
+    dataDir,
+    broadcast,
+  }, { groupId, agentId, agentName, source, order, limit, question, mode, depth });
 };

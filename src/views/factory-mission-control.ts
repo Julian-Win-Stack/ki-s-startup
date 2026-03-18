@@ -228,6 +228,7 @@ export type FactoryMissionFocusModel =
       readonly agentId: string;
       readonly updatedAt?: number;
       readonly runId?: string;
+      readonly parentRunId?: string;
       readonly taskId?: string;
       readonly candidateId?: string;
       readonly rawLink: string;
@@ -262,6 +263,10 @@ export type FactoryMissionSelectedModel = {
   readonly title: string;
   readonly status: string;
   readonly phase: string;
+  readonly profileId: string;
+  readonly profileLabel: string;
+  readonly profilePromptPath: string;
+  readonly profileSkills: ReadonlyArray<string>;
   readonly prompt: string;
   readonly summary?: string;
   readonly nextAction?: string;
@@ -295,6 +300,8 @@ export type FactoryMissionSelectedModel = {
   readonly recentJobCount: number;
   readonly contextPackCount: number;
   readonly worktreeCount: number;
+  readonly repoSkillCount: number;
+  readonly sharedArtifactCount: number;
   readonly integrationWorkspaceSummary?: string;
   readonly focus: FactoryMissionFocusModel;
 };
@@ -452,6 +459,21 @@ const renderJobCard = (job: FactoryMissionJobSummary): string => `<a class="fact
   </div>
 </a>`;
 
+const scopedCollectionTitle = (
+  focus: FactoryMissionFocusModel,
+  plural: string,
+): string => {
+  if (focus.kind === "mission") return plural;
+  return `Related ${plural.toLowerCase()}`;
+};
+
+const scopedCollectionIntro = (focus: FactoryMissionFocusModel): string | undefined => {
+  if (focus.kind === "mission") return undefined;
+  if (focus.kind === "run") return `Lists below are scoped to run ${focus.runId} and the child work linked to it.`;
+  if (focus.kind === "job") return `Lists below are scoped to job ${focus.jobId}, its run lineage, and the task/candidate it touches.`;
+  return `Lists below are scoped to task ${focus.taskId}, its dependency neighborhood, and the jobs/runs attached to that work.`;
+};
+
 const renderOverviewPanel = (selected: FactoryMissionSelectedModel): string => `<div class="space-y-6">
   <section class="${panelClass} px-5 py-5">
     <div class="flex flex-wrap items-start justify-between gap-4">
@@ -472,13 +494,13 @@ const renderOverviewPanel = (selected: FactoryMissionSelectedModel): string => `
       ${statPill("Integration", selected.integrationStatus ?? "unknown")}
       ${statPill("Tasks", `${selected.activeTaskCount} active / ${selected.readyTaskCount} ready / ${selected.taskCount} total`)}
       ${statPill("Repo profile", selected.repoProfileStatus ?? "unknown")}
-      ${statPill("Commit", shortHash(selected.latestCommitHash) || "none")}
+      ${statPill("Profile", selected.profileLabel)}
     </div>
     <div class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       ${statPill("Elapsed", `${selected.budgetElapsedMinutes}m / ${selected.budgetMaxMinutes}m`)}
       ${statPill("Task runs", `${selected.taskRunsUsed} / ${selected.taskRunsMax}`)}
       ${statPill("Jobs", `${selected.activeJobCount} active / ${selected.recentJobCount} recent`)}
-      ${statPill("Context packs", String(selected.contextPackCount))}
+      ${statPill("Commit", shortHash(selected.latestCommitHash) || "none")}
     </div>
     ${selected.nextAction ? `<div class="mt-5 rounded-[24px] border border-emerald-300/20 bg-emerald-300/10 px-4 py-4">
       <div class="${sectionLabelClass}">Next action</div>
@@ -492,6 +514,25 @@ const renderOverviewPanel = (selected: FactoryMissionSelectedModel): string => `
   <section class="${panelClass} px-5 py-5">
     <div class="${sectionLabelClass}">Thread prompt</div>
     <pre class="mt-3 whitespace-pre-wrap text-sm leading-7 text-zinc-300 [overflow-wrap:anywhere]">${esc(selected.prompt)}</pre>
+  </section>
+  <section class="${panelClass} px-5 py-5">
+    <div class="flex flex-wrap items-start justify-between gap-4">
+      <div>
+        <div class="${sectionLabelClass}">Profile Context</div>
+        <div class="mt-2 text-lg font-semibold text-white">${esc(selected.profileLabel)} · ${esc(selected.profileId)}</div>
+      </div>
+      <div class="text-xs text-zinc-500">${esc(selected.profilePromptPath)}</div>
+    </div>
+    <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      ${statPill("Context packs", String(selected.contextPackCount))}
+      ${statPill("Repo skills", String(selected.repoSkillCount))}
+      ${statPill("Shared artifacts", String(selected.sharedArtifactCount))}
+      ${statPill("Worktrees", String(selected.worktreeCount))}
+    </div>
+    <div class="mt-5 rounded-[22px] border border-white/10 bg-black/20 px-4 py-4">
+      <div class="${sectionLabelClass}">Injected skills</div>
+      <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(selected.profileSkills?.length ? selected.profileSkills.join(", ") : "No profile skills selected.")}</div>
+    </div>
   </section>
   <section class="${panelClass} px-5 py-5">
     <div class="flex items-center justify-between gap-3">
@@ -517,42 +558,43 @@ const renderExecutionPanel = (selected: FactoryMissionSelectedModel): string => 
     <div class="flex items-center justify-between gap-3">
       <div>
         <div class="${sectionLabelClass}">Tasks</div>
-        <div class="mt-2 text-lg font-semibold text-white">Implementation graph</div>
+        <div class="mt-2 text-lg font-semibold text-white">${esc(scopedCollectionTitle(selected.focus, "Tasks"))}</div>
       </div>
       <div class="text-xs text-zinc-500">${esc(String(selected.tasks.length))}</div>
     </div>
+    ${scopedCollectionIntro(selected.focus) ? `<div class="mt-3 text-sm leading-6 text-zinc-400">${esc(scopedCollectionIntro(selected.focus) ?? "")}</div>` : ""}
     <div class="mt-4 grid gap-3">
       ${selected.tasks.length > 0
         ? selected.tasks.map(renderTaskCard).join("")
-        : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No tasks yet.</div>`}
+        : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">${esc(selected.focus.kind === "mission" ? "No tasks yet." : "No related tasks in this context.")}</div>`}
     </div>
   </section>
   <section class="${panelClass} px-5 py-5">
     <div class="flex items-center justify-between gap-3">
       <div>
         <div class="${sectionLabelClass}">Runs</div>
-        <div class="mt-2 text-lg font-semibold text-white">Profile activity</div>
+        <div class="mt-2 text-lg font-semibold text-white">${esc(scopedCollectionTitle(selected.focus, "Runs"))}</div>
       </div>
       <div class="text-xs text-zinc-500">${esc(String(selected.runs.length))}</div>
     </div>
     <div class="mt-4 grid gap-3">
       ${selected.runs.length > 0
         ? selected.runs.map(renderRunCard).join("")
-        : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No profile runs yet for this thread.</div>`}
+        : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">${esc(selected.focus.kind === "mission" ? "No profile runs yet for this thread." : "No related runs in this context.")}</div>`}
     </div>
   </section>
   <section class="${panelClass} px-5 py-5">
     <div class="flex items-center justify-between gap-3">
       <div>
         <div class="${sectionLabelClass}">Jobs</div>
-        <div class="mt-2 text-lg font-semibold text-white">Queue execution</div>
+        <div class="mt-2 text-lg font-semibold text-white">${esc(scopedCollectionTitle(selected.focus, "Jobs"))}</div>
       </div>
       <div class="text-xs text-zinc-500">${esc(String(selected.jobs.length))}</div>
     </div>
     <div class="factory-job-list mt-4 grid gap-3">
       ${selected.jobs.length > 0
         ? selected.jobs.map(renderJobCard).join("")
-        : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No jobs yet.</div>`}
+        : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">${esc(selected.focus.kind === "mission" ? "No jobs yet." : "No related jobs in this context.")}</div>`}
     </div>
   </section>
 </div>`;
@@ -571,7 +613,7 @@ export const factoryMissionLiveOutputIsland = (input: {
       })}`
     : undefined;
   const snapshot = input.snapshot;
-  return `<div id="factory-live-output" data-live-active="${snapshot?.active ? "true" : "false"}"${query ? ` hx-get="${esc(query)}" hx-trigger="load, factory-live-refresh from:body" hx-swap="outerHTML"` : ""}>
+  return `<div id="factory-live-output"${query ? ` hx-get="${esc(query)}" hx-trigger="load, factory-live-refresh from:body" hx-swap="outerHTML"` : ""}>
     <section class="${panelClass} px-5 py-5">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -628,10 +670,11 @@ const renderReceiptsPanel = (selected: FactoryMissionSelectedModel): string => `
   <div class="flex items-center justify-between gap-3">
     <div>
       <div class="${sectionLabelClass}">Receipts</div>
-      <div class="mt-2 text-lg font-semibold text-white">Durable control history</div>
+      <div class="mt-2 text-lg font-semibold text-white">${esc(selected.focus.kind === "mission" ? "Durable control history" : "Related receipts")}</div>
     </div>
     <a class="${ghostButtonClass}" href="${esc(selected.receiptsLink)}">Receipt JSON</a>
   </div>
+  ${selected.focus.kind !== "mission" ? `<div class="mt-3 text-sm leading-6 text-zinc-400">${esc(scopedCollectionIntro(selected.focus) ?? "")}</div>` : ""}
   <div class="mt-4 grid gap-3">
     ${selected.recentReceipts.length > 0
       ? selected.recentReceipts.map((receipt) => `<div class="rounded-[22px] border border-white/10 bg-black/20 px-4 py-4">
@@ -641,7 +684,7 @@ const renderReceiptsPanel = (selected: FactoryMissionSelectedModel): string => `
           </div>
           <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(receipt.summary)}</div>
         </div>`).join("")
-      : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No receipts yet.</div>`}
+      : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">${esc(selected.focus.kind === "mission" ? "No receipts yet." : "No related receipts in this context.")}</div>`}
   </div>
 </section>`;
 
@@ -668,6 +711,18 @@ const renderDebugPanel = (selected: FactoryMissionSelectedModel): string => `<se
       <div class="${sectionLabelClass}">Next action</div>
       <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(selected.debugNextAction ?? selected.nextAction ?? "No next action.")}</div>
       ${selected.integrationWorkspaceSummary ? `<div class="mt-3 text-xs text-zinc-500">${esc(selected.integrationWorkspaceSummary)}</div>` : ""}
+    </div>
+  </div>
+  <div class="mt-4 grid gap-4 lg:grid-cols-2">
+    <div class="rounded-[22px] border border-white/10 bg-black/20 px-4 py-4">
+      <div class="${sectionLabelClass}">Initiating profile</div>
+      <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(`${selected.profileLabel} (${selected.profileId})`)}</div>
+      <div class="mt-2 text-xs text-zinc-500">${esc(selected.profilePromptPath)}</div>
+    </div>
+    <div class="rounded-[22px] border border-white/10 bg-black/20 px-4 py-4">
+      <div class="${sectionLabelClass}">Context sources</div>
+      <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(`Profile skills ${selected.profileSkills?.length ?? 0} · Repo skills ${selected.repoSkillCount} · Shared artifacts ${selected.sharedArtifactCount}`)}</div>
+      <div class="mt-2 text-xs text-zinc-500">${esc(selected.profileSkills?.length ? selected.profileSkills.join(", ") : "No profile skills selected.")}</div>
     </div>
   </div>
 </section>`;
@@ -795,6 +850,7 @@ const renderJobFocus = (focus: Extract<FactoryMissionFocusModel, { readonly kind
   <div class="text-sm leading-6 text-zinc-300">${esc(focus.summary)}</div>
   <div class="grid gap-2 sm:grid-cols-2">
     ${statPill("Run", focus.runId ?? "none")}
+    ${statPill("Parent", focus.parentRunId ?? "none")}
     ${statPill("Candidate", focus.candidateId ?? "none")}
   </div>
   ${focus.lastError ? `<div class="rounded-[22px] border border-rose-300/20 bg-rose-300/10 px-4 py-4 text-sm leading-6 text-rose-100">${esc(focus.lastError)}</div>` : ""}
@@ -947,7 +1003,7 @@ export const factoryMissionControlShell = (model: FactoryMissionShellModel): str
   <link rel="stylesheet" href="/assets/factory.css" />
   <script src="/assets/htmx.min.js"></script>
 </head>
-<body class="overflow-x-hidden lg:h-screen lg:overflow-hidden" data-objective="${esc(model.objectiveId ?? "")}" data-panel="${esc(model.panel)}" data-focus-kind="${esc(model.focusKind)}" data-focus-id="${esc(model.focusId ?? "")}" data-live-active="${model.liveOutput?.active ? "true" : "false"}">
+<body class="overflow-x-hidden lg:h-screen lg:overflow-hidden" data-objective="${esc(model.objectiveId ?? "")}" data-panel="${esc(model.panel)}" data-focus-kind="${esc(model.focusKind)}" data-focus-id="${esc(model.focusId ?? "")}">
   <div class="relative min-h-screen bg-background text-foreground lg:h-screen">
     <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(110,231,183,0.14),transparent_28%),radial-gradient(circle_at_top_right,rgba(96,165,250,0.16),transparent_30%),linear-gradient(180deg,rgba(8,10,14,0.94),rgba(8,10,14,1))]"></div>
     <div class="relative flex min-h-screen flex-col lg:grid lg:h-screen lg:min-h-0 lg:grid-cols-[320px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[320px_minmax(0,1fr)_360px]">
@@ -1006,9 +1062,7 @@ export const factoryMissionControlShell = (model: FactoryMissionShellModel): str
   </div>
   <script>
     (function () {
-      var factorySource = null;
-      var jobSource = null;
-      var liveTimer = null;
+      var controlSource = null;
 
       var getState = function () {
         return {
@@ -1026,8 +1080,7 @@ export const factoryMissionControlShell = (model: FactoryMissionShellModel): str
         document.body.dataset.focusId = url.searchParams.get("focusId") || "";
         history.replaceState({}, "", url.pathname + url.search);
         updateIslandUrls();
-        connectFactory();
-        connectJob();
+        connectControl();
       };
 
       var query = function () {
@@ -1067,45 +1120,30 @@ export const factoryMissionControlShell = (model: FactoryMissionShellModel): str
         document.body.dispatchEvent(new CustomEvent("factory-live-refresh", { bubbles: true }));
       };
 
-      var syncLiveState = function () {
-        var live = document.getElementById("factory-live-output");
-        document.body.dataset.liveActive = live && live.getAttribute("data-live-active") === "true" ? "true" : "false";
-      };
-
-      var connectFactory = function () {
-        var objective = document.body.dataset.objective || "";
-        if (factorySource) factorySource.close();
-        factorySource = new EventSource("/factory/control/events" + (objective ? "?objective=" + encodeURIComponent(objective) : ""));
-        factorySource.addEventListener("factory-refresh", function () {
-          refreshRail();
-          refreshMain();
-          if ((document.body.dataset.focusKind || "mission") !== "job") refreshInspector();
-        });
-        factorySource.addEventListener("receipt-refresh", function () {
-          refreshRail();
-          refreshMain();
-          if ((document.body.dataset.focusKind || "mission") !== "job") refreshInspector();
-        });
-      };
-
-      var connectJob = function () {
+      var hasLiveFocus = function () {
         var focusKind = document.body.dataset.focusKind || "mission";
         var focusId = document.body.dataset.focusId || "";
-        if (jobSource) jobSource.close();
-        if (focusKind !== "job" || !focusId) return;
-        jobSource = new EventSource("/jobs/" + encodeURIComponent(focusId) + "/events");
-        jobSource.addEventListener("job-refresh", function () {
-          refreshInspector();
-          refreshLive();
-        });
+        return (focusKind === "task" || focusKind === "job") && Boolean(focusId);
       };
 
-      var startLivePolling = function () {
-        if (liveTimer) window.clearInterval(liveTimer);
-        liveTimer = window.setInterval(function () {
-          if (document.body.dataset.liveActive !== "true") return;
-          refreshLive();
-        }, 1000);
+      var refreshFromStream = function () {
+        refreshRail();
+        refreshMain();
+        refreshInspector();
+        if (hasLiveFocus()) refreshLive();
+      };
+
+      var connectControl = function () {
+        if (controlSource) controlSource.close();
+        controlSource = new EventSource("/factory/control/events" + query());
+        controlSource.addEventListener("factory-refresh", refreshFromStream);
+        controlSource.addEventListener("receipt-refresh", refreshFromStream);
+        controlSource.addEventListener("job-refresh", function () {
+          refreshRail();
+          refreshMain();
+          refreshInspector();
+          if (hasLiveFocus()) refreshLive();
+        });
       };
 
       document.addEventListener("click", function (event) {
@@ -1129,17 +1167,7 @@ export const factoryMissionControlShell = (model: FactoryMissionShellModel): str
 
       document.addEventListener("DOMContentLoaded", function () {
         updateIslandUrls();
-        connectFactory();
-        connectJob();
-        startLivePolling();
-        syncLiveState();
-      });
-
-      document.addEventListener("htmx:afterSwap", function (event) {
-        var target = event && event.target;
-        if (!(target instanceof HTMLElement)) return;
-        if (target.id === "factory-mission-main") syncLiveState();
-        if (target.id === "factory-live-output") syncLiveState();
+        connectControl();
       });
 
       document.addEventListener("htmx:afterRequest", function (event) {
@@ -1148,15 +1176,13 @@ export const factoryMissionControlShell = (model: FactoryMissionShellModel): str
         if (!elt || !(elt instanceof HTMLElement) || detail.failed) return;
         if (elt.tagName === "FORM") {
           refreshMain();
-          if ((document.body.dataset.focusKind || "mission") === "job") refreshLive();
-          else refreshInspector();
+          refreshInspector();
+          if (hasLiveFocus()) refreshLive();
         }
       });
 
       window.addEventListener("beforeunload", function () {
-        if (factorySource) factorySource.close();
-        if (jobSource) jobSource.close();
-        if (liveTimer) window.clearInterval(liveTimer);
+        if (controlSource) controlSource.close();
       });
     })();
   </script>

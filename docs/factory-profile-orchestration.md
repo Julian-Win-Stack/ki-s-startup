@@ -29,7 +29,11 @@ This document is about the profile layer on top of the Receipt-native Factory co
 The main `/factory` chat surface is backed by a repo-customizable profile package made of:
 
 - `profiles/<id>/PROFILE.md`
-- `profiles/<id>/profile.json`
+
+Each `PROFILE.md` contains:
+
+- a JSON frontmatter block for machine-readable policy
+- the markdown body for the operator-facing instructions
 
 At runtime, Factory:
 
@@ -65,7 +69,7 @@ flowchart LR
   Operator["Operator"] --> UI["/factory web UI"]
   UI --> Route["factory route\nsrc/agents/factory.agent.ts"]
   Route --> Resolver["profile resolver\nsrc/services/factory-chat-profiles.ts"]
-  Resolver --> Profiles["profiles/<id>/PROFILE.md\nprofiles/<id>/profile.json"]
+  Resolver --> Profiles["profiles/<id>/PROFILE.md"]
   Route --> Agent["Factory chat runner\nsrc/agents/factory-chat.ts"]
 
   Agent --> Memory["receipt memory"]
@@ -87,10 +91,12 @@ flowchart LR
 
 ### Profile definition
 
-A profile is stored under `profiles/<id>/` and contains:
+A profile is stored under `profiles/<id>/PROFILE.md`.
 
-- `PROFILE.md`: natural-language operating instructions
-- `profile.json`: machine-readable metadata
+`PROFILE.md` has two parts:
+
+- JSON frontmatter: machine-readable metadata and policy
+- markdown body: natural-language operating instructions
 
 The metadata currently supports:
 
@@ -106,7 +112,7 @@ The metadata currently supports:
 
 ### Orchestration policy
 
-Profiles can now carry a machine-readable orchestration policy under `profile.json -> orchestration`.
+Profiles can now carry a machine-readable orchestration policy under `PROFILE.md` frontmatter `orchestration`.
 
 Current supported fields:
 
@@ -268,7 +274,7 @@ The current Factory-specific tools exposed by `src/agents/factory-chat.ts` are:
 - `factory.status`
 - `profile.handoff`
 
-The general profile guidance in `PROFILE.md` decides when to use them. The allowlist in `profile.json` decides whether they are available at all.
+The general profile guidance in `PROFILE.md` decides when to use them. The frontmatter allowlist decides whether they are available at all.
 
 ### Why this matters
 
@@ -314,7 +320,6 @@ Create a new directory:
 Add:
 
 - `PROFILE.md`
-- `profile.json`
 
 If `enabled` is true, the profile is discoverable automatically.
 
@@ -445,8 +450,7 @@ sequenceDiagram
   - `/factory` route, profile-aware shell model, UI islands, events
   - `/factory/control` route, execution focus model, live output, objective-scoped events
 - `profiles/generalist/PROFILE.md`
-  - current default operator-facing behavior
-- `profiles/generalist/profile.json`
+  - current default operator-facing behavior plus embedded policy frontmatter
   - current default capabilities and route hints
 - `tests/smoke/factory-chat-profiles.test.ts`
   - discovery, route hinting, imports, stream scoping

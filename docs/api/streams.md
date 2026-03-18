@@ -65,7 +65,7 @@ Singleton modes:
   - policy versions.
 
 ## Storage Layout
-- Data root: `DATA_DIR` (default `<cwd>/data`).
+- Data root: `DATA_DIR` (default `<cwd>/.receipt/data`).
 - Stream key registry: `_streams.json`.
 - Branch metadata stream: `__meta/branches`.
 - JSONL file naming uses hashed stream keys.

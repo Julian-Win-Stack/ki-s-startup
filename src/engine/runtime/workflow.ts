@@ -7,6 +7,10 @@
 import type { Runtime } from "../../core/runtime.js";
 import { fold } from "../../core/chain.js";
 import type { Chain, Reducer } from "../../core/types.js";
+import { action } from "../../sdk/actions.js";
+import type { ReceiptDeclaration } from "../../sdk/receipt.js";
+import { runAgentLoop, type ModernAgentSpec } from "./agent-loop.js";
+import { isControlReceiptType } from "./control-receipts.js";
 
 type RunStatus = "idle" | "running" | "failed" | "completed";
 
@@ -122,6 +126,9 @@ export type WorkflowSpec<Deps, Config, Event extends RunEvent, State extends Run
   readonly run: (ctx: WorkflowContext<Deps, Event, State>, config: Config) => Promise<void>;
 };
 
+const stripControlReceipts = <Event extends RunEvent>(chain: Chain<{ readonly type: string }>): Chain<Event> =>
+  chain.filter((receipt): receipt is Chain<Event>[number] => !isControlReceiptType(receipt.body.type));
+
 export const createQueuedEmitter = <Cmd, Event, State>(opts: {
   readonly runtime: Runtime<Cmd, Event, State>;
   readonly stream: string;
@@ -158,26 +165,76 @@ export const runWorkflow = async <Cmd, Deps extends { runtime: Runtime<Cmd, Even
   ctx: WorkflowContext<Deps, Event, State>,
   config: Config
 ): Promise<void> => {
-  const chain = await ctx.runtime.chain(ctx.stream);
-  const { state: baseState, resume } = resumeFromChain(chain, spec.lifecycle.reducer, spec.lifecycle.initial, ctx.runId);
   const shouldIndex = spec.lifecycle.shouldIndex ?? defaultShouldIndex;
   const emitIndex = ctx.emitIndex;
+  const broadcast = "broadcast" in ctx && typeof ctx.broadcast === "function"
+    ? ctx.broadcast as (() => void)
+    : undefined;
 
-  const emit: EmitFn<Event> = async (event) => {
-    await ctx.emit(event);
-    if (emitIndex && shouldIndex(event)) await emitIndex(event);
+  const toBody = (event: Event): Record<string, unknown> => {
+    const { type: _type, ...body } = event as Event & Record<string, unknown>;
+    return body;
   };
 
-  if (!resume) {
-    const initEvents = spec.lifecycle.init(ctx, ctx.runId, config);
-    for (const event of initEvents) await emit(event);
-  } else {
-    const resumeEvents = spec.lifecycle.resume?.(ctx, ctx.runId, baseState, config) ?? [];
-    for (const event of resumeEvents) await emit(event);
-    if (baseState.status === "completed") return;
-  }
+  const loopSpec = {
+    id: `${spec.id}.workflow`,
+    version: spec.version,
+    receipts: {} as Record<string, ReceiptDeclaration<unknown>>,
+    view: ({ on }) => {
+      const runStartedCount = on("run.started").all().length;
+      const actionCompletedCount = on("action.completed").all().length;
+      return {
+        settled: runStartedCount > 0 && actionCompletedCount >= runStartedCount,
+      };
+    },
+    actions: () => [
+      action("workflow.execute", {
+        run: async ({ emit }) => {
+          const chain = stripControlReceipts<Event>(await ctx.runtime.chain(ctx.stream) as Chain<{ readonly type: string }>);
+          const { state: baseState, resume } = resumeFromChain(chain, spec.lifecycle.reducer, spec.lifecycle.initial, ctx.runId);
 
-  const nextChain = await ctx.runtime.chain(ctx.stream);
-  const state = deriveRunState(nextChain, spec.lifecycle.reducer, spec.lifecycle.initial);
-  await spec.run({ ...ctx, emit, resume, state }, config);
+          const emitEvent: EmitFn<Event> = async (event) => {
+            await emit(event.type, toBody(event));
+            if (emitIndex && shouldIndex(event)) await emitIndex(event);
+          };
+
+          if (!resume) {
+            const initEvents = spec.lifecycle.init(ctx, ctx.runId, config);
+            for (const event of initEvents) await emitEvent(event);
+          } else {
+            const resumeEvents = spec.lifecycle.resume?.(ctx, ctx.runId, baseState, config) ?? [];
+            for (const event of resumeEvents) await emitEvent(event);
+            if (baseState.status === "completed") return;
+          }
+
+          const nextChain = stripControlReceipts<Event>(await ctx.runtime.chain(ctx.stream) as Chain<{ readonly type: string }>);
+          const state = deriveRunState(nextChain, spec.lifecycle.reducer, spec.lifecycle.initial);
+          await spec.run({ ...ctx, emit: emitEvent, resume, state }, config);
+        },
+      }),
+    ],
+    goal: ({ view }) => view.settled,
+    maxIterations: 2,
+    maxConcurrency: 1,
+  } satisfies ModernAgentSpec<
+    Record<string, ReceiptDeclaration<unknown>>,
+    { readonly settled: boolean },
+    Record<string, unknown>
+  >;
+
+  await runAgentLoop({
+    spec: loopSpec,
+    runtime: ctx.runtime,
+    stream: ctx.stream,
+    runId: ctx.runId,
+    wrap: (event, meta) => ({
+      type: "emit",
+      event,
+      eventId: meta.eventId,
+      expectedPrev: meta.expectedPrev,
+    }) as Cmd,
+    deps: ctx as Deps & Record<string, unknown>,
+    now: ctx.now,
+    afterEmit: broadcast ? async () => { broadcast(); } : undefined,
+  });
 };

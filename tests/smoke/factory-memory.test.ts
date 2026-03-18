@@ -227,6 +227,10 @@ test("factory worker packets expose a layered memory script for bounded recall a
     prompt: "Implement the task using layered receipt-backed memory.",
     checks: ["git status --short"],
   });
+  expect(created.profile.rootProfileId).toBe("generalist");
+  expect(created.profile.objectivePolicy.defaultWorkerType).toBe("codex");
+  expect(created.contextSources.repoSharedMemoryScope).toBe("factory/repo/shared");
+  expect(created.contextSources.sharedArtifactRefs.length).toBeGreaterThanOrEqual(2);
   await runObjectiveStartup(service, created.objectiveId);
   const ready = await service.getObjective(created.objectiveId);
 
@@ -268,6 +272,11 @@ test("factory worker packets expose a layered memory script for bounded recall a
   });
 
   const manifest = JSON.parse(await fs.readFile(payload.manifestPath, "utf-8")) as {
+    readonly profile: {
+      readonly rootProfileId: string;
+      readonly promptPath: string;
+      readonly selectedSkills: ReadonlyArray<string>;
+    };
     readonly memory: {
       readonly scriptPath: string;
       readonly configPath: string;
@@ -276,7 +285,14 @@ test("factory worker packets expose a layered memory script for bounded recall a
     readonly context: {
       readonly packPath: string;
     };
+    readonly contextSources: {
+      readonly repoSharedMemoryScope: string;
+      readonly sharedArtifactRefs: ReadonlyArray<{ readonly kind: string; readonly ref: string }>;
+    };
+    readonly sharedArtifactRefs: ReadonlyArray<{ readonly kind: string; readonly ref: string }>;
   };
+  expect(manifest.profile.rootProfileId).toBe("generalist");
+  expect(manifest.profile.promptPath).toBe("profiles/generalist/PROFILE.md");
   expect(manifest.memory.scopes.map((scope) => scope.key)).toEqual([
     "agent",
     "repo",
@@ -288,6 +304,11 @@ test("factory worker packets expose a layered memory script for bounded recall a
   expect(manifest.memory.scriptPath).toBe(payload.memoryScriptPath);
   expect(manifest.memory.configPath).toBe(payload.memoryConfigPath);
   expect(manifest.context.packPath).toBe(payload.contextPackPath);
+  expect(manifest.contextSources.repoSharedMemoryScope).toBe("factory/repo/shared");
+  expect(manifest.sharedArtifactRefs.length).toBeGreaterThanOrEqual(2);
+  expect(payload.profile.rootProfileId).toBe("generalist");
+  expect(payload.profilePromptHash.length).toBeGreaterThan(0);
+  expect(payload.sharedArtifactRefs.length).toBeGreaterThanOrEqual(2);
 
   await service.runTask(job.payload);
 
@@ -312,6 +333,7 @@ test("factory worker packets expose a layered memory script for bounded recall a
   expect(captured.search).toMatch(/shared fact: promotion must wait for green integration/i);
 
   const contextPack = JSON.parse(await fs.readFile(payload.contextPackPath, "utf-8")) as {
+    readonly profile: { readonly rootProfileId: string; readonly promptPath: string };
     readonly task: { readonly taskId: string; readonly candidateId: string };
     readonly relatedTasks: Array<{ readonly taskId: string; readonly relations: string[] }>;
     readonly candidateLineage: Array<{ readonly candidateId: string }>;
@@ -320,7 +342,14 @@ test("factory worker packets expose a layered memory script for bounded recall a
       readonly frontierTasks: Array<{ readonly taskId: string }>;
       readonly recentObjectiveReceipts: Array<{ readonly type: string }>;
     };
+    readonly contextSources: {
+      readonly profileSkillRefs: ReadonlyArray<string>;
+      readonly repoSharedMemoryScope: string;
+      readonly sharedArtifactRefs: ReadonlyArray<{ readonly kind: string; readonly ref: string }>;
+    };
   };
+  expect(contextPack.profile.rootProfileId).toBe("generalist");
+  expect(contextPack.profile.promptPath).toBe("profiles/generalist/PROFILE.md");
   expect(contextPack.task.taskId).toBe(task!.taskId);
   expect(contextPack.task.candidateId).toBe(payload.candidateId);
   expect(contextPack.relatedTasks.some((relatedTask) => relatedTask.taskId === task!.taskId && relatedTask.relations.includes("focus"))).toBeTruthy();
@@ -328,6 +357,8 @@ test("factory worker packets expose a layered memory script for bounded recall a
   expect(contextPack.recentReceipts.some((receipt) => receipt.type === "task.dispatched")).toBeTruthy();
   expect(contextPack.objectiveSlice.frontierTasks.some((frontierTask) => frontierTask.taskId === task!.taskId)).toBeTruthy();
   expect(contextPack.objectiveSlice.recentObjectiveReceipts.length >= 1).toBeTruthy();
+  expect(contextPack.contextSources.repoSharedMemoryScope).toBe("factory/repo/shared");
+  expect(contextPack.contextSources.sharedArtifactRefs.length).toBeGreaterThanOrEqual(2);
 
   const taskMemory = await memoryTools.read({
     scope: `factory/objectives/${created.objectiveId}/tasks/${task!.taskId}`,

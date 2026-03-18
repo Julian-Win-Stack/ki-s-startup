@@ -165,7 +165,7 @@ receipt memory diff factory/objectives/demo --from-ts 1710000000000
   - if value contains `/`, treated as stream directly.
   - otherwise resolved by `_streams.json` mapping and `/runs/<runId>` suffix lookup.
 - Data directory:
-  - uses `DATA_DIR` env var or defaults to `<cwd>/data`.
+  - uses `DATA_DIR` env var or defaults to `<cwd>/.receipt/data`.
 
 ## Exit Behavior
 - Success: exit code `0`.

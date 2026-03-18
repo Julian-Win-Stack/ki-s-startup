@@ -83,3 +83,22 @@ export type ControlReceipt =
     };
 
 export const CONTROL_POLICY_VERSION = "runtime-policy-v1";
+
+export const CONTROL_RECEIPT_TYPES = new Set<ControlReceipt["type"]>([
+  "run.started",
+  "run.completed",
+  "run.failed",
+  "action.selected",
+  "action.started",
+  "action.completed",
+  "action.failed",
+  "human.requested",
+  "human.responded",
+  "goal.completed",
+  "merge.evidence.computed",
+  "merge.candidate.scored",
+  "merge.applied",
+]);
+
+export const isControlReceiptType = (type: string): type is ControlReceipt["type"] =>
+  CONTROL_RECEIPT_TYPES.has(type as ControlReceipt["type"]);

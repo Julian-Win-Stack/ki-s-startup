@@ -52,6 +52,8 @@ import {
   type FactoryChatJobNav,
   type FactorySidebarModel,
   type FactoryLiveCodexCard,
+  type FactoryLiveChildCard,
+  type FactoryLiveRunCard,
   type FactorySelectedObjectiveCard,
   type FactoryWorkCard,
 } from "../views/factory-chat.js";
@@ -166,12 +168,18 @@ const summarizeJob = (job: QueueJob): string => {
   return `${job.agentId} job`;
 };
 
+const isDescendantStream = (value: string | undefined, stream: string): boolean => {
+  const candidate = value?.trim();
+  if (!candidate) return false;
+  return candidate === stream || candidate.startsWith(`${stream}/sub/`);
+};
+
 const isRelevantShellJob = (job: QueueJob, stream: string, objectiveId?: string): boolean => {
   const payloadObjectiveId = asString(job.payload.objectiveId);
   const payloadStream = asString(job.payload.stream);
   const parentStream = asString(job.payload.parentStream);
-  return payloadStream === stream
-    || parentStream === stream
+  return isDescendantStream(payloadStream, stream)
+    || isDescendantStream(parentStream, stream)
     || (Boolean(objectiveId) && payloadObjectiveId === objectiveId);
 };
 
@@ -185,9 +193,260 @@ const codexJobPriority = (job: QueueJob): number => {
   return 3;
 };
 
+const normalizedWorkerId = (agentId: string | undefined): string =>
+  agentId?.trim() || "unknown";
+
+type AgentRunChain = Awaited<ReturnType<Runtime<AgentCmd, AgentEvent, AgentState>["chain"]>>;
+
+type MissionRunRecord = {
+  readonly profileId: string;
+  readonly profileLabel: string;
+  readonly runId: string;
+  readonly runChain: AgentRunChain;
+  readonly summary: FactoryMissionRunSummary;
+};
+
+const payloadRecord = (job: QueueJob): Record<string, unknown> =>
+  asObject(job.payload) ?? {};
+
+const jobObjectiveId = (job: QueueJob): string | undefined =>
+  asString(payloadRecord(job).objectiveId) ?? asString(asObject(job.result)?.objectiveId);
+
+const jobStream = (job: QueueJob): string | undefined =>
+  asString(payloadRecord(job).stream);
+
+const jobParentStream = (job: QueueJob): string | undefined =>
+  asString(payloadRecord(job).parentStream);
+
+const jobRunId = (job: QueueJob): string | undefined =>
+  asString(payloadRecord(job).runId);
+
+const jobParentRunId = (job: QueueJob): string | undefined =>
+  asString(payloadRecord(job).parentRunId);
+
+const jobAnyRunId = (job: QueueJob): string | undefined =>
+  jobRunId(job) ?? jobParentRunId(job);
+
+const jobTaskId = (job: QueueJob): string | undefined =>
+  asString(payloadRecord(job).taskId);
+
+const jobCandidateId = (job: QueueJob): string | undefined =>
+  asString(payloadRecord(job).candidateId);
+
+const seedSet = (values: ReadonlyArray<string | undefined>): Set<string> =>
+  new Set(values.filter((value): value is string => typeof value === "string" && value.trim().length > 0));
+
+const linkRunId = (pending: string[], seen: ReadonlySet<string>, value: string | undefined): void => {
+  const runId = value?.trim();
+  if (!runId || seen.has(runId) || pending.includes(runId)) return;
+  pending.push(runId);
+};
+
+const parseRunFocusId = (focusId: string | undefined): { readonly profileId?: string; readonly runId?: string } => {
+  const value = focusId?.trim();
+  if (!value) return {};
+  const separator = value.indexOf(":");
+  if (separator <= 0 || separator >= value.length - 1) return { runId: value };
+  return {
+    profileId: value.slice(0, separator),
+    runId: value.slice(separator + 1),
+  };
+};
+
+const collectRunLineageIds = (
+  seedRunIds: ReadonlyArray<string | undefined>,
+  runChainsById: ReadonlyMap<string, AgentRunChain>,
+  jobs: ReadonlyArray<QueueJob>,
+): ReadonlySet<string> => {
+  const related = new Set<string>();
+  const pending = [...seedSet(seedRunIds)];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || related.has(current)) continue;
+    related.add(current);
+
+    const currentChain = runChainsById.get(current);
+    if (currentChain) {
+      for (const receipt of currentChain) {
+        const event = receipt.body;
+        if (event.type === "run.continued") {
+          linkRunId(pending, related, event.runId);
+          linkRunId(pending, related, event.nextRunId);
+          continue;
+        }
+        if (event.type === "subagent.merged") {
+          linkRunId(pending, related, event.runId);
+          linkRunId(pending, related, event.subRunId);
+          continue;
+        }
+        if (event.type === "tool.observed" && (event.tool === "agent.delegate" || event.tool === "profile.handoff")) {
+          const parsed = tryParseJson(event.output);
+          linkRunId(pending, related, asString(parsed?.runId));
+          linkRunId(pending, related, asString(parsed?.parentRunId));
+        }
+      }
+    }
+
+    for (const [candidateRunId, candidateChain] of runChainsById.entries()) {
+      for (const receipt of candidateChain) {
+        const event = receipt.body;
+        if (event.type === "run.continued" && event.nextRunId === current) {
+          linkRunId(pending, related, candidateRunId);
+          continue;
+        }
+        if (event.type === "subagent.merged" && event.subRunId === current) {
+          linkRunId(pending, related, event.runId);
+          continue;
+        }
+        if (event.type === "tool.observed" && (event.tool === "agent.delegate" || event.tool === "profile.handoff")) {
+          const parsed = tryParseJson(event.output);
+          if (asString(parsed?.runId) === current) linkRunId(pending, related, candidateRunId);
+        }
+      }
+    }
+
+    for (const job of jobs) {
+      const payloadRun = jobRunId(job);
+      const parentRun = jobParentRunId(job);
+      if (parentRun === current) linkRunId(pending, related, payloadRun);
+      if (payloadRun === current) linkRunId(pending, related, parentRun);
+    }
+  }
+  return related;
+};
+
+const jobMatchesRunIds = (job: QueueJob, runIds: ReadonlySet<string>): boolean => {
+  if (runIds.size === 0) return false;
+  const payloadRun = jobRunId(job);
+  const parentRun = jobParentRunId(job);
+  return (payloadRun !== undefined && runIds.has(payloadRun))
+    || (parentRun !== undefined && runIds.has(parentRun));
+};
+
+const tasksByCandidateIds = (
+  tasks: ReadonlyArray<FactoryTaskView>,
+  candidateIds: ReadonlySet<string>,
+): ReadonlySet<string> => {
+  const related = new Set<string>();
+  if (candidateIds.size === 0) return related;
+  for (const task of tasks) {
+    if (
+      (task.candidateId && candidateIds.has(task.candidateId))
+      || (task.sourceCandidateId && candidateIds.has(task.sourceCandidateId))
+    ) {
+      related.add(task.taskId);
+    }
+  }
+  return related;
+};
+
+const expandRelatedTaskIds = (
+  tasks: ReadonlyArray<FactoryTaskView>,
+  seedTaskIds: ReadonlyArray<string | undefined> | ReadonlySet<string>,
+): ReadonlySet<string> => {
+  const taskById = new Map(tasks.map((task) => [task.taskId, task] as const));
+  const dependentsByTaskId = new Map<string, string[]>();
+  const childrenBySourceTaskId = new Map<string, string[]>();
+  for (const task of tasks) {
+    for (const depId of task.dependsOn) {
+      const current = dependentsByTaskId.get(depId) ?? [];
+      current.push(task.taskId);
+      dependentsByTaskId.set(depId, current);
+    }
+    if (task.sourceTaskId) {
+      const current = childrenBySourceTaskId.get(task.sourceTaskId) ?? [];
+      current.push(task.taskId);
+      childrenBySourceTaskId.set(task.sourceTaskId, current);
+    }
+  }
+  const pending = [...seedSet(Array.isArray(seedTaskIds) ? seedTaskIds : [...seedTaskIds])];
+  const related = new Set<string>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || related.has(current)) continue;
+    related.add(current);
+    const task = taskById.get(current);
+    if (!task) continue;
+    for (const depId of task.dependsOn) linkRunId(pending, related, depId);
+    for (const dependentId of dependentsByTaskId.get(current) ?? []) linkRunId(pending, related, dependentId);
+    linkRunId(pending, related, task.sourceTaskId);
+    for (const childId of childrenBySourceTaskId.get(current) ?? []) linkRunId(pending, related, childId);
+  }
+  return related;
+};
+
+const candidateIdsForTaskIds = (
+  tasks: ReadonlyArray<FactoryTaskView>,
+  taskIds: ReadonlySet<string>,
+): ReadonlySet<string> => {
+  const related = new Set<string>();
+  for (const task of tasks) {
+    if (!taskIds.has(task.taskId)) continue;
+    if (task.candidateId) related.add(task.candidateId);
+    if (task.sourceCandidateId) related.add(task.sourceCandidateId);
+  }
+  return related;
+};
+
+const buildTaskCandidateContext = (
+  tasks: ReadonlyArray<FactoryTaskView>,
+  seedTaskIds: ReadonlyArray<string | undefined> | ReadonlySet<string>,
+  seedCandidateIds: ReadonlyArray<string | undefined> | ReadonlySet<string>,
+): { readonly taskIds: ReadonlySet<string>; readonly candidateIds: ReadonlySet<string> } => {
+  const initialTaskIds = seedSet(Array.isArray(seedTaskIds) ? seedTaskIds : [...seedTaskIds]);
+  const initialCandidateIds = seedSet(Array.isArray(seedCandidateIds) ? seedCandidateIds : [...seedCandidateIds]);
+  const seededTaskIds = new Set<string>([
+    ...initialTaskIds,
+    ...tasksByCandidateIds(tasks, initialCandidateIds),
+  ]);
+  const expandedTaskIds = expandRelatedTaskIds(tasks, seededTaskIds);
+  const candidateIds = new Set<string>([
+    ...initialCandidateIds,
+    ...candidateIdsForTaskIds(tasks, expandedTaskIds),
+  ]);
+  const finalTaskIds = expandRelatedTaskIds(tasks, [
+    ...expandedTaskIds,
+    ...tasksByCandidateIds(tasks, candidateIds),
+  ]);
+  return {
+    taskIds: finalTaskIds,
+    candidateIds: new Set<string>([
+      ...candidateIds,
+      ...candidateIdsForTaskIds(tasks, finalTaskIds),
+    ]),
+  };
+};
+
+const mentionsContextRef = (
+  value: string | undefined,
+  taskIds: ReadonlySet<string>,
+  candidateIds: ReadonlySet<string>,
+): boolean => {
+  const text = value?.trim();
+  if (!text) return false;
+  for (const taskId of taskIds) {
+    if (text.includes(taskId)) return true;
+  }
+  for (const candidateId of candidateIds) {
+    if (text.includes(candidateId)) return true;
+  }
+  return false;
+};
+
+const filterReceiptsForContext = (
+  receipts: ReadonlyArray<FactoryMissionReceiptSummary>,
+  taskIds: ReadonlySet<string>,
+  candidateIds: ReadonlySet<string>,
+): ReadonlyArray<FactoryMissionReceiptSummary> =>
+  receipts.filter((receipt) =>
+    (receipt.taskId ? taskIds.has(receipt.taskId) : false)
+    || (receipt.candidateId ? candidateIds.has(receipt.candidateId) : false)
+    || mentionsContextRef(receipt.summary, taskIds, candidateIds)
+  );
+
 const buildActiveCodexCard = (jobs: ReadonlyArray<QueueJob>): FactoryLiveCodexCard | undefined => {
   const codexJob = [...jobs]
-    .filter((job) => job.agentId === "factory-codex" || job.agentId === "codex")
+    .filter((job) => normalizedWorkerId(job.agentId) === "codex")
     .sort((left, right) =>
       codexJobPriority(left) - codexJobPriority(right)
       || right.updatedAt - left.updatedAt
@@ -214,6 +473,67 @@ const buildActiveCodexCard = (jobs: ReadonlyArray<QueueJob>): FactoryLiveCodexCa
     running: !isTerminalJobStatus(codexJob.status),
   };
 };
+
+const isLiveChildShellJob = (job: QueueJob, stream: string, objectiveId?: string): boolean => {
+  const kind = asString(job.payload.kind);
+  const payloadStream = asString(job.payload.stream);
+  const parentStream = asString(job.payload.parentStream);
+  const payloadObjectiveId = asString(job.payload.objectiveId);
+  if (kind === "factory.run" && payloadStream === stream) return false;
+  if (isDescendantStream(parentStream, stream)) return true;
+  if (payloadStream?.startsWith(`${stream}/sub/`)) return true;
+  if (Boolean(objectiveId) && payloadObjectiveId === objectiveId && kind !== "factory.run") return true;
+  return false;
+};
+
+const liveChildPriority = (job: QueueJob): number => {
+  if (!isTerminalJobStatus(job.status)) return 0;
+  if (job.status === "failed") return 1;
+  if (job.status === "canceled") return 2;
+  return 3;
+};
+
+const buildLiveChildCards = (
+  jobs: ReadonlyArray<QueueJob>,
+  stream: string,
+  objectiveId?: string,
+): ReadonlyArray<FactoryLiveChildCard> =>
+  [...jobs]
+    .filter((job) => isLiveChildShellJob(job, stream, objectiveId))
+    .sort((left, right) =>
+      liveChildPriority(left) - liveChildPriority(right)
+      || right.updatedAt - left.updatedAt
+      || right.createdAt - left.createdAt
+      || right.id.localeCompare(left.id)
+    )
+    .map((job) => {
+      const result = asObject(job.result);
+      const payloadStream = asString(job.payload.stream);
+      const parentStream = asString(job.payload.parentStream);
+      const worker = asString(result?.worker) ?? normalizedWorkerId(job.agentId);
+      return {
+        jobId: job.id,
+        agentId: job.agentId,
+        worker,
+        status: job.status,
+        summary: summarizeJob(job),
+        latestNote: asString(result?.lastMessage) ?? asString(result?.message),
+        stderrTail: asString(result?.stderrTail),
+        stdoutTail: asString(result?.stdoutTail),
+        runId: asString(job.payload.runId) ?? asString(job.payload.parentRunId),
+        parentRunId: asString(job.payload.parentRunId),
+        stream: payloadStream,
+        parentStream,
+        task: asString(job.payload.task)
+          ?? asString(job.payload.prompt)
+          ?? asString(job.payload.problem)
+          ?? asString(job.payload.taskId),
+        updatedAt: job.updatedAt,
+        abortRequested: job.abortRequested === true,
+        rawLink: `/jobs/${encodeURIComponent(job.id)}`,
+        running: !isTerminalJobStatus(job.status),
+      } satisfies FactoryLiveChildCard;
+    });
 
 const interestingTools = new Set([
   "agent.delegate",
@@ -508,9 +828,7 @@ export const buildChatItemsForRun = (
     }
     if (event.type === "subagent.merged") {
       const job = jobsById.get(event.subJobId);
-      const worker = job?.agentId === "factory-codex"
-        ? "codex"
-        : asString(asObject(job?.result)?.worker) ?? "subagent";
+      const worker = asString(asObject(job?.result)?.worker) ?? normalizedWorkerId(job?.agentId);
       const baseCard: FactoryWorkCard = {
         key: `${runId}-subagent-${receipt.hash}`,
         title: worker === "codex" ? "Codex child update" : "Child update",
@@ -731,6 +1049,89 @@ const summarizeRunItems = (items: ReadonlyArray<FactoryChatItem>): { readonly su
   };
 };
 
+const summarizePendingRunJob = (job: QueueJob, profileLabel: string): FactoryLiveRunCard => {
+  const summary = job.status === "queued"
+    ? "Waiting for a worker to pick up this run."
+    : job.status === "leased"
+      ? "A worker claimed this run and is starting it."
+      : job.status === "running"
+        ? `${profileLabel} is starting this run.`
+        : job.status === "completed"
+          ? "Run worker finished."
+          : job.status === "canceled"
+            ? (job.canceledReason ?? "Run was canceled.")
+            : (job.lastError ?? "Run failed.");
+  return {
+    runId: asString(job.payload.runId) ?? asString(job.payload.parentRunId) ?? job.id,
+    profileLabel,
+    status: job.status,
+    summary,
+    updatedAt: job.updatedAt,
+    link: buildChatLink({
+      profileId: asString(job.payload.profileId),
+      objectiveId: asString(job.payload.objectiveId),
+      runId: asString(job.payload.runId) ?? asString(job.payload.parentRunId),
+      jobId: job.id,
+    }),
+    lastToolSummary: asString(job.payload.problem) ?? asString(job.payload.task) ?? asString(job.payload.kind),
+  };
+};
+
+const describeRunActivity = (
+  profileLabel: string,
+  state: AgentState,
+  finalContent?: string,
+): string => {
+  const tool = state.lastTool?.name?.trim().toLowerCase();
+  if (state.status === "failed") return "Needs attention.";
+  if (state.status === "completed") return "Run completed.";
+  if (tool === "jobs.list") return `${profileLabel} is checking live jobs.`;
+  if (tool === "agent.status") return `${profileLabel} is checking child status.`;
+  if (tool === "factory.status") return `${profileLabel} is checking thread status.`;
+  if (tool === "factory.dispatch") return `${profileLabel} is updating the Factory thread.`;
+  if (tool === "codex.run") return `${profileLabel} queued Codex work and is waiting for progress.`;
+  if (tool === "agent.delegate") return `${profileLabel} delegated follow-up work.`;
+  if (tool === "profile.handoff") return `${profileLabel} is handing off this thread.`;
+  if (tool && tool.length > 0) return `${profileLabel} is using ${tool}.`;
+  if (finalContent?.trim()) return "Run completed.";
+  if (state.status === "running") return `${profileLabel} is still working.`;
+  return "No run receipts yet.";
+};
+
+const summarizeActiveRunCard = (
+  input: {
+    readonly runId: string;
+    readonly runChain: Awaited<ReturnType<Runtime<AgentCmd, AgentEvent, AgentState>["chain"]>>;
+    readonly profileLabel: string;
+    readonly profileId: string;
+    readonly objectiveId?: string;
+  },
+): FactoryLiveRunCard => {
+  const state = fold(input.runChain, reduceAgent, initialAgent);
+  const final = reverseFind(input.runChain, (receipt) => receipt.body.type === "response.finalized")?.body;
+  const failure = state.failure?.message;
+  const finalContent = final?.type === "response.finalized"
+    ? final.content.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim()
+    : undefined;
+  const summary = state.lastTool?.error
+    ?? failure
+    ?? describeRunActivity(input.profileLabel, state, finalContent);
+  return {
+    runId: input.runId,
+    profileLabel: input.profileLabel,
+    status: state.status,
+    summary,
+    updatedAt: input.runChain.at(-1)?.ts,
+    lastToolName: state.lastTool?.name,
+    lastToolSummary: state.lastTool?.summary ?? state.lastTool?.error,
+    link: buildChatLink({
+      profileId: input.profileId,
+      objectiveId: input.objectiveId,
+      runId: input.runId,
+    }),
+  };
+};
+
 const objectiveSummary = (detail: FactoryObjectiveDetail): string | undefined =>
   detail.latestSummary
   ?? detail.nextAction
@@ -907,6 +1308,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     const runIds = requestedRunIndex >= 0 ? allRunIds.slice(requestedRunIndex) : allRunIds;
     const activeRunId = runIds.at(-1) ?? input.runId;
     const runChains = await Promise.all(runIds.map((runId) => agentRuntime.chain(agentRunStream(stream, runId))));
+    const runChainsById = new Map(runIds.map((runId, index) => [runId, runChains[index]!] as const));
     const jobsById = new Map(jobs.map((job) => [job.id, job] as const));
     const chatItems = runChains.flatMap((runChain, index) => buildChatItemsForRun(runIds[index]!, runChain, jobsById));
 
@@ -932,8 +1334,40 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         taskCount: objective.taskCount,
         integrationStatus: objective.integrationStatus,
     }));
-    const relevantQueueJobs = jobs.filter((job) => isRelevantShellJob(job, stream, input.objectiveId));
+    const baseQueueJobs = jobs.filter((job) => isRelevantShellJob(job, stream, input.objectiveId));
+    const selectedJob = input.jobId ? jobsById.get(input.jobId) : undefined;
+    const selectedRunIds = collectRunLineageIds(
+      [
+        input.runId,
+        selectedJob ? jobRunId(selectedJob) : undefined,
+        selectedJob ? jobParentRunId(selectedJob) : undefined,
+      ],
+      runChainsById,
+      baseQueueJobs,
+    );
+    const relevantQueueJobs = selectedRunIds.size > 0 || input.jobId
+      ? baseQueueJobs.filter((job) =>
+          job.id === input.jobId
+          || jobMatchesRunIds(job, selectedRunIds)
+        )
+      : baseQueueJobs;
+    if (selectedJob && !relevantQueueJobs.some((job) => job.id === selectedJob.id)) {
+      relevantQueueJobs.unshift(selectedJob);
+    }
     const activeCodex = buildActiveCodexCard(relevantQueueJobs);
+    const liveChildren = buildLiveChildCards(relevantQueueJobs, stream, input.objectiveId);
+    const activeRunIndex = activeRunId ? runIds.indexOf(activeRunId) : -1;
+    const activeRun = activeRunIndex >= 0
+      ? summarizeActiveRunCard({
+          runId: activeRunId!,
+          runChain: runChains[activeRunIndex]!,
+          profileLabel: resolved.root.label,
+          profileId: resolved.root.id,
+          objectiveId: input.objectiveId,
+        })
+      : selectedJob
+          ? summarizePendingRunJob(selectedJob, resolved.root.label)
+      : undefined;
     const relevantJobs = relevantQueueJobs
       .slice(0, 12)
       .map((job) => ({
@@ -941,14 +1375,14 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         agentId: job.agentId,
         status: job.status,
         summary: summarizeJob(job),
-        runId: asString(job.payload.runId) ?? asString(job.payload.parentRunId),
-        objectiveId: asString(job.payload.objectiveId) ?? asString(asObject(job.result)?.objectiveId),
+        runId: jobAnyRunId(job),
+        objectiveId: jobObjectiveId(job),
         updatedAt: job.updatedAt,
         selected: job.id === input.jobId,
         link: buildChatLink({
           profileId: resolved.root.id,
-          objectiveId: asString(job.payload.objectiveId) ?? asString(asObject(job.result)?.objectiveId),
-          runId: asString(job.payload.runId) ?? asString(job.payload.parentRunId),
+          objectiveId: jobObjectiveId(job),
+          runId: jobAnyRunId(job),
           jobId: job.id,
         }),
       } satisfies FactoryChatJobNav));
@@ -995,6 +1429,8 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       jobs: relevantJobs,
       selectedObjective: selectedObjectiveCard,
       activeCodex,
+      liveChildren,
+      activeRun,
     };
     return {
       activeProfileId: resolved.root.id,
@@ -1075,40 +1511,37 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     }
 
     const jobsById = new Map(jobs.map((job) => [job.id, job] as const));
-    const runSummaries = (await Promise.all(
+    const runRecords = (await Promise.all(
       profiles.map(async (profile) => {
         const profileStream = factoryChatStream(repoRoot, profile.id, objectiveId);
         const indexChain = await agentRuntime.chain(profileStream);
         const runIds = collectRunIds(indexChain);
         const runChains = await Promise.all(runIds.map((runId) => agentRuntime.chain(agentRunStream(profileStream, runId))));
-        return runChains.map((runChain, index) => buildMissionRunSummary({
-          objectiveId,
-          panel: input.panel,
-          profileId: profile.id,
-          profileLabel: profile.label,
-          runId: runIds[index]!,
-          runChain,
-          jobsById,
-          selectedFocusId: resolvedFocusId,
-        }));
+        return runChains.map((runChain, index) => {
+          const runId = runIds[index]!;
+          return {
+            profileId: profile.id,
+            profileLabel: profile.label,
+            runId,
+            runChain,
+            summary: buildMissionRunSummary({
+              objectiveId,
+              panel: input.panel,
+              profileId: profile.id,
+              profileLabel: profile.label,
+              runId,
+              runChain,
+              jobsById,
+              selectedFocusId: resolvedFocusId,
+            }),
+          } satisfies MissionRunRecord;
+        });
       }),
     ))
       .flat()
-      .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
+      .sort((left, right) => (right.summary.updatedAt ?? 0) - (left.summary.updatedAt ?? 0))
       .slice(0, 20);
-
-    const taskSummaries = detail.tasks.map((task) => buildMissionTaskSummary(
-      objectiveId,
-      input.panel,
-      task,
-      resolvedFocusKind === "task" ? resolvedFocusId : undefined,
-    ));
-    const jobSummaries = objectiveJobs.slice(0, 20).map((job) => buildMissionJobSummary(
-      objectiveId,
-      input.panel,
-      job,
-      resolvedFocusKind === "job" ? resolvedFocusId : undefined,
-    ));
+    const runSummaries = runRecords.map((record) => record.summary);
 
     const missionFocus = (): Extract<FactoryMissionFocusModel, { readonly kind: "mission" }> => ({
       kind: "mission",
@@ -1174,9 +1607,10 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           jobId: job.id,
           agentId: job.agentId,
           updatedAt: job.updatedAt,
-          runId: asString(job.payload.runId) ?? asString(job.payload.parentRunId),
-          taskId: asString(job.payload.taskId),
-          candidateId: asString(job.payload.candidateId),
+          runId: jobRunId(job) ?? jobParentRunId(job),
+          parentRunId: jobParentRunId(job),
+          taskId: jobTaskId(job),
+          candidateId: jobCandidateId(job),
           rawLink: `/jobs/${encodeURIComponent(job.id)}`,
           payload: JSON.stringify(job.payload, null, 2),
           result: job.result ? JSON.stringify(job.result, null, 2) : undefined,
@@ -1225,6 +1659,92 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       candidateId: receipt.candidateId,
     } satisfies FactoryMissionReceiptSummary));
 
+    const runChainsById = new Map(runRecords.map((record) => [record.runId, record.runChain] as const));
+    let scopedTaskIds = new Set(detail.tasks.map((task) => task.taskId));
+    let scopedCandidateIds = new Set(candidateIdsForTaskIds(detail.tasks, scopedTaskIds));
+    let scopedRunIds = new Set(runRecords.map((record) => record.runId));
+    let scopedJobs = objectiveJobs;
+    let scopedReceipts: ReadonlyArray<FactoryMissionReceiptSummary> = recentReceipts;
+
+    if (focus.kind === "run") {
+      scopedRunIds = new Set(collectRunLineageIds([focus.runId], runChainsById, objectiveJobs));
+      scopedJobs = objectiveJobs.filter((job) => jobMatchesRunIds(job, scopedRunIds));
+      const context = buildTaskCandidateContext(
+        detail.tasks,
+        [
+          ...scopedJobs.map((job) => jobTaskId(job)),
+          ...tasksByCandidateIds(detail.tasks, seedSet(scopedJobs.map((job) => jobCandidateId(job)))),
+        ],
+        scopedJobs.map((job) => jobCandidateId(job)),
+      );
+      scopedTaskIds = new Set(context.taskIds);
+      scopedCandidateIds = new Set(context.candidateIds);
+      scopedJobs = objectiveJobs.filter((job) =>
+        jobMatchesRunIds(job, scopedRunIds)
+        || (jobTaskId(job) ? scopedTaskIds.has(jobTaskId(job)!) : false)
+        || (jobCandidateId(job) ? scopedCandidateIds.has(jobCandidateId(job)!) : false)
+      );
+      scopedReceipts = filterReceiptsForContext(recentReceipts, scopedTaskIds, scopedCandidateIds);
+    } else if (focus.kind === "job") {
+      scopedRunIds = new Set(collectRunLineageIds([focus.runId, focus.parentRunId], runChainsById, objectiveJobs));
+      const context = buildTaskCandidateContext(
+        detail.tasks,
+        [focus.taskId],
+        [focus.candidateId],
+      );
+      scopedTaskIds = new Set(context.taskIds);
+      scopedCandidateIds = new Set(context.candidateIds);
+      scopedJobs = objectiveJobs.filter((job) =>
+        job.id === focus.jobId
+        || jobMatchesRunIds(job, scopedRunIds)
+        || (jobTaskId(job) ? scopedTaskIds.has(jobTaskId(job)!) : false)
+        || (jobCandidateId(job) ? scopedCandidateIds.has(jobCandidateId(job)!) : false)
+      );
+      scopedReceipts = filterReceiptsForContext(recentReceipts, scopedTaskIds, scopedCandidateIds);
+    } else if (focus.kind === "task") {
+      const context = buildTaskCandidateContext(
+        detail.tasks,
+        [focus.taskId],
+        [focus.candidateId],
+      );
+      scopedTaskIds = new Set(context.taskIds);
+      scopedCandidateIds = new Set(context.candidateIds);
+      const seedRunIds = objectiveJobs.flatMap((job) => (
+        (jobTaskId(job) && scopedTaskIds.has(jobTaskId(job)!))
+        || (jobCandidateId(job) && scopedCandidateIds.has(jobCandidateId(job)!))
+      )
+        ? [jobRunId(job), jobParentRunId(job)]
+        : []);
+      scopedRunIds = new Set(collectRunLineageIds(seedRunIds, runChainsById, objectiveJobs));
+      scopedJobs = objectiveJobs.filter((job) =>
+        (jobTaskId(job) ? scopedTaskIds.has(jobTaskId(job)!) : false)
+        || (jobCandidateId(job) ? scopedCandidateIds.has(jobCandidateId(job)!) : false)
+        || jobMatchesRunIds(job, scopedRunIds)
+      );
+      scopedReceipts = filterReceiptsForContext(recentReceipts, scopedTaskIds, scopedCandidateIds);
+    }
+
+    const taskSummaries = detail.tasks
+      .filter((task) => scopedTaskIds.has(task.taskId))
+      .map((task) => buildMissionTaskSummary(
+        objectiveId,
+        input.panel,
+        task,
+        resolvedFocusKind === "task" ? resolvedFocusId : undefined,
+      ));
+    const jobSummaries = scopedJobs
+      .slice(0, 20)
+      .map((job) => buildMissionJobSummary(
+        objectiveId,
+        input.panel,
+        job,
+        resolvedFocusKind === "job" ? resolvedFocusId : undefined,
+      ));
+    const visibleRunIds = scopedRunIds.size > 0 ? scopedRunIds : new Set(runRecords.map((record) => record.runId));
+    const visibleRunSummaries = runRecords
+      .filter((record) => visibleRunIds.has(record.runId))
+      .map((record) => record.summary);
+
     const integrationWorkspaceSummary = debug.integrationWorktree
       ? `${debug.integrationWorktree.exists ? "exists" : "missing"}${debug.integrationWorktree.branch ? ` · ${debug.integrationWorktree.branch}` : ""}${debug.integrationWorktree.dirty ? " · dirty" : ""}`
       : undefined;
@@ -1234,6 +1754,10 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       title: detail.title,
       status: detail.status,
       phase: detail.phase,
+      profileId: detail.profile.rootProfileId,
+      profileLabel: detail.profile.rootProfileLabel,
+      profilePromptPath: detail.profile.promptPath,
+      profileSkills: detail.profile.selectedSkills,
       prompt: detail.prompt,
       summary: objectiveSummary(detail),
       nextAction: detail.nextAction,
@@ -1255,9 +1779,9 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       taskRunsUsed: detail.budgetState.taskRunsUsed,
       taskRunsMax: detail.policy.budgets.maxTaskRuns,
       tasks: taskSummaries,
-      runs: runSummaries,
+      runs: visibleRunSummaries,
       jobs: jobSummaries,
-      recentReceipts,
+      recentReceipts: focus.kind === "mission" ? recentReceipts : scopedReceipts,
       debugLink: `/factory/api/objectives/${encodeURIComponent(detail.objectiveId)}/debug`,
       receiptsLink: `/factory/api/objectives/${encodeURIComponent(detail.objectiveId)}/receipts?limit=50`,
       chatLink: buildChatLink({ objectiveId: detail.objectiveId }),
@@ -1267,6 +1791,8 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       recentJobCount: debug.lastJobs.length,
       contextPackCount: debug.latestContextPacks.length,
       worktreeCount: debug.taskWorktrees.length + (debug.integrationWorktree ? 1 : 0),
+      repoSkillCount: detail.contextSources.repoSkillPaths.length,
+      sharedArtifactCount: detail.contextSources.sharedArtifactRefs.length,
       integrationWorkspaceSummary,
       focus,
     };
@@ -1281,6 +1807,72 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       selected,
       liveOutput,
     };
+  };
+
+  const collectChatSubscriptionJobIds = async (input: {
+    readonly profileId?: string;
+    readonly objectiveId?: string;
+    readonly runId?: string;
+    readonly jobId?: string;
+  }): Promise<ReadonlyArray<string>> => {
+    const resolved = await resolveFactoryChatProfile({
+      repoRoot: service.git.repoRoot,
+      profileRoot,
+      requestedId: input.profileId,
+    });
+    const stream = factoryChatStream(service.git.repoRoot, resolved.root.id, input.objectiveId);
+    const jobs = await ctx.queue.listJobs({ limit: 120 });
+    const jobsById = new Map(jobs.map((job) => [job.id, job] as const));
+    const baseQueueJobs = jobs.filter((job) => isRelevantShellJob(job, stream, input.objectiveId));
+    const selectedJob = input.jobId ? jobsById.get(input.jobId) : undefined;
+    const selectedRunIds = collectRunLineageIds(
+      [
+        input.runId,
+        selectedJob ? jobRunId(selectedJob) : undefined,
+        selectedJob ? jobParentRunId(selectedJob) : undefined,
+      ],
+      new Map<string, AgentRunChain>(),
+      baseQueueJobs,
+    );
+    const scopedJobs = selectedRunIds.size > 0 || input.jobId
+      ? baseQueueJobs.filter((job) => job.id === input.jobId || jobMatchesRunIds(job, selectedRunIds))
+      : baseQueueJobs.slice(0, 16);
+    return [...new Set([
+      ...scopedJobs.map((job) => job.id),
+      ...(input.jobId ? [input.jobId] : []),
+    ])];
+  };
+
+  const collectMissionSubscriptionJobIds = async (input: {
+    readonly objectiveId?: string;
+    readonly focusKind: FactoryMissionFocusKind;
+    readonly focusId?: string;
+  }): Promise<ReadonlyArray<string>> => {
+    if (!input.objectiveId) return [];
+    const jobs = (await ctx.queue.listJobs({ limit: 160 }))
+      .filter((job) => jobObjectiveId(job) === input.objectiveId)
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+    if (input.focusKind === "job" && input.focusId) return [input.focusId];
+    if (input.focusKind === "run" && input.focusId) {
+      const { runId } = parseRunFocusId(input.focusId);
+      const scopedRunIds = collectRunLineageIds([runId], new Map<string, AgentRunChain>(), jobs);
+      return jobs.filter((job) => jobMatchesRunIds(job, scopedRunIds)).map((job) => job.id).slice(0, 20);
+    }
+    if (input.focusKind === "task" && input.focusId) {
+      const detail = await service.getObjective(input.objectiveId);
+      const task = detail.tasks.find((item) => item.taskId === input.focusId);
+      if (!task) return [];
+      const context = buildTaskCandidateContext(detail.tasks, [task.taskId], [task.candidateId]);
+      return jobs
+        .filter((job) =>
+          job.id === task.jobId
+          || (jobTaskId(job) ? context.taskIds.has(jobTaskId(job)!) : false)
+          || (jobCandidateId(job) ? context.candidateIds.has(jobCandidateId(job)!) : false)
+        )
+        .map((job) => job.id)
+        .slice(0, 20);
+    }
+    return jobs.slice(0, 16).map((job) => job.id);
   };
 
   return {
@@ -1317,11 +1909,20 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
               requestedObjectiveId(c.req.raw),
             ),
             objectiveId: requestedObjectiveId(c.req.raw),
+            jobId: requestedJobId(c.req.raw),
+            jobIds: await collectChatSubscriptionJobIds({
+              profileId: requestedProfileId(c.req.raw),
+              objectiveId: requestedObjectiveId(c.req.raw),
+              runId: requestedRunId(c.req.raw),
+              jobId: requestedJobId(c.req.raw),
+            }),
           };
         },
         (body) => ctx.sse.subscribeMany([
           { topic: "agent", stream: body.stream },
           ...(body.objectiveId ? [{ topic: "factory" as const, stream: body.objectiveId }] : []),
+          ...body.jobIds.map((jobId) => ({ topic: "jobs" as const, stream: jobId })),
+          ...(body.jobId && !body.jobIds.includes(body.jobId) ? [{ topic: "jobs" as const, stream: body.jobId }] : []),
         ], c.req.raw.signal)
       ));
 
@@ -1395,11 +1996,20 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
               requestedObjectiveId(c.req.raw),
             ),
             objectiveId: requestedObjectiveId(c.req.raw),
+            jobId: requestedJobId(c.req.raw),
+            jobIds: await collectChatSubscriptionJobIds({
+              profileId: requestedProfileId(c.req.raw),
+              objectiveId: requestedObjectiveId(c.req.raw),
+              runId: requestedRunId(c.req.raw),
+              jobId: requestedJobId(c.req.raw),
+            }),
           };
         },
         (body) => ctx.sse.subscribeMany([
           { topic: "agent", stream: body.stream },
           ...(body.objectiveId ? [{ topic: "factory" as const, stream: body.objectiveId }] : []),
+          ...body.jobIds.map((jobId) => ({ topic: "jobs" as const, stream: jobId })),
+          ...(body.jobId && !body.jobIds.includes(body.jobId) ? [{ topic: "jobs" as const, stream: body.jobId }] : []),
         ], c.req.raw.signal)
       ));
 
@@ -1455,11 +2065,34 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       app.get("/factory/control/events", async (c) => wrap(
         async () => {
           await service.ensureBootstrap();
-          return requestedObjectiveId(c.req.raw);
+          const objectiveId = requestedObjectiveId(c.req.raw);
+          const focusKind = requestedFocusKind(c.req.raw);
+          const focusId = requestedFocusId(c.req.raw);
+          const runFocus = focusKind === "run" ? parseRunFocusId(focusId) : {};
+          return {
+            objectiveId,
+            focusKind,
+            focusId,
+            runStream: objectiveId && runFocus.profileId
+              ? factoryChatStream(service.git.repoRoot, runFocus.profileId, objectiveId)
+              : undefined,
+            jobIds: await collectMissionSubscriptionJobIds({
+              objectiveId,
+              focusKind,
+              focusId,
+            }),
+          };
         },
-        (objectiveId) => objectiveId
-          ? ctx.sse.subscribe("factory", objectiveId, c.req.raw.signal)
-          : ctx.sse.subscribe("receipt", undefined, c.req.raw.signal)
+        (body) => ctx.sse.subscribeMany([
+          ...(body.objectiveId
+            ? [{ topic: "factory" as const, stream: body.objectiveId }]
+            : [{ topic: "receipt" as const }]),
+          ...(body.runStream ? [{ topic: "agent" as const, stream: body.runStream }] : []),
+          ...body.jobIds.map((jobId) => ({ topic: "jobs" as const, stream: jobId })),
+          ...(body.focusKind === "job" && body.focusId && !body.jobIds.includes(body.focusId)
+            ? [{ topic: "jobs" as const, stream: body.focusId }]
+            : []),
+        ], c.req.raw.signal)
       ));
 
       app.get("/factory/control/island/rail", async (c) => wrap(
@@ -1548,6 +2181,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             : await service.createObjective({
                 title: deriveObjectiveTitle(prompt),
                 prompt,
+                profileId: optionalTrimmedString(body.profile),
               });
           const location = buildMissionLink({
             objectiveId: detail.objectiveId,
@@ -1663,6 +2297,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
               checks: parseChecks(body.validationCommands) ?? parseChecks(body.checks),
               channel: optionalTrimmedString(body.channel),
               policy: parsePolicy(body.policy),
+              profileId: optionalTrimmedString(body.profile),
             }),
           };
         },

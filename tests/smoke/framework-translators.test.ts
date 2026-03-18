@@ -30,6 +30,7 @@ const stubRuntime = <Cmd, Event, State>(initialState: State): Runtime<Cmd, Event
   branch: async () => undefined,
   branches: async () => [],
   children: async () => [],
+  listStreams: async () => [],
 });
 
 const theoremReceipt = (body: TheoremEvent): Chain<TheoremEvent>[number] => ({

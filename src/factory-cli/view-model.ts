@@ -132,7 +132,6 @@ export type MissionControlViewModel = {
     readonly repoProfileStatus: string;
     readonly repoProfileSummary: string;
     readonly selectedObjectiveLabel: string;
-    readonly orchestratorMode: "enabled" | "disabled";
   };
   readonly timeline: {
     readonly title: string;
@@ -213,7 +212,6 @@ export const buildMissionControlViewModel = (opts: {
   readonly detail?: FactoryObjectiveDetail;
   readonly live?: FactoryLiveProjection;
   readonly debug?: FactoryDebugProjection;
-  readonly orchestratorMode: "enabled" | "disabled";
 }): MissionControlViewModel => {
   const selected = opts.detail;
   const live = opts.live;
@@ -252,7 +250,6 @@ export const buildMissionControlViewModel = (opts: {
       repoProfileStatus: labelize(opts.compose.repoProfile.status),
       repoProfileSummary: opts.compose.repoProfile.summary || "Factory will generate a repository profile on demand.",
       selectedObjectiveLabel,
-      orchestratorMode: opts.orchestratorMode,
     },
     timeline: {
       title: selected ? selected.title : "Factory timeline",

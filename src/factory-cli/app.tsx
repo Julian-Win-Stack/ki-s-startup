@@ -83,7 +83,6 @@ type FactoryObjectiveScreenProps = {
 };
 
 type MissionControlSnapshot = {
-  readonly orchestratorMode: "enabled" | "disabled";
   readonly compose: FactoryComposeModel;
   readonly board: FactoryBoardProjection;
   readonly detail?: FactoryObjectiveDetail;
@@ -303,7 +302,6 @@ const TimelinePane = ({
     detail: snapshot.detail,
     live: snapshot.live,
     debug: snapshot.debug,
-    orchestratorMode: snapshot.orchestratorMode,
   });
   return (
     <Surface
@@ -344,6 +342,13 @@ const OverviewPanel = ({ detail }: { readonly detail: FactoryObjectiveDetail }):
   <Box flexDirection="column">
     <Text bold color={tone("text")}>Objective prompt</Text>
     <Text color={tone("text")}>{truncate(detail.prompt, 520)}</Text>
+    <Box marginTop={1} flexDirection="column">
+      <Text bold color={tone("text")}>Initiating profile</Text>
+      <Text color={tone("muted")}>
+        {detail.profile.rootProfileLabel} · {detail.profile.rootProfileId} · {truncate(detail.profile.promptPath, 80)}
+      </Text>
+      <Text color={tone("muted")}>Skills {formatList(detail.profile.selectedSkills, "none")}</Text>
+    </Box>
     <Box marginTop={1} flexDirection="column">
       <Text bold color={tone("text")}>Next action</Text>
       <Text color={tone("muted")}>{detail.nextAction ?? "No next action surfaced."}</Text>
@@ -439,6 +444,9 @@ const DebugPanel = ({ debug }: { readonly debug: FactoryDebugProjection }): Reac
   <Box flexDirection="column">
     <Text color={tone("text")}>Repo profile {labelize(debug.repoProfile.status)}</Text>
     <Text color={tone("muted")}>{truncate(debug.repoProfile.summary, 220) || "No repo profile summary available."}</Text>
+    <Text color={tone("muted")}>
+      Profile {debug.profile.rootProfileLabel} · skills {debug.profile.selectedSkills.length} · shared artifacts {debug.contextSources.sharedArtifactRefs.length}
+    </Text>
     <Box marginTop={1} flexDirection="column">
       <Text bold color={tone("text")}>Next action</Text>
       <Text color={tone("muted")}>{truncate(debug.nextAction, 220) || "No next action."}</Text>
@@ -669,7 +677,6 @@ const MissionControlScreen = ({
     detail: snapshot.detail,
     live: snapshot.live,
     debug: snapshot.debug,
-    orchestratorMode: "disabled",
   });
   return (
     <FactoryThemeProvider>
@@ -687,7 +694,6 @@ const MissionControlScreen = ({
             <MetricCell label="Objectives" value={String(model.header.objectiveCount)} />
             <MetricCell label="Checks" value={model.header.checks} />
             <MetricCell label="Queue" value={model.header.queueSummary} />
-            <MetricCell label="Orchestrator" value={model.header.orchestratorMode} />
           </Box>
           <Text color={tone("muted")}>{model.header.repoProfileSummary}</Text>
           <Text color={tone("muted")}>Selected: {model.header.selectedObjectiveLabel}</Text>
@@ -792,7 +798,6 @@ export const FactoryBoardScreen = ({
 }: FactoryBoardScreenProps): React.ReactElement => (
   <MissionControlScreen
     snapshot={{
-      orchestratorMode: "disabled",
       compose: state.compose,
       board: state.board,
       detail: state.selected,
@@ -806,7 +811,9 @@ export const FactoryBoardScreen = ({
         repoProfile: state.selected.repoProfile,
         latestDecision: state.selected.latestDecision,
         nextAction: state.selected.nextAction,
+        profile: state.selected.profile,
         policy: state.selected.policy,
+        contextSources: state.selected.contextSources,
         budgetState: state.selected.budgetState,
         recentReceipts: state.selected.recentReceipts,
         activeJobs: state.live.recentJobs,
@@ -842,7 +849,6 @@ export const FactoryObjectiveScreen = ({
 }: FactoryObjectiveScreenProps): React.ReactElement => (
   <MissionControlScreen
     snapshot={{
-      orchestratorMode: "disabled",
       compose: syntheticComposeForDetail(state.detail),
       board: syntheticBoardForDetail(state.detail),
       detail: state.detail,
@@ -920,7 +926,7 @@ export const FactoryTerminalApp = ({
       if (!nextSelected) {
         await runtime.focusObjective(undefined);
         runtime.trackTaskLogs(undefined, []);
-        setSnapshot({ orchestratorMode: runtime.config.orchestratorMode, compose, board });
+        setSnapshot({ compose, board });
         if (!busyRef.current) setMessage("Factory ready. Describe the next objective below.");
         return;
       }
@@ -931,7 +937,7 @@ export const FactoryTerminalApp = ({
       ]);
       await runtime.focusObjective(nextSelected);
       runtime.trackTaskLogs(nextSelected, detail.tasks);
-      setSnapshot({ orchestratorMode: runtime.config.orchestratorMode, compose, board, detail, live, debug });
+      setSnapshot({ compose, board, detail, live, debug });
       if (!busyRef.current) {
         setMessage(`Watching ${detail.objectiveId} · ${labelize(detail.phase)} · ${labelize(detail.integration.status)}`);
       }
@@ -1240,7 +1246,6 @@ export const FactoryTerminalApp = ({
   const renderedSnapshot = useMemo<MissionControlSnapshot>(() => {
     if (snapshot) return snapshot;
     return {
-      orchestratorMode: runtime.config.orchestratorMode,
       compose: {
         defaultBranch: "main",
         sourceDirty: false,
@@ -1266,7 +1271,7 @@ export const FactoryTerminalApp = ({
         selectedObjectiveId: undefined,
       },
     };
-  }, [snapshot, runtime.config.defaultChecks, runtime.config.orchestratorMode]);
+  }, [snapshot, runtime.config.defaultChecks]);
 
   return (
     <MissionControlScreen

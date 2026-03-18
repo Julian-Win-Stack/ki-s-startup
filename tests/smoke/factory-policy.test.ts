@@ -10,12 +10,13 @@ import type { ZodTypeAny, infer as ZodInfer } from "zod";
 import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl.ts";
 import { jsonlQueue, type QueueJob } from "../../src/adapters/jsonl-queue.ts";
 import { createRuntime } from "../../src/core/runtime.ts";
+import { buildFactoryDecisionSet } from "../../src/engine/merge/factory-policy.ts";
 import { SseHub } from "../../src/framework/sse-hub.ts";
 import {
+  DEFAULT_FACTORY_OBJECTIVE_PROFILE,
   initialFactoryState,
   normalizeFactoryObjectivePolicy,
   reduceFactory,
-  type FactoryAction,
   type FactoryEvent,
   type FactoryState,
 } from "../../src/modules/factory.ts";
@@ -84,7 +85,6 @@ const createFactoryService = async (opts?: {
     readonly schema: Schema;
   }) => Promise<{ readonly parsed: ZodInfer<Schema>; readonly raw: string }>;
   readonly codexOutcome?: "approved" | "changes_requested" | "blocked";
-  readonly orchestratorMode?: "disabled" | "enabled";
 }): Promise<{
   readonly service: FactoryService;
   readonly queue: ReturnType<typeof jsonlQueue>;
@@ -125,7 +125,6 @@ const createFactoryService = async (opts?: {
       },
     },
     llmStructured: opts?.llmStructured,
-    orchestratorMode: opts?.orchestratorMode ?? "disabled",
     repoRoot,
   });
   return { service, queue, repoRoot };
@@ -317,6 +316,7 @@ test("factory policy: reconciliation spawning respects maxReconciliationTasks", 
       baseHash: created.baseHash,
       checks: created.checks,
       checksSource: "explicit",
+      profile: created.profile,
       policy: created.policy,
       createdAt: created.createdAt,
     },
@@ -353,48 +353,6 @@ test("factory policy: reconciliation spawning respects maxReconciliationTasks", 
 });
 
 test("factory mutation policy: aggressiveness and cooldown gate semantic mutation actions", async () => {
-  const conservativeService = (await createFactoryService({
-    orchestratorMode: "enabled",
-    llmStructured: async <Schema extends ZodTypeAny>(opts: {
-      readonly schemaName: string;
-      readonly schema: Schema;
-    }) => {
-      const payload = {
-        actions: [
-          {
-            type: "reassign_task",
-            taskId: "task_01",
-            workerType: "codex",
-            reason: "Retry the blocked task with codex.",
-          },
-          {
-            type: "unblock_task",
-            taskId: "task_01",
-            reason: "Clear the blocker and let the task rerun.",
-          },
-        ],
-      };
-      return { parsed: opts.schema.parse(payload), raw: JSON.stringify(payload) };
-    },
-  })).service;
-  const aggressiveService = (await createFactoryService({
-    orchestratorMode: "enabled",
-    llmStructured: async <Schema extends ZodTypeAny>(opts: {
-      readonly schemaName: string;
-      readonly schema: Schema;
-    }) => {
-      const payload = {
-        actions: [{
-          type: "update_dependencies",
-          taskId: "task_02",
-          dependsOn: [],
-          reason: "The ready task can proceed without the extra dependency.",
-        }],
-      };
-      return { parsed: opts.schema.parse(payload), raw: JSON.stringify(payload) };
-    },
-  })).service;
-
   const baseCreatedAt = Date.now();
   const conservativeState = buildState([{
     type: "objective.created",
@@ -405,6 +363,7 @@ test("factory mutation policy: aggressiveness and cooldown gate semantic mutatio
     baseHash: "abc1234",
     checks: ["npm run build"],
     checksSource: "explicit",
+    profile: DEFAULT_FACTORY_OBJECTIVE_PROFILE,
     policy: normalizeFactoryObjectivePolicy(),
     createdAt: baseCreatedAt,
   },
@@ -440,6 +399,7 @@ test("factory mutation policy: aggressiveness and cooldown gate semantic mutatio
       baseHash: "abc1234",
       checks: ["npm run build"],
       checksSource: "explicit",
+      profile: DEFAULT_FACTORY_OBJECTIVE_PROFILE,
       policy: normalizeFactoryObjectivePolicy({
         mutation: { aggressiveness: "aggressive" },
       }),
@@ -495,34 +455,38 @@ test("factory mutation policy: aggressiveness and cooldown gate semantic mutatio
     lastMutationAt: Date.now(),
   } satisfies FactoryState;
 
-  const conservativeActions = await (conservativeService as unknown as {
-    buildMutationActions(state: FactoryState): Promise<ReadonlyArray<FactoryAction>>;
-  }).buildMutationActions({
+  const conservativeActions = buildFactoryDecisionSet({
     ...conservativeState,
     policy: normalizeFactoryObjectivePolicy({
       mutation: { aggressiveness: "conservative" },
     }),
-  });
+  }, {
+    now: baseCreatedAt + 10,
+    dispatchLimit: 0,
+  }).actions.filter((action) => action.type !== "block_objective");
   expect(conservativeActions.length > 0).toBeTruthy();
   expect(conservativeActions.every((action) => action.type === "reassign_task" || action.type === "unblock_task")).toBeTruthy();
 
-  const aggressiveActions = await (aggressiveService as unknown as {
-    buildMutationActions(state: FactoryState): Promise<ReadonlyArray<FactoryAction>>;
-  }).buildMutationActions(aggressiveState);
+  const aggressiveActions = buildFactoryDecisionSet(aggressiveState, {
+    now: baseCreatedAt + 20,
+    dispatchLimit: 0,
+  }).actions;
   expect(aggressiveActions.some((action) => action.type === "update_dependencies")).toBeTruthy();
 
-  const offActions = await (conservativeService as unknown as {
-    buildMutationActions(state: FactoryState): Promise<ReadonlyArray<FactoryAction>>;
-  }).buildMutationActions({
+  const offActions = buildFactoryDecisionSet({
     ...conservativeState,
     policy: normalizeFactoryObjectivePolicy({
       mutation: { aggressiveness: "off" },
     }),
-  });
+  }, {
+    now: baseCreatedAt + 30,
+    dispatchLimit: 0,
+  }).actions.filter((action) => action.type !== "block_objective");
   expect(offActions).toEqual([]);
 
-  const cooldownActions = await (aggressiveService as unknown as {
-    buildMutationActions(state: FactoryState): Promise<ReadonlyArray<FactoryAction>>;
-  }).buildMutationActions(cooldownState);
+  const cooldownActions = buildFactoryDecisionSet(cooldownState, {
+    now: cooldownState.lastMutationAt,
+    dispatchLimit: 0,
+  }).actions.filter((action) => action.type === "update_dependencies" || action.type === "reassign_task" || action.type === "unblock_task" || action.type === "split_task" || action.type === "supersede_task");
   expect(cooldownActions).toEqual([]);
 });

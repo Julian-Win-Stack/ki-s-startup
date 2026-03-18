@@ -14,6 +14,9 @@ const buttonBaseClass = "inline-flex items-center justify-center rounded-full bo
 const inputClass = "w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-emerald-300/40 focus:bg-white/[0.06]";
 const railCardClass = `${softPanelClass} p-4`;
 const navPillClass = "inline-flex items-center rounded-full border px-3 py-2 text-xs font-medium uppercase tracking-[0.16em] transition";
+const FACTORY_CHAT_REFRESH_MS = 120;
+const FACTORY_SIDEBAR_REFRESH_MS = 180;
+const FACTORY_INSPECTOR_REFRESH_MS = 180;
 
 const renderMarkdown = (raw: string): string => {
   const text = raw.trim();
@@ -389,6 +392,37 @@ export type FactoryLiveCodexCard = {
   readonly running: boolean;
 };
 
+export type FactoryLiveChildCard = {
+  readonly jobId: string;
+  readonly agentId: string;
+  readonly worker: string;
+  readonly status: string;
+  readonly summary: string;
+  readonly latestNote?: string;
+  readonly stderrTail?: string;
+  readonly stdoutTail?: string;
+  readonly runId?: string;
+  readonly parentRunId?: string;
+  readonly stream?: string;
+  readonly parentStream?: string;
+  readonly task?: string;
+  readonly updatedAt?: number;
+  readonly abortRequested?: boolean;
+  readonly rawLink: string;
+  readonly running: boolean;
+};
+
+export type FactoryLiveRunCard = {
+  readonly runId: string;
+  readonly profileLabel: string;
+  readonly status: string;
+  readonly summary: string;
+  readonly updatedAt?: number;
+  readonly lastToolName?: string;
+  readonly lastToolSummary?: string;
+  readonly link?: string;
+};
+
 export type FactorySidebarModel = {
   readonly activeProfileId: string;
   readonly activeProfileLabel: string;
@@ -399,6 +433,8 @@ export type FactorySidebarModel = {
   readonly jobs: ReadonlyArray<FactoryChatJobNav>;
   readonly selectedObjective?: FactorySelectedObjectiveCard;
   readonly activeCodex?: FactoryLiveCodexCard;
+  readonly liveChildren?: ReadonlyArray<FactoryLiveChildCard>;
+  readonly activeRun?: FactoryLiveRunCard;
 };
 
 export type FactoryWorkCard = {
@@ -459,27 +495,53 @@ export type FactoryChatShellModel = {
   readonly sidebar: FactorySidebarModel;
 };
 
-const renderWorkControls = (card: FactoryWorkCard): string => {
-  if (!card.jobId || !card.running) return "";
-  const jobId = encodeURIComponent(card.jobId);
+const renderJobControls = (jobId: string, running?: boolean, abortRequested?: boolean): string => {
+  if (!running) return "";
+  const encodedJobId = encodeURIComponent(jobId);
   return `<div class="mt-4 grid gap-3">
-    <form class="grid gap-2" action="/factory/job/${jobId}/steer" method="post" hx-post="/factory/job/${jobId}/steer" hx-swap="none">
+    <form class="grid gap-2" action="/factory/job/${encodedJobId}/steer" method="post" hx-post="/factory/job/${encodedJobId}/steer" hx-swap="none">
       <input class="${inputClass}" type="text" name="problem" placeholder="Steer this job" />
       <div class="flex flex-wrap gap-2">
         <button class="${ghostButtonClass}" type="submit">Steer</button>
       </div>
     </form>
-    <form class="grid gap-2" action="/factory/job/${jobId}/follow-up" method="post" hx-post="/factory/job/${jobId}/follow-up" hx-swap="none">
+    <form class="grid gap-2" action="/factory/job/${encodedJobId}/follow-up" method="post" hx-post="/factory/job/${encodedJobId}/follow-up" hx-swap="none">
       <input class="${inputClass}" type="text" name="note" placeholder="Add follow-up context" />
       <div class="flex flex-wrap gap-2">
         <button class="${ghostButtonClass}" type="submit">Add Note</button>
       </div>
     </form>
-    <form action="/factory/job/${jobId}/abort" method="post" hx-post="/factory/job/${jobId}/abort" hx-swap="none">
+    ${abortRequested ? `<div class="rounded-[20px] border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-50">Abort requested. Waiting for the worker to stop cleanly.</div>` : `<form action="/factory/job/${encodedJobId}/abort" method="post" hx-post="/factory/job/${encodedJobId}/abort" hx-swap="none">
       <input type="hidden" name="reason" value="abort requested from /factory chat" />
       <button class="${dangerButtonClass}" type="submit">Abort</button>
-    </form>
+    </form>`}
   </div>`;
+};
+
+const renderWorkControls = (card: FactoryWorkCard): string =>
+  card.jobId ? renderJobControls(card.jobId, card.running, false) : "";
+
+type FactoryLiveStatusEntry = {
+  readonly key: string;
+  readonly kindLabel: string;
+  readonly title: string;
+  readonly status: string;
+  readonly summary: string;
+  readonly meta?: string;
+  readonly detail?: string;
+  readonly link?: string;
+  readonly rawLink?: string;
+  readonly jobId?: string;
+  readonly running?: boolean;
+  readonly abortRequested?: boolean;
+};
+
+const compactStatusText = (value: string, maxChars = 160): string => {
+  const text = value.replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  const sentence = text.match(/^(.{1,160}?[.!?])(\s|$)/)?.[1] ?? text;
+  const clipped = sentence.length > maxChars ? `${sentence.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…` : sentence;
+  return clipped;
 };
 
 const renderChatItem = (
@@ -735,63 +797,137 @@ const renderJobRow = (job: FactoryChatJobNav): string => `<div class="factory-jo
   ${job.link ? `<a class="mt-3 inline-flex text-xs font-medium uppercase tracking-[0.16em] text-emerald-200 transition hover:text-emerald-100" href="${esc(job.link)}">Open thread</a>` : ""}
 </div>`;
 
-const renderActiveCodexCard = (card?: FactoryLiveCodexCard): string => {
-  if (!card) {
-    return `<div class="mt-4 text-sm leading-6 text-zinc-500">No Codex worker has been queued in this thread yet. When one starts, its latest note and log tail will stream here automatically.</div>`;
-  }
-  const latestNote = card.latestNote && card.latestNote !== card.summary
-    ? card.latestNote
-    : undefined;
-  const stderrTail = card.stderrTail?.trim();
-  const stdoutTail = card.stdoutTail?.trim();
-  return `<div class="mt-4 space-y-4">
+const renderLiveStatusEntry = (entry: FactoryLiveStatusEntry): string => {
+  const hasInspect = Boolean(entry.detail || entry.link || entry.rawLink || entry.jobId);
+  const summary = compactStatusText(entry.summary);
+  const meta = compactStatusText(entry.meta ?? "", 120);
+  const inspectBlock = hasInspect
+    ? `<details class="mt-3 rounded-[18px] border border-white/10 bg-black/25 px-3 py-3">
+      <summary class="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-400">Details</summary>
+      ${entry.detail ? `<pre class="mt-3 max-h-48 overflow-auto text-[12px] leading-5 text-zinc-300 whitespace-pre-wrap [overflow-wrap:anywhere]">${esc(entry.detail)}</pre>` : ""}
+      ${(entry.link || entry.rawLink) ? `<div class="mt-3 flex flex-wrap gap-2">
+        ${entry.link ? `<a class="${ghostButtonClass}" href="${esc(entry.link)}">Open</a>` : ""}
+        ${entry.rawLink ? `<a class="${ghostButtonClass}" href="${esc(entry.rawLink)}" target="_blank" rel="noreferrer">Job JSON</a>` : ""}
+      </div>` : ""}
+      ${entry.jobId ? renderJobControls(entry.jobId, entry.running, entry.abortRequested) : ""}
+    </details>`
+    : "";
+  return `<article class="rounded-[20px] border border-white/10 bg-black/20 px-4 py-3">
     <div class="flex items-start justify-between gap-3">
       <div class="min-w-0">
-        <div class="text-base font-semibold text-white">Latest child</div>
-        <div class="mt-2 font-mono text-[11px] text-zinc-500">${esc(card.jobId)}</div>
+        <div class="${sectionLabelClass}">${esc(entry.kindLabel)}</div>
+        <div class="mt-1 [display:-webkit-box] overflow-hidden text-sm font-semibold text-zinc-100 [-webkit-box-orient:vertical] [-webkit-line-clamp:1] [overflow-wrap:anywhere]">${esc(entry.title)}</div>
+        <div class="mt-1 [display:-webkit-box] overflow-hidden text-sm leading-6 text-zinc-300 [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow-wrap:anywhere]">${esc(summary)}</div>
       </div>
-      ${badge(displayLabel(card.status), toneForValue(card.status))}
+      ${badge(displayLabel(entry.status), toneForValue(entry.status))}
     </div>
-    ${card.task ? `<div>
-      <div class="${sectionLabelClass}">Task</div>
-      <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(card.task)}</div>
-    </div>` : ""}
-    <div>
-      <div class="${sectionLabelClass}">Summary</div>
-      <div class="mt-2 text-sm leading-6 text-zinc-100">${esc(card.summary)}</div>
+    <div class="mt-2 flex items-center justify-between gap-3">
+      <div class="min-w-0 text-[11px] leading-5 text-zinc-500">${meta ? esc(meta) : ""}</div>
+      ${hasInspect ? `<span class="shrink-0 text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-400">Details</span>` : ""}
     </div>
-    ${latestNote ? `<div>
-      <div class="${sectionLabelClass}">Latest note</div>
-      <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(latestNote)}</div>
-    </div>` : ""}
-    ${stderrTail ? `<div>
-      <div class="${sectionLabelClass}">stderr tail</div>
-      <pre class="mt-2 max-h-36 overflow-auto rounded-[20px] border border-white/10 bg-black/25 px-3 py-3 text-[12px] leading-5 text-zinc-300 whitespace-pre-wrap [overflow-wrap:anywhere]">${esc(stderrTail)}</pre>
-    </div>` : ""}
-    ${stdoutTail && stdoutTail !== stderrTail ? `<div>
-      <div class="${sectionLabelClass}">stdout tail</div>
-      <pre class="mt-2 max-h-32 overflow-auto rounded-[20px] border border-white/10 bg-black/25 px-3 py-3 text-[12px] leading-5 text-zinc-300 whitespace-pre-wrap [overflow-wrap:anywhere]">${esc(stdoutTail)}</pre>
-    </div>` : ""}
-    ${card.abortRequested ? `<div class="rounded-[20px] border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-50">Abort requested. Waiting for the worker to stop cleanly.</div>` : ""}
-    <div class="flex flex-wrap gap-2 text-xs text-zinc-500">
-      ${card.runId ? `<span>Run ${esc(card.runId)}</span>` : ""}
-      ${card.updatedAt ? `<span>Updated ${esc(formatTs(card.updatedAt))}</span>` : ""}
-    </div>
-    <div class="flex flex-wrap gap-2">
-      <a class="${ghostButtonClass}" href="${esc(card.rawLink)}" target="_blank" rel="noreferrer">Job JSON</a>
-      ${card.running && !card.abortRequested ? `<form action="/factory/job/${encodeURIComponent(card.jobId)}/abort" method="post" hx-post="/factory/job/${encodeURIComponent(card.jobId)}/abort" hx-swap="none">
-        <input type="hidden" name="reason" value="abort requested from /factory codex panel" />
-        <button class="${dangerButtonClass}" type="submit">Abort</button>
-      </form>` : ""}
-    </div>
-  </div>`;
+    ${inspectBlock}
+  </article>`;
 };
 
 export const factoryInspectorIsland = (model: FactorySidebarModel): string => {
   const objective = model.selectedObjective;
-  const visibleJobs = model.activeCodex
-    ? model.jobs.filter((job) => job.jobId !== model.activeCodex?.jobId)
-    : model.jobs;
+  const liveChildren = model.liveChildren ?? [];
+  const hiddenJobIds = new Set(liveChildren.map((job) => job.jobId));
+  if (model.activeCodex?.jobId) hiddenJobIds.add(model.activeCodex.jobId);
+  const visibleJobs = model.jobs.filter((job) => !hiddenJobIds.has(job.jobId));
+  const statusEntries: FactoryLiveStatusEntry[] = [];
+  if (objective) {
+    statusEntries.push({
+      key: `objective-${objective.objectiveId}`,
+      kindLabel: "Factory thread",
+      title: objective.title,
+      status: objective.status,
+      summary: objective.summary ?? objective.nextAction ?? "Thread is waiting for the next action.",
+      meta: [displayLabel(objective.phase), displayLabel(objective.slotState), displayLabel(objective.integrationStatus)].filter(Boolean).join(" · "),
+      detail: [
+        objective.nextAction ? `Next action: ${objective.nextAction}` : "",
+        objective.blockedExplanation ? `Blocked: ${objective.blockedExplanation}` : "",
+        objective.latestDecisionSummary ? `Latest decision: ${objective.latestDecisionSummary}` : "",
+      ].filter(Boolean).join("\n\n") || undefined,
+      link: `/factory/control?objective=${encodeURIComponent(objective.objectiveId)}`,
+    });
+  }
+  if (model.activeRun) {
+    statusEntries.push({
+        key: `run-${model.activeRun.runId}`,
+        kindLabel: "Run",
+        title: model.activeRun.profileLabel,
+        status: model.activeRun.status,
+        summary: model.activeRun.summary,
+        meta: [
+          `Run ${model.activeRun.runId}`,
+          model.activeRun.lastToolName ? `Tool ${model.activeRun.lastToolName}` : "",
+          model.activeRun.updatedAt ? `Updated ${formatTs(model.activeRun.updatedAt)}` : "",
+        ].filter(Boolean).join(" · "),
+        detail: [
+          model.activeRun.lastToolSummary ? `Last tool summary: ${model.activeRun.lastToolSummary}` : "",
+          `Run ${model.activeRun.runId}`,
+        ].filter(Boolean).join("\n\n") || undefined,
+        link: model.activeRun.link,
+      });
+  }
+  if (liveChildren.length > 0) {
+    statusEntries.push(...liveChildren.map((card) => {
+      const latestNote = card.latestNote && card.latestNote !== card.summary ? card.latestNote : undefined;
+      const detail = [
+        card.task ? `Task: ${card.task}` : "",
+        latestNote ? `Latest note: ${latestNote}` : "",
+        card.stderrTail ? `stderr:\n${card.stderrTail}` : "",
+        card.stdoutTail && card.stdoutTail !== card.stderrTail ? `stdout:\n${card.stdoutTail}` : "",
+        card.stream ? `Stream: ${card.stream}` : "",
+        card.parentStream && card.parentStream !== card.stream ? `Parent stream: ${card.parentStream}` : "",
+      ].filter(Boolean).join("\n\n");
+      return {
+        key: `child-${card.jobId}`,
+        kindLabel: card.worker === "codex" ? "Codex child" : "Child job",
+        title: startCase(card.worker === "codex" ? "codex" : card.agentId),
+        status: card.status,
+        summary: card.summary,
+        meta: [
+          `Job ${card.jobId}`,
+          card.runId ? `Run ${card.runId}` : "",
+          card.parentRunId && card.parentRunId !== card.runId ? `Parent ${card.parentRunId}` : "",
+          card.updatedAt ? `Updated ${formatTs(card.updatedAt)}` : "",
+        ].filter(Boolean).join(" · "),
+        detail: detail || undefined,
+        rawLink: card.rawLink,
+        jobId: card.jobId,
+        running: card.running,
+        abortRequested: card.abortRequested,
+      } satisfies FactoryLiveStatusEntry;
+    }));
+  } else if (model.activeCodex) {
+    statusEntries.push({
+      key: `codex-${model.activeCodex.jobId}`,
+      kindLabel: "Codex child",
+      title: "Codex",
+      status: model.activeCodex.status,
+      summary: model.activeCodex.summary,
+      meta: [
+        `Job ${model.activeCodex.jobId}`,
+        model.activeCodex.runId ? `Run ${model.activeCodex.runId}` : "",
+        model.activeCodex.updatedAt ? `Updated ${formatTs(model.activeCodex.updatedAt)}` : "",
+      ].filter(Boolean).join(" · "),
+      detail: [
+        model.activeCodex.task ? `Task: ${model.activeCodex.task}` : "",
+        model.activeCodex.latestNote ? `Latest note: ${model.activeCodex.latestNote}` : "",
+        model.activeCodex.stderrTail ? `stderr:\n${model.activeCodex.stderrTail}` : "",
+        model.activeCodex.stdoutTail && model.activeCodex.stdoutTail !== model.activeCodex.stderrTail ? `stdout:\n${model.activeCodex.stdoutTail}` : "",
+      ].filter(Boolean).join("\n\n") || undefined,
+      rawLink: model.activeCodex.rawLink,
+      jobId: model.activeCodex.jobId,
+      running: model.activeCodex.running,
+      abortRequested: model.activeCodex.abortRequested,
+    });
+  }
+  const liveStatusMarkup = statusEntries.length > 0
+    ? statusEntries.map(renderLiveStatusEntry).join("")
+    : `<div class="text-sm leading-6 text-zinc-500">No live work is visible in this thread yet. When Factory, runs, or child jobs move, their current state will appear here automatically.</div>`;
   const jobs = visibleJobs.length > 0
     ? visibleJobs.map(renderJobRow).join("")
     : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No recent jobs.</div>`;
@@ -808,10 +944,13 @@ export const factoryInspectorIsland = (model: FactorySidebarModel): string => {
     </section>
     <section class="${railCardClass}">
       <div class="flex items-center justify-between gap-3">
-        <div class="${sectionLabelClass}">Codex worker</div>
-        ${model.activeCodex ? badge(displayLabel(model.activeCodex.status), toneForValue(model.activeCodex.status)) : ""}
+        <div class="${sectionLabelClass}">Live status</div>
+        <div class="text-xs text-zinc-500">${esc(`${statusEntries.length}`)}</div>
       </div>
-      ${renderActiveCodexCard(model.activeCodex)}
+      <div class="mt-3 text-xs leading-5 text-zinc-500">Realtime from Factory and receipt events. This board only shows current state, not the full transcript.</div>
+      <div class="mt-4 grid gap-3">
+        ${liveStatusMarkup}
+      </div>
     </section>
     <section class="${railCardClass}">
       <div class="flex items-center justify-between gap-3">
@@ -856,13 +995,15 @@ export const factoryInspectorIsland = (model: FactorySidebarModel): string => {
       </div>` : `<div class="mt-4 text-sm leading-6 text-zinc-500">Pick a thread from the left rail to inspect it.</div>`}
     </section>
     <section class="${railCardClass} factory-job-panel">
-      <div class="flex items-center justify-between gap-3">
-        <div class="${sectionLabelClass}">Recent jobs</div>
-        <div class="text-xs text-zinc-500">${esc(`${visibleJobs.length}`)}</div>
-      </div>
-      <div class="factory-job-list mt-4 grid gap-3">
-        ${jobs}
-      </div>
+      <details ${visibleJobs.length > 0 ? "" : "open"}>
+        <summary class="flex cursor-pointer list-none items-center justify-between gap-3">
+          <span class="${sectionLabelClass}">Recent job history</span>
+          <span class="text-xs text-zinc-500">${esc(`${visibleJobs.length}`)}</span>
+        </summary>
+        <div class="factory-job-list mt-4 grid gap-3">
+          ${jobs}
+        </div>
+      </details>
     </section>
   </div>`;
 };
@@ -885,7 +1026,7 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
     <div class="relative flex min-h-screen flex-col lg:grid lg:h-screen lg:min-h-0 lg:grid-cols-[320px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[320px_minmax(0,1fr)_360px]">
       <aside class="order-2 min-w-0 border-t border-white/10 bg-black/30 lg:order-none lg:min-h-0 lg:border-r lg:border-t-0">
         <div class="factory-scrollbar max-h-[40vh] overflow-x-hidden overflow-y-auto lg:h-screen lg:max-h-none">
-          <div id="factory-sidebar" hx-get="/factory/island/sidebar?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:800ms" hx-swap="innerHTML">
+          <div id="factory-sidebar" hx-get="/factory/island/sidebar?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:${FACTORY_SIDEBAR_REFRESH_MS}ms" hx-swap="innerHTML">
             ${factoryRailIsland(model.sidebar)}
           </div>
         </div>
@@ -927,7 +1068,7 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
 	            </div>
 	          </header>
           <section id="factory-chat-scroll" class="factory-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            <div id="factory-chat" hx-get="/factory/island/chat?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:700ms" hx-swap="innerHTML">
+            <div id="factory-chat" hx-get="/factory/island/chat?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:${FACTORY_CHAT_REFRESH_MS}ms" hx-swap="innerHTML">
               ${factoryChatIsland(model.chat)}
             </div>
           </section>
@@ -956,7 +1097,7 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
       </main>
       <aside class="order-3 min-w-0 border-t border-white/10 bg-black/30 xl:min-h-0 xl:border-l xl:border-t-0">
         <div class="factory-scrollbar max-h-[45vh] overflow-x-hidden overflow-y-auto xl:h-screen xl:max-h-none">
-          <div id="factory-inspector" class="factory-inspector-panel" hx-get="/factory/island/inspector?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:800ms" hx-swap="innerHTML">
+          <div id="factory-inspector" class="factory-inspector-panel" hx-get="/factory/island/inspector?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:${FACTORY_INSPECTOR_REFRESH_MS}ms" hx-swap="innerHTML">
             ${factoryInspectorIsland(model.sidebar)}
           </div>
         </div>

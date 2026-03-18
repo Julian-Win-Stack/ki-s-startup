@@ -133,7 +133,7 @@ const nextIterationBudget = (current: number): number | undefined =>
   FACTORY_CHAT_ITERATION_LADDER.find((candidate) => candidate > current);
 
 const stableCodexSessionKey = (runId: string, prompt: string): string =>
-  `factory-codex:${runId}:${createHash("sha1").update(prompt).digest("hex").slice(0, 12)}`;
+  `codex:${runId}:${createHash("sha1").update(prompt).digest("hex").slice(0, 12)}`;
 
 const summarizeObjective = (detail: Awaited<ReturnType<FactoryService["getObjective"]>>) => ({
   objectiveId: detail.objectiveId,
@@ -297,12 +297,12 @@ const createCodexRunTool = (input: {
       : 180_000;
     const sessionKey = input.profile.orchestration.childDedupe === "by_run_and_prompt"
       ? stableCodexSessionKey(input.runId, prompt)
-      : `factory-codex:${input.stream}:${Date.now().toString(36)}`;
+      : `codex:${input.stream}:${Date.now().toString(36)}`;
     const singletonMode = input.profile.orchestration.childDedupe === "by_run_and_prompt"
       ? "steer"
       : "allow";
     const created = await input.queue.enqueue({
-      agentId: "factory-codex",
+      agentId: "codex",
       lane: "collect",
       sessionKey,
       singletonMode,
@@ -489,6 +489,7 @@ const createFactoryDispatchTool = (input: {
   readonly repoKey: string;
   readonly runId: string;
   readonly memoryTools: MemoryTools;
+  readonly profileId: string;
 }): AgentToolExecutor =>
   async (toolInput) => {
     const objectiveId = asString(toolInput.objectiveId);
@@ -503,6 +504,7 @@ const createFactoryDispatchTool = (input: {
         baseHash: asString(toolInput.baseHash),
         checks: asStringList(toolInput.checks),
         channel: asString(toolInput.channel),
+        profileId: input.profileId,
       };
       detail = await input.factoryService.createObjective(payload);
     } else if (action === "react") {
@@ -804,6 +806,7 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
       repoKey,
       runId: input.runId,
       memoryTools: input.memoryTools,
+      profileId: resolvedProfile.root.id,
     }),
     "factory.status": createFactoryStatusTool({
       factoryService: input.factoryService,

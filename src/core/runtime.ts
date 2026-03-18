@@ -11,7 +11,7 @@
 // ============================================================================
 
 import type { Chain, Decide, Reducer, Branch, Receipt, Store, BranchStore } from "./types.js";
-import { receipt, fold, verify } from "./chain.js";
+import { computeHash, fold, receipt, verify } from "./chain.js";
 
 // ============================================================================
 // Runtime Type
@@ -47,6 +47,9 @@ export type Runtime<Cmd, Event, State> = {
   
   // List child branches of a stream
   readonly children: (stream: string) => Promise<Branch[]>;
+
+  // List known streams
+  readonly listStreams: (prefix?: string) => Promise<ReadonlyArray<string>>;
 };
 
 // ============================================================================
@@ -66,8 +69,10 @@ export const createRuntime = <Cmd, Event, State>(
   };
   type StreamSnapshot = {
     readonly chain: Chain<Event>;
+    readonly localChain: Chain<Event>;
     readonly state: State;
     readonly version?: string;
+    readonly branchKey: string;
   };
 
   const streamLocks = new Map<string, Promise<void>>();
@@ -104,18 +109,91 @@ export const createRuntime = <Cmd, Event, State>(
     return runLocked(0);
   };
 
-  const loadSnapshot = async (stream: string): Promise<StreamSnapshot> => {
+  const relinkLocalChain = (
+    stream: string,
+    localChain: Chain<Event>,
+    initialPrev: string | undefined,
+  ): Receipt<Event>[] => {
+    let prev = initialPrev;
+    return localChain.map((entry) => {
+      const base = {
+        id: entry.id,
+        ts: entry.ts,
+        stream,
+        prev,
+        body: entry.body,
+      };
+      const next = {
+        ...base,
+        hash: computeHash(base),
+        hints: entry.hints,
+      } satisfies Receipt<Event>;
+      prev = next.hash;
+      return next;
+    });
+  };
+
+  const parentPrefixMatches = (
+    parentPrefix: Chain<Event>,
+    localChain: Chain<Event>,
+  ): boolean => {
+    if (parentPrefix.length === 0 || localChain.length < parentPrefix.length) return false;
+    for (let index = 0; index < parentPrefix.length; index += 1) {
+      const parent = parentPrefix[index];
+      const local = localChain[index];
+      if (!parent || !local) return false;
+      if (parent.ts !== local.ts) return false;
+      if (JSON.stringify(parent.body) !== JSON.stringify(local.body)) return false;
+    }
+    return true;
+  };
+
+  const materializeChain = async (
+    stream: string,
+    localChain: Chain<Event>,
+    seen: Set<string>,
+  ): Promise<Chain<Event>> => {
+    if (seen.has(stream)) {
+      throw new Error(`Branch cycle detected for stream '${stream}'`);
+    }
+    seen.add(stream);
+    try {
+      const branch = await branchStore.get(stream);
+      if (!branch?.parent || typeof branch.forkAt !== "number") {
+        return localChain;
+      }
+      const parentSnapshot = await loadSnapshot(branch.parent, seen);
+      const parentPrefix = parentSnapshot.chain.slice(0, branch.forkAt);
+      const trimmedLocal = parentPrefixMatches(parentPrefix, localChain)
+        ? localChain.slice(parentPrefix.length)
+        : localChain;
+      if (trimmedLocal.length === 0) return parentPrefix;
+      const relinked = relinkLocalChain(stream, trimmedLocal, parentPrefix[parentPrefix.length - 1]?.hash);
+      return [...parentPrefix, ...relinked];
+    } finally {
+      seen.delete(stream);
+    }
+  };
+
+  const loadSnapshot = async (stream: string, seen = new Set<string>()): Promise<StreamSnapshot> => {
+    const branch = await branchStore.get(stream);
+    const branchKey = branch
+      ? `${branch.name}:${branch.parent ?? ""}:${branch.forkAt ?? ""}:${branch.createdAt}`
+      : "";
     const cached = snapshots.get(stream);
     if (cached) {
       if (!store.version) return cached;
       const currentVersion = await store.version(stream);
-      if (currentVersion === cached.version) return cached;
+      if (currentVersion === cached.version && cached.branchKey === branchKey) return cached;
     }
-    const chain = [...await store.read(stream)];
+    const localChain = [...await store.read(stream)];
+    const chain = [...await materializeChain(stream, localChain, seen)];
     const snapshot = {
       chain,
+      localChain,
       state: fold(chain, reducer, initial),
       version: store.version ? await store.version(stream) : undefined,
+      branchKey,
     } satisfies StreamSnapshot;
     snapshots.set(stream, snapshot);
     return snapshot;
@@ -169,8 +247,10 @@ export const createRuntime = <Cmd, Event, State>(
 
       const events = decide(cmd);
       let prev = head?.hash;
+      let localPrev = snapshot.localChain[snapshot.localChain.length - 1]?.hash;
       let nextState = snapshot.state;
       const appended = [...chain];
+      const localChain = [...snapshot.localChain];
 
       for (let idx = 0; idx < events.length; idx += 1) {
         const event = events[idx];
@@ -181,16 +261,20 @@ export const createRuntime = <Cmd, Event, State>(
               ? eventId
               : `${eventId}#${idx}`;
         const r = receipt(stream, prev, event, Date.now(), eventHint ? { eventId: eventHint } : undefined);
-        await store.append(r);
+        await store.append(r, localPrev);
+        localPrev = r.hash;
         prev = r.hash;
         appended.push(r);
+        localChain.push(r);
         nextState = reducer(nextState, event, r.ts);
       }
       if (events.length > 0) {
         snapshots.set(stream, {
           chain: appended,
+          localChain,
           state: nextState,
           version: store.version ? await store.version(stream) : snapshot.version,
+          branchKey: snapshot.branchKey,
         });
       }
       return events;
@@ -198,27 +282,19 @@ export const createRuntime = <Cmd, Event, State>(
   
   const fork = async (stream: string, at: number, newName: string): Promise<Branch> =>
     withStreamLocks([stream, newName], async () => {
-      // Get receipts up to fork point from parent.
-      const parentChain = await getChainAt(stream, at);
-      
-      // Copy receipts to new stream (re-link to form new chain).
-      let prev: string | undefined;
-      const forkedChain: Receipt<Event>[] = [];
-      let forkedState = initial;
-      for (const r of parentChain) {
-        const newReceipt = receipt(newName, prev, r.body, r.ts);
-        await store.append(newReceipt);
-        prev = newReceipt.hash;
-        forkedChain.push(newReceipt);
-        forkedState = reducer(forkedState, newReceipt.body, newReceipt.ts);
+      const parentChain = await getChain(stream);
+      if (at < 0 || at > parentChain.length) {
+        throw new Error(`Cannot fork ${stream} at ${at}; valid range is 0..${parentChain.length}`);
       }
-      snapshots.set(newName, {
-        chain: forkedChain,
-        state: forkedState,
-        version: store.version ? await store.version(newName) : undefined,
-      });
-      
-      // Save branch metadata.
+      const existingBranch = await branchStore.get(newName);
+      if (existingBranch) {
+        throw new Error(`Branch '${newName}' already exists`);
+      }
+      const existingLocalChain = await store.read(newName);
+      if (existingLocalChain.length > 0) {
+        throw new Error(`Stream '${newName}' already has receipts`);
+      }
+
       const branch: Branch = {
         name: newName,
         parent: stream,
@@ -226,12 +302,13 @@ export const createRuntime = <Cmd, Event, State>(
         createdAt: Date.now(),
       };
       await branchStore.save(branch);
-      
-      // Ensure parent branch exists in metadata.
+
       const parentBranch = await branchStore.get(stream);
       if (!parentBranch) {
         await branchStore.save({ name: stream, createdAt: Date.now() });
       }
+
+      snapshots.delete(newName);
 
       return branch;
     });
@@ -247,5 +324,6 @@ export const createRuntime = <Cmd, Event, State>(
     branch: (stream) => branchStore.get(stream),
     branches: () => branchStore.list(),
     children: (stream) => branchStore.children(stream),
+    listStreams: (prefix?: string) => store.listStreams ? store.listStreams(prefix) : Promise.resolve([]),
   };
 };

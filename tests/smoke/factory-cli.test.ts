@@ -160,6 +160,14 @@ test("factory runtime config: shared resolver follows .receipt/config.json", asy
   expect(resolved.configPath).toBe(path.join(repoDir, ".receipt", "config.json"));
 }, 120_000);
 
+test("factory runtime config: repo default data dir is .receipt/data before init", async () => {
+  const repoDir = await createRepo();
+  const resolved = await resolveFactoryRuntimeConfig(repoDir, repoDir);
+  expect(resolved.repoRoot).toBe(repoDir);
+  expect(resolved.dataDir).toBe(path.join(repoDir, ".receipt", "data"));
+  expect(resolved.configPath).toBeUndefined();
+}, 120_000);
+
 test("factory cli: run promotes changes and inspect exposes debug data", async () => {
   const repoDir = await createRepo();
   const codexStub = await createCodexStub();

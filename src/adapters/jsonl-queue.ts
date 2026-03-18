@@ -127,8 +127,8 @@ const eventId = (): string => `jobevt_${Date.now().toString(36)}_${randomUUID().
 
 export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
   const nowTs = opts.now ?? Date.now;
-  let indexState: JobState | undefined;
   const jobStateCache = new Map<string, JobState>();
+  let knownJobIds: ReadonlyArray<string> | undefined;
   let lock = Promise.resolve();
 
   const withLock = async <T>(op: () => Promise<T>): Promise<T> => {
@@ -148,24 +148,18 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
   };
 
   const emitEvent = async (event: JobEvent): Promise<void> => {
-    const marker = eventId();
     let changedJob: QueueJob | undefined;
     if ("jobId" in event) {
-      await emitToStream(jobStream(event.jobId), event, `${marker}:job`);
+      await emitToStream(jobStream(event.jobId), event, eventId());
       const state = await opts.runtime.state(jobStream(event.jobId));
       jobStateCache.set(event.jobId, state);
       const record = state.jobs[event.jobId];
       if (record) changedJob = toQueueJob(record);
+      knownJobIds = knownJobIds && knownJobIds.includes(event.jobId)
+        ? knownJobIds
+        : [...(knownJobIds ?? []), event.jobId];
     }
-    await emitToStream(opts.stream, event, `${marker}:index`);
-    indexState = await opts.runtime.state(opts.stream);
     if (changedJob) await opts.onJobChange?.([changedJob]);
-  };
-
-  const ensureIndexState = async (): Promise<JobState> => {
-    if (indexState) return indexState;
-    indexState = await opts.runtime.state(opts.stream);
-    return indexState;
   };
 
   const ensureJobState = async (jobId: string): Promise<JobState> => {
@@ -176,7 +170,19 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     return loaded;
   };
 
-  const jobsMap = async (): Promise<Readonly<Record<string, JobRecord>>> => (await ensureIndexState()).jobs;
+  const discoverJobIds = async (): Promise<ReadonlyArray<string>> => {
+    if (!opts.runtime.listStreams) {
+      return knownJobIds ?? [];
+    }
+    const prefix = `${opts.stream}/`;
+    const streams = await opts.runtime.listStreams(prefix);
+    const ids = streams
+      .map((stream) => stream.startsWith(prefix) ? stream.slice(prefix.length) : "")
+      .filter((jobId) => Boolean(jobId) && !jobId.includes("/"))
+      .sort((a, b) => a.localeCompare(b));
+    knownJobIds = ids;
+    return ids;
+  };
 
   const toCommandRecord = (command: JobCommandRecord): QueueCommandRecord => ({
     id: command.id,
@@ -214,8 +220,11 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     return record ? toQueueJob(record) : undefined;
   };
 
-  const listAllJobs = async (): Promise<ReadonlyArray<QueueJob>> =>
-    Object.values(await jobsMap()).map((job) => toQueueJob(job));
+  const listAllJobs = async (): Promise<ReadonlyArray<QueueJob>> => {
+    const ids = await discoverJobIds();
+    const jobs = await Promise.all(ids.map((jobId) => getQueueJob(jobId)));
+    return jobs.filter((job): job is QueueJob => Boolean(job));
+  };
 
   const handleExpiredLeases = async (timestamp: number): Promise<void> => {
     for (const job of await listAllJobs()) {

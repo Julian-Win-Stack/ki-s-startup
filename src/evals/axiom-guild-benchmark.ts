@@ -432,7 +432,7 @@ export const runAxiomGuildBenchmarkCase = async (opts: {
   readonly keepWorkspace?: boolean;
 }): Promise<AxiomGuildBenchmarkResult> => {
   const root = await mkTmp(`axiom-guild-bench-${opts.benchmark.id}`);
-  const dataDir = path.join(root, "data");
+  const dataDir = path.join(root, ".receipt", "data");
   const workspaceRoot = path.join(root, "workspace");
   const theoremRuntime = mkTheoremRuntime(dataDir);
   const agentRuntime = mkAgentRuntime(dataDir);

@@ -78,8 +78,7 @@ const writeProfile = async (root: string, input: {
 }): Promise<void> => {
   const dir = path.join(root, "profiles", input.id);
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, "PROFILE.md"), `# ${input.label}\n\nUse the async tools.\n`, "utf-8");
-  await fs.writeFile(path.join(dir, "profile.json"), JSON.stringify({
+  const manifest = {
     id: input.id,
     label: input.label,
     enabled: true,
@@ -89,7 +88,12 @@ const writeProfile = async (root: string, input: {
     toolAllowlist: input.toolAllowlist,
     orchestration: input.orchestration ?? {},
     handoffTargets: input.handoffTargets ?? [],
-  }, null, 2), "utf-8");
+  };
+  await fs.writeFile(
+    path.join(dir, "PROFILE.md"),
+    `---\n${JSON.stringify(manifest, null, 2)}\n---\n\n# ${input.label}\n\nUse the async tools.\n`,
+    "utf-8",
+  );
 };
 
 test("factory chat runner: codex.run queues work asynchronously and returns immediately", async () => {
@@ -156,7 +160,7 @@ test("factory chat runner: codex.run queues work asynchronously and returns imme
 
   const jobs = await queue.listJobs({ limit: 10 });
   expect(jobs).toHaveLength(1);
-  expect(jobs[0]?.agentId).toBe("factory-codex");
+  expect(jobs[0]?.agentId).toBe("codex");
   expect(jobs[0]?.status).toBe("queued");
   expect(jobs[0]?.singletonMode).toBe("allow");
 

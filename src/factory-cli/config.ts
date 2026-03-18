@@ -12,7 +12,6 @@ export type FactoryCliStoredConfig = {
   readonly repoRoot?: string;
   readonly dataDir?: string;
   readonly codexBin?: string;
-  readonly orchestratorMode?: "enabled" | "disabled";
   readonly defaultChecks?: ReadonlyArray<string>;
   readonly defaultPolicy?: FactoryObjectivePolicy;
 };
@@ -22,7 +21,6 @@ export type FactoryCliConfig = {
   readonly repoRoot: string;
   readonly dataDir: string;
   readonly codexBin: string;
-  readonly orchestratorMode: "enabled" | "disabled";
   readonly defaultChecks: ReadonlyArray<string>;
   readonly defaultPolicy: FactoryObjectivePolicy;
 };
@@ -31,7 +29,6 @@ export type FactoryRuntimeConfig = {
   readonly repoRoot: string;
   readonly dataDir: string;
   readonly codexBin: string;
-  readonly orchestratorMode: "enabled" | "disabled";
   readonly configPath?: string;
 };
 
@@ -113,7 +110,6 @@ export const loadFactoryConfig = async (cwd: string, repoRootOverride?: string):
     repoRoot,
     dataDir,
     codexBin: envString(process.env.RECEIPT_CODEX_BIN, process.env.HUB_CODEX_BIN, parsed.codexBin) ?? "codex",
-    orchestratorMode: envString(process.env.FACTORY_ORCHESTRATOR_MODE, parsed.orchestratorMode) === "enabled" ? "enabled" : "disabled",
     defaultChecks: uniqueChecks(parsed.defaultChecks),
     defaultPolicy: parsed.defaultPolicy ?? DEFAULT_FACTORY_OBJECTIVE_POLICY,
   };
@@ -129,7 +125,6 @@ export const resolveFactoryRuntimeConfig = async (
       repoRoot: loaded.repoRoot,
       dataDir: loaded.dataDir,
       codexBin: loaded.codexBin,
-      orchestratorMode: loaded.orchestratorMode,
       configPath: loaded.configPath,
     };
   }
@@ -139,9 +134,8 @@ export const resolveFactoryRuntimeConfig = async (
   const explicitDataDir = envString(process.env.RECEIPT_DATA_DIR, process.env.DATA_DIR);
   return {
     repoRoot: fallbackRepoRoot,
-    dataDir: explicitDataDir ? path.resolve(explicitDataDir) : path.join(fallbackRepoRoot, "data"),
+    dataDir: explicitDataDir ? path.resolve(explicitDataDir) : path.join(fallbackRepoRoot, ".receipt", "data"),
     codexBin: envString(process.env.RECEIPT_CODEX_BIN, process.env.HUB_CODEX_BIN) ?? "codex",
-    orchestratorMode: envString(process.env.FACTORY_ORCHESTRATOR_MODE) === "enabled" ? "enabled" : "disabled",
   };
 };
 

@@ -50,7 +50,7 @@ export class JobWorker {
     this.queue = opts.queue;
     this.handlers = opts.handlers;
     this.workerId = opts.workerId;
-    this.pollMs = Math.max(50, opts.pollMs ?? 250);
+    this.pollMs = Math.max(50, opts.pollMs ?? 100);
     this.leaseMs = Math.max(5_000, opts.leaseMs ?? 30_000);
     this.concurrency = Math.max(1, opts.concurrency ?? 2);
     this.onTick = opts.onTick;

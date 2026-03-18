@@ -9,8 +9,7 @@ import type { TheoremAxiomEvidence, TheoremCmd, TheoremEvent, TheoremState } fro
 import { reduce as reduceTheorem, initial as initialTheorem } from "../modules/theorem.js";
 import { renderPrompt, type TheoremPromptConfig } from "../prompts/theorem.js";
 
-import { clampNumber, parseFormNum, type AgentRunControl, createQueuedEmitter, type EmitFn, type RunLifecycle, type WorkflowSpec } from "../engine/runtime/workflow.js";
-import { defineAgent, runDefinedAgent } from "../sdk/agent.js";
+import { clampNumber, parseFormNum, type AgentRunControl, createQueuedEmitter, type EmitFn, type RunLifecycle, type WorkflowSpec, runWorkflow } from "../engine/runtime/workflow.js";
 import {
   THEOREM_WORKFLOW_ID,
   THEOREM_WORKFLOW_VERSION,
@@ -1689,25 +1688,6 @@ const THEOREM_WORKFLOW: WorkflowSpec<TheoremWorkflowDeps, TheoremWorkflowConfig,
   },
 };
 
-const THEOREM_RECEIPT_RUNTIME = defineAgent<
-  TheoremCmd,
-  TheoremWorkflowDeps,
-  TheoremEvent,
-  TheoremState,
-  TheoremWorkflowConfig
->({
-  id: THEOREM_WORKFLOW_ID,
-  version: THEOREM_WORKFLOW_VERSION,
-  reducer: reduceTheorem,
-  initial: initialTheorem,
-  lifecycle: {
-    init: THEOREM_LIFECYCLE.init,
-    resume: THEOREM_LIFECYCLE.resume,
-    shouldIndex: THEOREM_LIFECYCLE.shouldIndex,
-  },
-  run: THEOREM_WORKFLOW.run,
-});
-
 // ============================================================================
 // Public run entry
 // ============================================================================
@@ -1731,29 +1711,25 @@ export const runTheoremGuild = async (input: TheoremRunInput): Promise<TheoremRu
   });
 
   try {
-    await runDefinedAgent({
-      spec: THEOREM_RECEIPT_RUNTIME,
-      ctx: {
-        stream: runStream,
-        runId: input.runId,
-        emit: emitRun,
-        now,
-        runtime: input.runtime,
-        prompts: input.prompts,
-        llmText: input.llmText,
-        model: input.model,
-        promptHash: input.promptHash,
-        promptPath: input.promptPath,
-        apiReady: input.apiReady,
-        apiNote: input.apiNote,
-        emitIndex,
-        control: input.control,
-        axiomDelegate: input.axiomDelegate,
-        axiomPolicy: input.axiomPolicy,
-        axiomConfig: input.axiomConfig,
-      },
-      config: { ...input.config, problem: input.problem },
-    });
+    await runWorkflow<TheoremCmd, TheoremWorkflowDeps, TheoremWorkflowConfig, TheoremEvent, TheoremState>(THEOREM_WORKFLOW, {
+      stream: runStream,
+      runId: input.runId,
+      emit: emitRun,
+      now,
+      runtime: input.runtime,
+      prompts: input.prompts,
+      llmText: input.llmText,
+      model: input.model,
+      promptHash: input.promptHash,
+      promptPath: input.promptPath,
+      apiReady: input.apiReady,
+      apiNote: input.apiNote,
+      emitIndex,
+      control: input.control,
+      axiomDelegate: input.axiomDelegate,
+      axiomPolicy: input.axiomPolicy,
+      axiomConfig: input.axiomConfig,
+    }, { ...input.config, problem: input.problem });
   } catch (err) {
     console.error(err);
     const message = err instanceof Error ? err.message : String(err);

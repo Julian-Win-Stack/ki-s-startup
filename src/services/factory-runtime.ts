@@ -1,5 +1,3 @@
-import fs from "node:fs";
-
 import { LocalCodexExecutor } from "../adapters/codex-executor.js";
 import {
   createMemoryTools,
@@ -17,10 +15,9 @@ import { embed, llmStructured } from "../adapters/openai.js";
 import { createRuntime } from "../core/runtime.js";
 import type { JobHandler } from "../engine/runtime/job-worker.js";
 import type { SseHub } from "../framework/sse-hub.js";
-import { siblingPath } from "../lib/runtime-paths.js";
 import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../modules/job.js";
-import { createOpenAiFactoryOrchestrator, createTestFactoryOrchestrator } from "./factory-orchestrator.js";
 import { FACTORY_CONTROL_AGENT_ID, FactoryService } from "./factory-service.js";
+import { runFactoryCodexJob } from "../agents/factory-chat.js";
 
 export type FactoryQueue = ReturnType<typeof jsonlQueue>;
 export type FactoryJobRuntime = ReturnType<typeof createRuntime<JobCmd, JobEvent, JobState>>;
@@ -32,7 +29,6 @@ type FactoryServiceRuntimeOptions = {
   readonly sse: SseHub;
   readonly repoRoot: string;
   readonly codexBin?: string;
-  readonly orchestratorMode?: "enabled" | "disabled";
   readonly memoryTools?: MemoryTools;
 };
 
@@ -60,22 +56,8 @@ const createDefaultMemoryTools = (dataDir: string): MemoryTools => {
 export const createFactoryServiceRuntime = (opts: FactoryServiceRuntimeOptions): {
   readonly service: FactoryService;
   readonly memoryTools: MemoryTools;
-  readonly orchestratorMode: "enabled" | "disabled";
 } => {
   const memoryTools = opts.memoryTools ?? createDefaultMemoryTools(opts.dataDir);
-  const orchestratorPromptPath = siblingPath(import.meta.url, "../prompts/factory/orchestrator.md");
-  const orchestratorPrompt = fs.existsSync(orchestratorPromptPath)
-    ? fs.readFileSync(orchestratorPromptPath, "utf-8")
-    : "";
-  const requestedMode = opts.orchestratorMode === "enabled" ? "enabled" : "disabled";
-  const orchestrator = process.env.FACTORY_ORCHESTRATOR_TEST_MODE?.trim()
-    ? createTestFactoryOrchestrator()
-    : (requestedMode === "enabled" && process.env.OPENAI_API_KEY
-      ? createOpenAiFactoryOrchestrator({
-        llmStructured,
-        systemPrompt: orchestratorPrompt,
-      })
-      : undefined);
 
   const service = new FactoryService({
     dataDir: opts.dataDir,
@@ -84,16 +66,13 @@ export const createFactoryServiceRuntime = (opts: FactoryServiceRuntimeOptions):
     sse: opts.sse,
     codexExecutor: new LocalCodexExecutor({ bin: opts.codexBin }),
     memoryTools,
-    llmStructured: requestedMode === "enabled" && process.env.OPENAI_API_KEY ? llmStructured : undefined,
-    orchestrator,
-    orchestratorMode: orchestrator ? "enabled" : "disabled",
+    llmStructured: process.env.OPENAI_API_KEY ? llmStructured : undefined,
     repoRoot: opts.repoRoot,
   });
 
   return {
     service,
     memoryTools,
-    orchestratorMode: orchestrator ? "enabled" : "disabled",
   };
 };
 
@@ -124,9 +103,34 @@ export const createFactoryWorkerHandlers = (service: FactoryService): Record<typ
         ? await service.runTask(job.payload, {
           shouldAbort: async () => {
             const aborts = await ctx.pullCommands(["abort"]);
-            return aborts.length > 0 || job.abortRequested === true;
-          },
-        })
+              return aborts.length > 0 || job.abortRequested === true;
+            },
+          })
+        : job.payload.kind === "factory.codex.run"
+          ? await (async () => {
+            const payload = job.payload as Record<string, unknown>;
+            const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
+            if (!prompt) throw new Error("factory codex prompt required");
+            const timeoutMs = typeof payload.timeoutMs === "number" && Number.isFinite(payload.timeoutMs)
+              ? Math.max(30_000, Math.min(Math.floor(payload.timeoutMs), 900_000))
+              : 180_000;
+            return runFactoryCodexJob({
+              dataDir: service.dataDir,
+              repoRoot: service.git.repoRoot,
+              jobId: job.id,
+              prompt,
+              timeoutMs,
+              executor: service.codexExecutor,
+              onProgress: async (update) => {
+                await service.queue.progress(job.id, ctx.workerId, update);
+              },
+            }, {
+              shouldAbort: async () => {
+                const latest = await service.queue.getJob(job.id);
+                return latest?.abortRequested === true;
+              },
+            });
+          })()
         : job.payload.kind === "factory.integration.validate"
           ? await service.runIntegrationValidation(job.payload)
           : (() => {

@@ -76,6 +76,7 @@ export type StreamLocator = {
   readonly existingKeyFor: (stream: string) => Promise<string | undefined>;
   readonly fileForExisting: (stream: string) => Promise<string | undefined>;
   readonly streamForKey: (key: string) => Promise<string | undefined>;
+  readonly listStreams: (prefix?: string) => Promise<ReadonlyArray<string>>;
 };
 
 export const createStreamLocator = (dir: string): StreamLocator => {
@@ -192,15 +193,25 @@ export const createStreamLocator = (dir: string): StreamLocator => {
   };
   const streamForKey = async (key: string): Promise<string | undefined> =>
     (await readManifest()).byKey[key];
+  const listStreams = async (prefix?: string): Promise<ReadonlyArray<string>> =>
+    Object.keys((await readManifest()).byStream)
+      .filter((stream) => (prefix ? stream.startsWith(prefix) : true))
+      .sort((a, b) => a.localeCompare(b));
 
-  return { fileFor, keyFor, existingKeyFor, fileForExisting, streamForKey };
+  return { fileFor, keyFor, existingKeyFor, fileForExisting, streamForKey, listStreams };
 };
 
 /** One .jsonl file per stream key under dir; stream names map via _streams.json */
 export const jsonlStore = <B>(dir: string): Store<B> => {
   const locator = createStreamLocator(dir);
+  const readExisting = async (stream: string): Promise<Chain<B>> => {
+    const file = await locator.fileForExisting(stream);
+    if (!file) return [];
+    return readJsonl<B>(file);
+  };
   const versionFor = async (stream: string): Promise<string | undefined> => {
-    const file = await locator.fileFor(stream);
+    const file = await locator.fileForExisting(stream);
+    if (!file) return undefined;
     try {
       const stat = await fs.promises.stat(file);
       return `${stat.size}:${stat.mtimeMs}`;
@@ -208,16 +219,50 @@ export const jsonlStore = <B>(dir: string): Store<B> => {
       return undefined;
     }
   };
+  const withAppendLock = async <T>(file: string, op: () => Promise<T>): Promise<T> => {
+    const lockPath = `${file}.lock`;
+    for (;;) {
+      let handle: fs.promises.FileHandle | undefined;
+      try {
+        await fs.promises.mkdir(path.dirname(file), { recursive: true });
+        handle = await fs.promises.open(lockPath, "wx");
+        const result = await op();
+        await handle.close();
+        await fs.promises.unlink(lockPath).catch(() => undefined);
+        return result;
+      } catch (err) {
+        await handle?.close().catch(() => undefined);
+        if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
+          await sleep(10);
+          continue;
+        }
+        await fs.promises.unlink(lockPath).catch(() => undefined);
+        throw err;
+      }
+    }
+  };
   return {
-    append: async (r) => appendJsonl(await locator.fileFor(r.stream), r),
-    read: async (stream) => readJsonl<B>(await locator.fileFor(stream)),
-    take: async (stream, n) => (await readJsonl<B>(await locator.fileFor(stream))).slice(0, n),
-    count: async (stream) => (await readJsonl<B>(await locator.fileFor(stream))).length,
+    append: async function append(r, expectedPrev) {
+      const physicalPrev = arguments.length >= 2 ? expectedPrev : r.prev;
+      const file = await locator.fileFor(r.stream);
+      await withAppendLock(file, async () => {
+        const chain = await readJsonl<B>(file);
+        const head = chain.length > 0 ? chain[chain.length - 1] : undefined;
+        if ((head?.hash ?? undefined) !== physicalPrev) {
+          throw new Error(`Expected prev hash ${physicalPrev ?? "undefined"} but head is ${head?.hash ?? "undefined"}`);
+        }
+        await appendJsonl(file, r);
+      });
+    },
+    read: readExisting,
+    take: async (stream, n) => (await readExisting(stream)).slice(0, n),
+    count: async (stream) => (await readExisting(stream)).length,
     head: async (stream) => {
-      const chain = await readJsonl<B>(await locator.fileFor(stream));
+      const chain = await readExisting(stream);
       return chain.length > 0 ? chain[chain.length - 1] : undefined;
     },
     version: versionFor,
+    listStreams: locator.listStreams,
   };
 };
 
@@ -239,7 +284,7 @@ export const jsonBranchStore = (dir: string): BranchStore => {
         type: BRANCH_META_EVENT,
         branch,
       };
-      await store.append(receipt(BRANCH_META_STREAM, prev, event));
+      await store.append(receipt(BRANCH_META_STREAM, prev, event), prev);
     };
     const next = queue.then(op);
     queue = next.then(() => undefined, () => undefined);

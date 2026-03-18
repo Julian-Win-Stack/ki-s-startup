@@ -25,13 +25,11 @@ import {
 
 ### `defineAgent(spec)`
 - Declares an agent spec.
-- Supports:
-  - modern receipt-native spec (`receipts`, `view`, `actions`, `goal`, optional `mergePolicy`),
-  - legacy workflow spec (`reducer`, `initial`, `lifecycle`, `run`).
+- Supports the modern receipt-native spec (`receipts`, `view`, `actions`, `goal`, optional `mergePolicy`).
 
 ### `runDefinedAgent({ spec, ctx, config, deps, wrap })`
 - Executes an agent spec against a runtime context.
-- Dispatches to modern `runAgentLoop` or legacy workflow runner.
+- Always dispatches to the modern `runAgentLoop`.
 
 ### `goal(fn)`
 - Helper wrapper for goal predicates: `(ctx) => boolean`.
@@ -54,7 +52,7 @@ import {
 
 ## Exported Types
 - `ReceiptDeclaration`, `ReceiptBody`
-- `LegacyAgentSpec`, `AgentSpec`
+- `ModernAgentSpec`, `RunAgentInput`
 - `AgentAction`, `ActionKind`
 - `MergePolicy`, `MergeCandidate`, `MergeDecision`, `MergeScoreVector`
 

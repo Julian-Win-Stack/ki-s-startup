@@ -1,4 +1,5 @@
 import type { Decide, Reducer } from "../core/types.js";
+import { CONTROL_RECEIPT_TYPES } from "../engine/runtime/control-receipts.js";
 import {
   activatableNodes,
   createGraphState,
@@ -62,6 +63,27 @@ export type FactoryWorkerType =
   | "infra"
   | "axiom"
   | string;
+
+export type FactoryObjectiveProfileWorktreeMode = "required" | "forbidden";
+
+export type FactoryObjectiveProfilePolicy = {
+  readonly allowedWorkerTypes: ReadonlyArray<FactoryWorkerType>;
+  readonly defaultWorkerType: FactoryWorkerType;
+  readonly worktreeModeByWorker: Readonly<Record<string, FactoryObjectiveProfileWorktreeMode>>;
+  readonly defaultValidationMode: "repo_profile" | "none";
+  readonly maxParallelChildren: number;
+  readonly allowObjectiveCreation: boolean;
+};
+
+export type FactoryObjectiveProfileSnapshot = {
+  readonly rootProfileId: string;
+  readonly rootProfileLabel: string;
+  readonly resolvedProfileHash: string;
+  readonly promptHash: string;
+  readonly promptPath: string;
+  readonly selectedSkills: ReadonlyArray<string>;
+  readonly objectivePolicy: FactoryObjectiveProfilePolicy;
+};
 
 export type FactoryMutationAggressiveness =
   | "off"
@@ -182,7 +204,7 @@ export type FactoryRebracketRecord = {
   readonly selectedActionId?: string;
   readonly reason: string;
   readonly confidence?: number;
-  readonly source: "orchestrator" | "fallback";
+  readonly source: "orchestrator" | "fallback" | "runtime";
   readonly appliedAt: number;
   readonly basedOn?: string;
 };
@@ -259,7 +281,8 @@ export type FactoryState = {
   readonly channel: string;
   readonly baseHash: string;
   readonly checks: ReadonlyArray<string>;
-  readonly checksSource: "explicit" | "default";
+  readonly checksSource: "explicit" | "profile" | "default";
+  readonly profile: FactoryObjectiveProfileSnapshot;
   readonly policy: FactoryNormalizedObjectivePolicy;
   readonly status: FactoryObjectiveStatus;
   readonly archivedAt?: number;
@@ -330,6 +353,31 @@ export const DEFAULT_FACTORY_OBJECTIVE_POLICY: FactoryNormalizedObjectivePolicy 
   },
   promotion: {
     autoPromote: true,
+  },
+};
+
+export const DEFAULT_FACTORY_OBJECTIVE_PROFILE: FactoryObjectiveProfileSnapshot = {
+  rootProfileId: "generalist",
+  rootProfileLabel: "Generalist",
+  resolvedProfileHash: "",
+  promptHash: "",
+  promptPath: "profiles/generalist/PROFILE.md",
+  selectedSkills: [],
+  objectivePolicy: {
+    allowedWorkerTypes: ["codex", "infra", "theorem", "axiom", "writer", "inspector", "agent"],
+    defaultWorkerType: "codex",
+    worktreeModeByWorker: {
+      codex: "required",
+      infra: "required",
+      theorem: "required",
+      axiom: "required",
+      writer: "forbidden",
+      inspector: "forbidden",
+      agent: "forbidden",
+    },
+    defaultValidationMode: "repo_profile",
+    maxParallelChildren: 4,
+    allowObjectiveCreation: true,
   },
 };
 
@@ -569,7 +617,8 @@ export type FactoryEvent =
       readonly channel: string;
       readonly baseHash: string;
       readonly checks: ReadonlyArray<string>;
-      readonly checksSource: "explicit" | "default";
+      readonly checksSource: "explicit" | "profile" | "default";
+      readonly profile: FactoryObjectiveProfileSnapshot;
       readonly policy: FactoryNormalizedObjectivePolicy;
       readonly createdAt: number;
     }
@@ -764,7 +813,10 @@ export type FactoryEvent =
   | {
       readonly type: "merge.candidate.scored";
       readonly objectiveId: string;
-      readonly candidateId: string;
+      readonly decisionId: string;
+      readonly candidateId?: string;
+      readonly taskId?: string;
+      readonly actionType?: string;
       readonly score: number;
       readonly scoreVector: FactoryScoreVector;
       readonly reason: string;
@@ -777,7 +829,7 @@ export type FactoryEvent =
       readonly selectedActionId?: string;
       readonly reason: string;
       readonly confidence?: number;
-      readonly source: "orchestrator" | "fallback";
+      readonly source: "orchestrator" | "fallback" | "runtime";
       readonly basedOn?: string;
       readonly appliedAt: number;
     }
@@ -888,6 +940,7 @@ export const initialFactoryState: FactoryState = {
   baseHash: "",
   checks: [],
   checksSource: "default",
+  profile: DEFAULT_FACTORY_OBJECTIVE_PROFILE,
   policy: DEFAULT_FACTORY_OBJECTIVE_POLICY,
   status: "decomposing",
   archivedAt: undefined,
@@ -921,6 +974,7 @@ export const decideFactory: Decide<FactoryCmd, FactoryEvent> = (cmd) => {
 };
 
 export const reduceFactory: Reducer<FactoryState, FactoryEvent> = (state, event) => {
+  if (CONTROL_RECEIPT_TYPES.has(event.type as never)) return state;
   switch (event.type) {
     case "objective.created":
       return {
@@ -931,6 +985,7 @@ export const reduceFactory: Reducer<FactoryState, FactoryEvent> = (state, event)
         baseHash: event.baseHash,
         checks: event.checks,
         checksSource: event.checksSource,
+        profile: event.profile,
         policy: event.policy,
         status: "decomposing",
         archivedAt: undefined,
@@ -1257,6 +1312,12 @@ export const reduceFactory: Reducer<FactoryState, FactoryEvent> = (state, event)
         updatedAt: event.computedAt,
       };
     case "merge.candidate.scored":
+      if (!event.candidateId) {
+        return {
+          ...state,
+          updatedAt: event.scoredAt,
+        };
+      }
       return {
         ...updateCandidate(state, event.candidateId, {
           lastScore: event.score,

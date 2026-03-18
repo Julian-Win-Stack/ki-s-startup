@@ -87,7 +87,6 @@ const printSetupSummary = (opts: {
   readonly dataDir: string;
   readonly codexBin: string;
   readonly codexAvailable: boolean;
-  readonly orchestratorMode: "enabled" | "disabled";
   readonly branch: string;
   readonly sourceDirty: boolean;
   readonly repoProfileStatus: string;
@@ -107,7 +106,6 @@ const printSetupSummary = (opts: {
     `  ${marker} Repo profile: ${opts.repoProfileStatus}`,
     `  ${marker} Validation: ${opts.checks.join(" | ") || "none"}`,
     `  ${marker} Codex: ${opts.codexBin}${opts.codexAvailable ? "" : " (not found on PATH)"}`,
-    `  ${marker} Orchestrator: ${opts.orchestratorMode}`,
     "",
   ];
   console.log(lines.join("\n"));
@@ -219,15 +217,9 @@ const initFactoryConfig = async (cwd: string, flags: Flags): Promise<FactoryCliC
   const defaultDataDir = path.resolve(repoRoot, asString(flags, "data-dir") ?? path.join(".receipt", "data"));
   const detectedCodexPath = bunWhich("codex");
   const defaultCodexBin = asString(flags, "codex-bin") ?? process.env.RECEIPT_CODEX_BIN ?? process.env.HUB_CODEX_BIN ?? detectedCodexPath ?? "codex";
-  const defaultOrchestratorMode = (asString(flags, "orchestrator-mode")
-    ?? process.env.FACTORY_ORCHESTRATOR_MODE
-    ?? (process.env.OPENAI_API_KEY ? "enabled" : "disabled")) === "enabled"
-    ? "enabled"
-    : "disabled";
 
   let dataDir = defaultDataDir;
   let codexBin = defaultCodexBin;
-  let orchestratorMode: "enabled" | "disabled" = defaultOrchestratorMode;
 
   if (isInteractiveTerminal() && !yes) {
     intro("Receipt Factory setup");
@@ -241,14 +233,6 @@ const initFactoryConfig = async (cwd: string, flags: Flags): Promise<FactoryCliC
       initialValue: defaultCodexBin,
       placeholder: "codex",
     });
-    orchestratorMode = (await ensureSelectValue({
-      message: "Orchestration mode",
-      initialValue: defaultOrchestratorMode,
-      options: [
-        { value: "enabled", label: "enabled", hint: "Use OpenAI for repo profiling and orchestration decisions." },
-        { value: "disabled", label: "disabled", hint: "Keep planning deterministic and local-only." },
-      ],
-    })) as "enabled" | "disabled";
   }
 
   const runtime = createFactoryCliRuntime({
@@ -256,7 +240,6 @@ const initFactoryConfig = async (cwd: string, flags: Flags): Promise<FactoryCliC
     repoRoot,
     dataDir,
     codexBin,
-    orchestratorMode,
     defaultChecks: [],
     defaultPolicy: DEFAULT_FACTORY_OBJECTIVE_POLICY,
   });
@@ -288,7 +271,6 @@ const initFactoryConfig = async (cwd: string, flags: Flags): Promise<FactoryCliC
         dataDir,
         codexBin,
         codexAvailable: Boolean(detectedCodexPath),
-        orchestratorMode,
         branch: compose.sourceBranch ?? compose.defaultBranch,
         sourceDirty: compose.sourceDirty,
         repoProfileStatus: compose.repoProfile.status,
@@ -319,7 +301,6 @@ const initFactoryConfig = async (cwd: string, flags: Flags): Promise<FactoryCliC
       repoRoot: ".",
       dataDir: path.relative(repoRoot, dataDir) || ".",
       codexBin,
-      orchestratorMode,
       defaultChecks,
       defaultPolicy: compose.defaultPolicy,
     };
@@ -329,7 +310,6 @@ const initFactoryConfig = async (cwd: string, flags: Flags): Promise<FactoryCliC
       repoRoot,
       dataDir,
       codexBin,
-      orchestratorMode,
       defaultChecks,
       defaultPolicy: compose.defaultPolicy,
     } satisfies FactoryCliConfig;
@@ -343,7 +323,6 @@ const initFactoryConfig = async (cwd: string, flags: Flags): Promise<FactoryCliC
           codexPath: detectedCodexPath,
           codexAvailable: Boolean(detectedCodexPath),
           openAiReady: Boolean(process.env.OPENAI_API_KEY?.trim()),
-          orchestratorMode,
           sourceBranch: compose.sourceBranch ?? compose.defaultBranch,
           sourceDirty: compose.sourceDirty,
         },

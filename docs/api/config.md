@@ -5,10 +5,9 @@
 | Variable | Default | Impact |
 |---|---|---|
 | `PORT` | `8787` | HTTP server listen port. |
-| `DATA_DIR` | `<cwd>/data` | Root directory for JSONL streams, queue, and memory storage. |
-| `RECEIPT_INDEXED_STORE` | `0` | If set to `1`, uses indexed JSONL store adapter. |
+| `DATA_DIR` | `<cwd>/.receipt/data` | Root directory for JSONL streams, queue, and memory storage. |
 | `JOB_WORKER_ID` | `worker_<pid>` | Worker identity for leasing and heartbeats. |
-| `JOB_POLL_MS` | `250` | Queue polling interval in milliseconds. |
+| `JOB_POLL_MS` | `100` | Queue polling interval in milliseconds. |
 | `JOB_LEASE_MS` | `30000` | Lease duration for worker-owned jobs. |
 | `JOB_CONCURRENCY` | `2` | Max concurrent job executions per worker. |
 | `SUBJOB_WAIT_MS` | `1500` | Delegate wait timeout when summarizing a sub-job inline. |

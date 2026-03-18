@@ -34,12 +34,13 @@ export type Decide<Cmd, Event> = (cmd: Cmd) => Event[];
 
 // Store operations as a record of functions
 export type Store<B> = {
-  readonly append: (r: Receipt<B>) => Promise<void>;
+  readonly append: (r: Receipt<B>, expectedPrev?: string) => Promise<void>;
   readonly read: (stream: string) => Promise<Chain<B>>;
   readonly take: (stream: string, n: number) => Promise<Chain<B>>;
   readonly count: (stream: string) => Promise<number>;
   readonly head: (stream: string) => Promise<Receipt<B> | undefined>;
   readonly version?: (stream: string) => Promise<string | undefined>;
+  readonly listStreams?: (prefix?: string) => Promise<ReadonlyArray<string>>;
 };
 
 // Branch metadata store

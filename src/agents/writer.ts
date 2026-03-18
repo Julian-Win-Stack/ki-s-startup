@@ -5,9 +5,8 @@
 import type { Runtime } from "../core/runtime.js";
 import type { WriterCmd, WriterEvent, WriterState } from "../modules/writer.js";
 import { renderPrompt, type WriterPromptConfig } from "../prompts/writer.js";
-import { clampNumber, parseFormNum, type AgentRunControl, createQueuedEmitter, type EmitFn, type RunLifecycle, type WorkflowSpec } from "../engine/runtime/workflow.js";
+import { clampNumber, parseFormNum, type AgentRunControl, createQueuedEmitter, type EmitFn, type RunLifecycle, type WorkflowSpec, runWorkflow } from "../engine/runtime/workflow.js";
 import { runReceiptPlanner, type CapabilitySpec, type PlanSpec } from "../engine/runtime/planner.js";
-import { defineAgent, runDefinedAgent } from "../sdk/agent.js";
 import { WRITER_WORKFLOW_ID, WRITER_WORKFLOW_VERSION, WRITER_TEAM, WRITER_EXAMPLES } from "./writer.constants.js";
 import { writerBranchStream, writerRunStream } from "./writer.streams.js";
 import { reduce as reduceWriter, initial as initialWriter } from "../modules/writer.js";
@@ -636,25 +635,6 @@ const WRITER_WORKFLOW: WorkflowSpec<WriterWorkflowDeps, WriterWorkflowConfig, Wr
   },
 };
 
-const WRITER_RECEIPT_RUNTIME = defineAgent<
-  WriterCmd,
-  WriterWorkflowDeps,
-  WriterEvent,
-  WriterState,
-  WriterWorkflowConfig
->({
-  id: WRITER_WORKFLOW_ID,
-  version: WRITER_WORKFLOW_VERSION,
-  reducer: reduceWriter,
-  initial: initialWriter,
-  lifecycle: {
-    init: WRITER_LIFECYCLE.init,
-    resume: WRITER_LIFECYCLE.resume,
-    shouldIndex: WRITER_LIFECYCLE.shouldIndex,
-  },
-  run: WRITER_WORKFLOW.run,
-});
-
 // ============================================================================
 // Public run entry
 // ============================================================================
@@ -679,26 +659,22 @@ export const runWriterGuild = async (input: WriterRunInput): Promise<void> => {
   });
 
   try {
-    await runDefinedAgent({
-      spec: WRITER_RECEIPT_RUNTIME,
-      ctx: {
-        stream: runStream,
-        runId: input.runId,
-        emit: emitRun,
-        now,
-        runtime: input.runtime,
-        prompts: input.prompts,
-        llmText: input.llmText,
-        model: input.model,
-        promptHash: input.promptHash,
-        promptPath: input.promptPath,
-        apiReady: input.apiReady,
-        apiNote: input.apiNote,
-        emitIndex,
-        control: input.control,
-      },
-      config: { ...input.config, problem: input.problem },
-    });
+    await runWorkflow<WriterCmd, WriterWorkflowDeps, WriterWorkflowConfig, WriterEvent, WriterState>(WRITER_WORKFLOW, {
+      stream: runStream,
+      runId: input.runId,
+      emit: emitRun,
+      now,
+      runtime: input.runtime,
+      prompts: input.prompts,
+      llmText: input.llmText,
+      model: input.model,
+      promptHash: input.promptHash,
+      promptPath: input.promptPath,
+      apiReady: input.apiReady,
+      apiNote: input.apiNote,
+      emitIndex,
+      control: input.control,
+    }, { ...input.config, problem: input.problem });
   } catch (err) {
     console.error(err);
     const message = err instanceof Error ? err.message : String(err);

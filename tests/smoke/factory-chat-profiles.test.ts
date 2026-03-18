@@ -23,6 +23,7 @@ const writeProfile = async (root: string, input: {
   readonly imports?: ReadonlyArray<string>;
   readonly routeHints?: ReadonlyArray<string>;
   readonly toolAllowlist?: ReadonlyArray<string>;
+  readonly skills?: ReadonlyArray<string>;
   readonly orchestration?: {
     readonly executionMode?: "interactive" | "supervisor";
     readonly discoveryBudget?: number;
@@ -31,11 +32,18 @@ const writeProfile = async (root: string, input: {
     readonly finalWhileChildRunning?: "allow" | "waiting_message" | "reject";
     readonly childDedupe?: "none" | "by_run_and_prompt";
   };
+  readonly objectivePolicy?: {
+    readonly allowedWorkerTypes?: ReadonlyArray<string>;
+    readonly defaultWorkerType?: string;
+    readonly worktreeModeByWorker?: Readonly<Record<string, "required" | "forbidden">>;
+    readonly defaultValidationMode?: "repo_profile" | "none";
+    readonly maxParallelChildren?: number;
+    readonly allowObjectiveCreation?: boolean;
+  };
 }): Promise<void> => {
   const dir = path.join(root, "profiles", input.id);
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, "PROFILE.md"), `# ${input.label}\n\nProfile instructions for ${input.id}.\n`, "utf-8");
-  await fs.writeFile(path.join(dir, "profile.json"), JSON.stringify({
+  const manifest = {
     id: input.id,
     label: input.label,
     enabled: input.enabled ?? true,
@@ -43,9 +51,16 @@ const writeProfile = async (root: string, input: {
     imports: input.imports ?? [],
     routeHints: input.routeHints ?? [],
     toolAllowlist: input.toolAllowlist ?? [],
+    skills: input.skills ?? [],
     orchestration: input.orchestration ?? {},
+    objectivePolicy: input.objectivePolicy ?? {},
     handoffTargets: [],
-  }, null, 2), "utf-8");
+  };
+  await fs.writeFile(
+    path.join(dir, "PROFILE.md"),
+    `---\n${JSON.stringify(manifest, null, 2)}\n---\n\n# ${input.label}\n\nProfile instructions for ${input.id}.\n`,
+    "utf-8",
+  );
 };
 
 test("factory chat profiles: discovers enabled profiles and ignores disabled ones", async () => {
@@ -64,6 +79,11 @@ test("factory chat profiles: resolves imports, route hints, and profile hashes s
     id: "shared",
     label: "Shared",
     toolAllowlist: ["memory.read", "factory.status"],
+    skills: ["skills/shared/SKILL.md"],
+    objectivePolicy: {
+      allowedWorkerTypes: ["codex", "inspector"],
+      maxParallelChildren: 2,
+    },
     orchestration: {
       executionMode: "supervisor",
       childDedupe: "by_run_and_prompt",
@@ -75,6 +95,15 @@ test("factory chat profiles: resolves imports, route hints, and profile hashes s
     imports: ["shared"],
     routeHints: ["review", "critique"],
     toolAllowlist: ["profile.handoff"],
+    skills: ["skills/reviewer/SKILL.md"],
+    objectivePolicy: {
+      defaultWorkerType: "inspector",
+      worktreeModeByWorker: {
+        inspector: "forbidden",
+      },
+      defaultValidationMode: "none",
+      allowObjectiveCreation: true,
+    },
     orchestration: {
       discoveryBudget: 1,
       finalWhileChildRunning: "reject",
@@ -97,16 +126,24 @@ test("factory chat profiles: resolves imports, route hints, and profile hashes s
   expect(resolved.root.id).toBe("reviewer");
   expect(resolved.imports.map((profile) => profile.id)).toEqual(["shared"]);
   expect(resolved.toolAllowlist).toEqual(["memory.read", "factory.status", "profile.handoff"]);
+  expect(resolved.skills).toEqual(["skills/shared/SKILL.md", "skills/reviewer/SKILL.md"]);
   expect(resolved.orchestration.executionMode).toBe("supervisor");
   expect(resolved.orchestration.discoveryBudget).toBe(1);
   expect(resolved.orchestration.suspendOnAsyncChild).toBe(true);
   expect(resolved.orchestration.allowPollingWhileChildRunning).toBe(false);
   expect(resolved.orchestration.finalWhileChildRunning).toBe("reject");
   expect(resolved.orchestration.childDedupe).toBe("by_run_and_prompt");
+  expect(resolved.objectivePolicy.allowedWorkerTypes).toEqual(["codex", "inspector"]);
+  expect(resolved.objectivePolicy.defaultWorkerType).toBe("inspector");
+  expect(resolved.objectivePolicy.worktreeModeByWorker.inspector).toBe("forbidden");
+  expect(resolved.objectivePolicy.defaultValidationMode).toBe("none");
+  expect(resolved.objectivePolicy.maxParallelChildren).toBe(2);
   expect(resolved.promptPath).toBe("profiles/reviewer/PROFILE.md");
   expect(resolved.profilePaths).toContain("profiles/shared/PROFILE.md");
   expect(resolved.profileRoot).toBe(path.resolve(profileRoot));
   expect(resolved.repoRoot).toBe(path.resolve(repoRoot));
+  expect(resolved.systemPrompt).toContain("You are the active Factory profile in the product UI.");
+  expect(resolved.systemPrompt).toContain("do not behave like a wrapper around another assistant");
 });
 
 test("factory chat profiles: routes concrete bug-fix prompts to the software profile", async () => {

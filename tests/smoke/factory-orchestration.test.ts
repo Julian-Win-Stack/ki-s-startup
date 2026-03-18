@@ -15,7 +15,6 @@ import { createRuntime } from "../../src/core/runtime.ts";
 import { SseHub } from "../../src/framework/sse-hub.ts";
 import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../../src/modules/job.ts";
 import { FactoryService, type FactoryTaskJobPayload } from "../../src/services/factory-service.ts";
-import { type FactoryOrchestrator } from "../../src/services/factory-orchestrator.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -84,23 +83,10 @@ const findLatestFactoryJob = async (
   return match.payload as FactoryTaskJobPayload;
 };
 
-test("factory orchestrator: blocked tasks emit split/supersede mutation receipts at runtime", async () => {
+test("factory runtime: blocked tasks emit split/supersede mutation receipts at runtime", async () => {
   const dataDir = await createTempDir("receipt-factory-mutation");
   const repoRoot = await createSourceRepo();
   const queue = jsonlQueue({ runtime: createJobRuntime(dataDir), stream: "jobs" });
-  const mutationChoices: string[] = [];
-  const orchestrator: FactoryOrchestrator = {
-    decide: async (input) => {
-      const preferred = input.actions.find((action) => action.type === "split_task") ?? input.actions[0];
-      expect(preferred).toBeTruthy();
-      mutationChoices.push(preferred.actionId);
-      return {
-        selectedActionId: preferred.actionId,
-        reason: "Split the blocked task into unblock + implementation follow-up.",
-        confidence: 0.92,
-      };
-    },
-  };
   const codexExecutor: CodexExecutor = {
     run: async (input) => {
       await fs.writeFile(input.promptPath, input.prompt, "utf-8");
@@ -121,26 +107,14 @@ test("factory orchestrator: blocked tasks emit split/supersede mutation receipts
     readonly schemaName: string;
     readonly schema: Schema;
   }): Promise<{ readonly parsed: ZodInfer<Schema>; readonly raw: string }> => {
-    const payload = opts.schemaName === "factory_task_decomposition"
-      ? {
-          tasks: [{
-            title: "Build the implementation",
-            prompt: "Implement the requested factory change.",
-            workerType: "codex",
-            dependsOn: [],
-          }],
-        }
-      : {
-          actions: [{
-            type: "split_task",
-            taskId: "task_01",
-            reason: "The blocked implementation needs an unblock task before the final build step.",
-            tasks: [
-              { title: "Unblock implementation", prompt: "Investigate the blocker and write down the missing details.", workerType: "codex" },
-              { title: "Finish implementation", prompt: "Resume implementation using the unblock task output.", workerType: "codex" },
-            ],
-          }],
-        };
+    const payload = {
+      tasks: [{
+        title: "Build the implementation",
+        prompt: "Implement the requested factory change.",
+        workerType: "codex",
+        dependsOn: [],
+      }],
+    };
     return {
       parsed: opts.schema.parse(payload),
       raw: JSON.stringify(payload),
@@ -153,8 +127,6 @@ test("factory orchestrator: blocked tasks emit split/supersede mutation receipts
     sse: new SseHub(),
     codexExecutor,
     memoryTools: createMemoryToolsForTest(dataDir),
-    orchestrator,
-    orchestratorMode: "enabled",
     llmStructured,
     repoRoot,
   });
@@ -170,11 +142,10 @@ test("factory orchestrator: blocked tasks emit split/supersede mutation receipts
   await service.runTask(firstJob);
 
   const detail = await service.getObjective(created.objectiveId);
-  expect(mutationChoices.some((choice) => choice.startsWith("action_split_task_01"))).toBeTruthy();
-  expect(detail.latestRebracket?.selectedActionId).toBe(mutationChoices.at(-1));
+  expect(detail.latestRebracket?.source).toBe("runtime");
   expect(detail.tasks.find((task) => task.taskId === "task_01")?.status).toBe("superseded");
-  expect(detail.tasks.some((task) => task.title === "Unblock implementation")).toBeTruthy();
-  expect(detail.tasks.some((task) => task.title === "Finish implementation")).toBeTruthy();
+  expect(detail.tasks.some((task) => task.title.startsWith("Unblock "))).toBeTruthy();
+  expect(detail.tasks.some((task) => task.title.startsWith("Finish "))).toBeTruthy();
 }, 120_000);
 
 test("factory candidate lineage: rework dispatch mints a fresh candidate id", async () => {
@@ -226,6 +197,53 @@ test("factory candidate lineage: rework dispatch mints a fresh candidate id", as
   const detail = await service.getObjective(created.objectiveId);
   expect(detail.candidates.some((candidate) => candidate.candidateId === "task_01_candidate_01" && candidate.status === "changes_requested")).toBeTruthy();
   expect(detail.candidates.some((candidate) => candidate.candidateId === "task_01_candidate_02")).toBeTruthy();
+}, 120_000);
+
+test("factory profile policy: workers marked non-worktree are rejected from task dispatch", async () => {
+  const dataDir = await createTempDir("receipt-factory-profile-policy");
+  const repoRoot = await createSourceRepo();
+  const queue = jsonlQueue({ runtime: createJobRuntime(dataDir), stream: "jobs" });
+  const llmStructured = async <Schema extends ZodTypeAny>(opts: {
+    readonly schemaName: string;
+    readonly schema: Schema;
+  }): Promise<{ readonly parsed: ZodInfer<Schema>; readonly raw: string }> => {
+    const payload = {
+      tasks: [{
+        title: "Review release notes",
+        prompt: "Summarize the release implications without editing code.",
+        workerType: "writer",
+        dependsOn: [],
+      }],
+    };
+    return {
+      parsed: opts.schema.parse(payload),
+      raw: JSON.stringify(payload),
+    };
+  };
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime: createJobRuntime(dataDir),
+    sse: new SseHub(),
+    codexExecutor: {
+      run: async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "" }),
+    },
+    memoryTools: createMemoryToolsForTest(dataDir),
+    llmStructured,
+    repoRoot,
+  });
+
+  const created = await service.createObjective({
+    title: "Non-worktree writer objective",
+    prompt: "Review the release notes.",
+    checks: ["git status --short"],
+    profileId: "generalist",
+  });
+
+  await expect(runObjectiveStartup(service, created.objectiveId)).rejects.toThrow(/configured without a task worktree/i);
+  const detail = await service.getObjective(created.objectiveId);
+  expect(detail.profile.rootProfileId).toBe("generalist");
+  expect(detail.tasks[0]?.workerType).toBe("writer");
 }, 120_000);
 
 test("factory no-diff discovery tasks are bypassed so downstream implementation can continue", async () => {

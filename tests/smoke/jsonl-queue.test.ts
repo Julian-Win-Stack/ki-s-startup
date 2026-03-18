@@ -265,3 +265,39 @@ test("jsonl queue: onJobChange receives the current job snapshot without deadloc
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test("jsonl queue: list and lease derive from authoritative jobs/<jobId> streams", async () => {
+  const dir = await mkTmp("receipt-queue-authoritative-list");
+  try {
+    const runtime = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob
+    );
+    const queue = jsonlQueue({ runtime, stream: "jobs" });
+
+    await runtime.execute("jobs/job_direct", {
+      type: "emit",
+      eventId: "direct-enqueue",
+      event: {
+        type: "job.enqueued",
+        jobId: "job_direct",
+        agentId: "writer",
+        lane: "collect",
+        payload: { kind: "writer.run", runId: "r_direct" },
+        maxAttempts: 1,
+      },
+    });
+
+    const listed = await queue.listJobs();
+    expect(listed.some((job) => job.id === "job_direct")).toBe(true);
+
+    const leased = await queue.leaseNext({ workerId: "worker", leaseMs: 5_000 });
+    expect(leased?.id).toBe("job_direct");
+    expect((await queue.getJob("job_direct"))?.status).toBe("leased");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

@@ -87,7 +87,6 @@ Receipt already has several of the right primitives:
 
 - receipt-native streams and replay in `src/core/runtime.ts`
 - JSONL receipt storage and branch metadata in `src/adapters/jsonl.ts`
-- indexed JSONL reads in `src/adapters/jsonl-indexed.ts`
 - receipt-native queue lifecycle in `src/adapters/jsonl-queue.ts`
 - job worker leases and heartbeats in `src/engine/runtime/job-worker.ts`
 - receipt-based approval precedent in `src/modules/self-improvement.ts`
@@ -1518,7 +1517,6 @@ This avoids a dangerous rewrite of unrelated agent paths.
 
 - `src/core/runtime.ts`
 - `src/adapters/jsonl.ts`
-- `src/adapters/jsonl-indexed.ts`
 - `src/adapters/jsonl-queue.ts`
 - `src/engine/runtime/job-worker.ts`
 - `src/agents/agent.ts`

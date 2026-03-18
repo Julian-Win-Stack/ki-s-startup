@@ -8,7 +8,6 @@ import path from "node:path";
 import { Hono } from "hono";
 
 import { jsonlStore, jsonBranchStore } from "./adapters/jsonl.js";
-import { jsonlIndexedStore } from "./adapters/jsonl-indexed.js";
 import { jsonlQueue, type EnqueueJobInput } from "./adapters/jsonl-queue.js";
 import {
   createMemoryTools,
@@ -98,15 +97,12 @@ const PORT = Number(process.env.PORT ?? 8787);
 const FACTORY_RUNTIME = await resolveFactoryRuntimeConfig(process.cwd());
 const WORKSPACE_ROOT = FACTORY_RUNTIME.repoRoot;
 const DATA_DIR = FACTORY_RUNTIME.dataDir;
-const USE_INDEXED_STORE = process.env.RECEIPT_INDEXED_STORE === "1";
-const FACTORY_ORCHESTRATOR_MODE = FACTORY_RUNTIME.orchestratorMode;
 
 // ============================================================================
 // Composition: Store -> Runtime
 // ============================================================================
 
-const makeStore = <E,>() =>
-  (USE_INDEXED_STORE ? jsonlIndexedStore<E>(DATA_DIR) : jsonlStore<E>(DATA_DIR));
+const makeStore = <E,>() => jsonlStore<E>(DATA_DIR);
 
 const store = makeStore<TodoEvent>();
 const branchStore = jsonBranchStore(DATA_DIR);
@@ -227,7 +223,7 @@ const JOB_STREAM = "jobs";
 const IMPROVEMENT_STREAM = "improvement";
 const INSPECTOR_STREAM = "agents/inspector";
 const jobWorkerId = process.env.JOB_WORKER_ID ?? `worker_${process.pid}`;
-const jobPollMs = Number(process.env.JOB_POLL_MS ?? 250);
+const jobPollMs = Number(process.env.JOB_POLL_MS ?? 100);
 const jobLeaseMs = Number(process.env.JOB_LEASE_MS ?? 30_000);
 const subJobWaitMsRaw = Number(process.env.SUBJOB_WAIT_MS ?? 1_500);
 const subJobWaitMs = Number.isFinite(subJobWaitMsRaw)
@@ -427,9 +423,9 @@ const { service: factoryService } = createFactoryServiceRuntime({
   sse,
   repoRoot: WORKSPACE_ROOT,
   codexBin: FACTORY_RUNTIME.codexBin,
-  orchestratorMode: FACTORY_ORCHESTRATOR_MODE,
   memoryTools,
 });
+const factoryWorkerHandlers = createFactoryWorkerHandlers(factoryService);
 const agentRunner = createAgentRunner({
   defaultStream: "agents/agent", sseTopic: "agent", sseTokenEvent: "agent-token",
   normalizeConfig: normalizeAgentConfig, runtime: agentRuntime,
@@ -1350,16 +1346,20 @@ const worker = new JobWorker({
       },
       runtime: agentRuntime, runStreamFn: agentRunStream, runner: factoryRunner,
     }),
-    "factory-codex": async (job, ctx) => {
+    ...factoryWorkerHandlers,
+    codex: async (job, ctx) => {
+      if (job.payload.kind !== "factory.codex.run") {
+        return factoryWorkerHandlers.codex(job, ctx);
+      }
       await ctx.pullCommands(["steer", "follow_up"]);
       const payload = job.payload as Record<string, unknown>;
       const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
       if (!prompt) {
         return {
           ok: false,
-          error: "factory-codex prompt required",
+          error: "factory codex prompt required",
           noRetry: true,
-          result: { status: "failed", summary: "factory-codex prompt required" },
+          result: { status: "failed", summary: "factory codex prompt required" },
         };
       }
       const timeoutMs = typeof payload.timeoutMs === "number" && Number.isFinite(payload.timeoutMs)
@@ -1424,7 +1424,6 @@ const worker = new JobWorker({
       await inspectorRunner(job.payload);
       return { ok: true, result: { runId: job.payload.runId as string | undefined, stream: INSPECTOR_STREAM } };
     },
-    ...createFactoryWorkerHandlers(factoryService),
   },
 });
 worker.start();

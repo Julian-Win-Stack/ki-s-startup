@@ -18,6 +18,7 @@ import type { AgentLoaderContext } from "../../src/framework/agent-types.ts";
 import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../../src/modules/job.ts";
 import {
   buildFactoryProjection,
+  DEFAULT_FACTORY_OBJECTIVE_PROFILE,
   DEFAULT_FACTORY_OBJECTIVE_POLICY,
   reduceFactory,
   initialFactoryState,
@@ -26,6 +27,7 @@ import {
 import type { AgentEvent } from "../../src/modules/agent.ts";
 import createFactoryRoute, { buildChatItemsForRun } from "../../src/agents/factory.agent.ts";
 import { FactoryService } from "../../src/services/factory-service.ts";
+import { factoryChatStream } from "../../src/services/factory-chat-profiles.ts";
 import { factoryChatIsland, factoryChatShell, factoryInspectorIsland, factorySidebarIsland } from "../../src/views/factory-chat.ts";
 import {
   factoryMissionControlShell,
@@ -89,6 +91,8 @@ const createJobRuntime = (dataDir: string) =>
 
 const createRouteTestApp = (overrides?: {
   readonly liveOutput?: Record<string, unknown>;
+  readonly jobs?: ReadonlyArray<QueueJob>;
+  readonly onSubscribeMany?: (subscriptions: ReadonlyArray<{ readonly topic: string; readonly stream?: string }>) => void;
 }): Hono => {
   const dummyRuntime = {
     execute: async () => [],
@@ -112,7 +116,7 @@ const createRouteTestApp = (overrides?: {
     queueCommand: async () => ({ id: "cmd" }),
     consumeCommands: async () => [],
     getJob: async () => undefined,
-    listJobs: async () => [],
+    listJobs: async () => overrides?.jobs ?? [],
     waitForJob: async () => undefined,
   };
   const stubService = {
@@ -137,7 +141,10 @@ const createRouteTestApp = (overrides?: {
       publish: () => {},
       publishData: () => {},
       subscribe: () => new Response(""),
-      subscribeMany: () => new Response(""),
+      subscribeMany: (subscriptions) => {
+        overrides?.onSubscribeMany?.(subscriptions as ReadonlyArray<{ readonly topic: string; readonly stream?: string }>);
+        return new Response("");
+      },
     } as AgentLoaderContext["sse"],
     llmText: async () => "",
     enqueueJob: async () => {},
@@ -272,6 +279,7 @@ test("factory reducer: replay reconstructs task, candidate, and integration stat
       baseHash: "abc1234",
       checks: ["npm run build"],
       checksSource: "explicit",
+      profile: DEFAULT_FACTORY_OBJECTIVE_PROFILE,
       policy: DEFAULT_FACTORY_OBJECTIVE_POLICY,
       createdAt: 1,
     },
@@ -597,6 +605,8 @@ test("factory work details shell: renders the advanced /factory/control surface"
   expect(markup).toMatch(/id="factory-mission-rail"/);
   expect(markup).toMatch(/id="factory-mission-inspector"/);
   expect(markup).toMatch(/new EventSource\("\/factory\/control\/events/);
+  expect(markup).not.toMatch(/setInterval\(/);
+  expect(markup).not.toMatch(/startLivePolling/);
   expect(markup).toMatch(/>Chat</);
   expect(markup).toMatch(/No thread selected/);
   expect(markup).not.toMatch(/id="factory-chat"/);
@@ -717,7 +727,7 @@ test("factory mission main island: execution links keep objective selection in p
       }],
       jobs: [{
         jobId: "job_01",
-        agentId: "factory-codex",
+        agentId: "codex",
         status: "running",
         summary: "Applying the shell patch.",
         selected: false,
@@ -753,6 +763,92 @@ test("factory mission main island: execution links keep objective selection in p
   expect(markup).toMatch(/focusKind=run&amp;focusId=generalist%3Arun_01/);
   expect(markup).toMatch(/focusKind=job&amp;focusId=job_01/);
   expect(markup).toMatch(/Open run thread/);
+});
+
+test("factory mission main island: focused run labels panels as related context", () => {
+  const markup = factoryMissionMainIsland({
+    objectiveId: "objective_demo",
+    panel: "execution",
+    focusKind: "run",
+    focusId: "generalist:run_parent",
+    objectives: [],
+    sections: {
+      needs_attention: [],
+      active: [],
+      queued: [],
+      completed: [],
+    },
+    selected: {
+      objectiveId: "objective_demo",
+      title: "Unify Factory UI",
+      status: "executing",
+      phase: "executing",
+      prompt: "Split mission control from chat.",
+      slotState: "active",
+      activeTaskCount: 1,
+      readyTaskCount: 1,
+      taskCount: 2,
+      checks: ["bun test"],
+      budgetElapsedMinutes: 3,
+      budgetMaxMinutes: 60,
+      taskRunsUsed: 1,
+      taskRunsMax: 8,
+      tasks: [{
+        taskId: "task_01",
+        title: "Implement mission shell",
+        workerType: "codex",
+        status: "running",
+        workspaceExists: true,
+        workspaceDirty: true,
+        selected: false,
+        controlLink: "/factory/control?objective=objective_demo&panel=execution&focusKind=task&focusId=task_01",
+      }],
+      runs: [{
+        focusId: "generalist:run_parent",
+        runId: "run_parent",
+        profileId: "generalist",
+        profileLabel: "Generalist",
+        status: "running",
+        summary: "Inspecting the mission shell.",
+        selected: true,
+        chatLink: "/factory?profile=generalist&objective=objective_demo&run=run_parent",
+        controlLink: "/factory/control?objective=objective_demo&panel=execution&focusKind=run&focusId=generalist%3Arun_parent",
+        previewLines: ["Inspecting the mission shell."],
+      }],
+      jobs: [{
+        jobId: "job_01",
+        agentId: "codex",
+        status: "running",
+        summary: "Applying the shell patch.",
+        selected: false,
+        controlLink: "/factory/control?objective=objective_demo&panel=execution&focusKind=job&focusId=job_01",
+        rawLink: "/jobs/job_01",
+      }],
+      recentReceipts: [],
+      debugLink: "/factory/api/objectives/objective_demo/debug",
+      receiptsLink: "/factory/api/objectives/objective_demo/receipts?limit=50",
+      chatLink: "/factory?objective=objective_demo",
+      activeJobCount: 1,
+      recentJobCount: 1,
+      contextPackCount: 1,
+      worktreeCount: 1,
+      focus: {
+        kind: "run",
+        title: "Generalist · run_parent",
+        status: "running",
+        summary: "Inspecting the mission shell.",
+        runId: "run_parent",
+        profileLabel: "Generalist",
+        chatLink: "/factory?profile=generalist&objective=objective_demo&run=run_parent",
+        previewLines: ["Inspecting the mission shell."],
+      },
+    },
+  });
+
+  expect(markup).toMatch(/Related tasks/);
+  expect(markup).toMatch(/Related runs/);
+  expect(markup).toMatch(/Related jobs/);
+  expect(markup).toMatch(/scoped to run run_parent and the child work linked to it/i);
 });
 
 test("factory chat island: renders chat rows and work cards", () => {
@@ -849,9 +945,9 @@ test("factory chat items: budget stops show the codex child state instead of a s
 
   const childJob: QueueJob = {
     id: "job_codex_01",
-    agentId: "factory-codex",
+    agentId: "codex",
     lane: "collect",
-    sessionKey: "factory-codex:demo",
+    sessionKey: "codex:demo",
     singletonMode: "allow",
     payload: {
       kind: "factory.codex.run",
@@ -1150,9 +1246,9 @@ test("factory chat items: structured supervisor snapshots render as live child s
 
   const childJob: QueueJob = {
     id: "job_codex_live",
-    agentId: "factory-codex",
+    agentId: "codex",
     lane: "collect",
-    sessionKey: "factory-codex:demo",
+    sessionKey: "codex:demo",
     singletonMode: "allow",
     payload: {
       kind: "factory.codex.run",
@@ -1245,7 +1341,7 @@ test("factory inspector island: renders selected objective controls and recent j
     }],
     jobs: [{
       jobId: codexJobId,
-      agentId: "factory-codex",
+      agentId: "codex",
       status: "running",
       summary: "Applying the latest profile summary UI patch.",
       runId: "run_codex_01",
@@ -1294,9 +1390,20 @@ test("factory inspector island: renders selected objective controls and recent j
       rawLink: `/jobs/${codexJobId}`,
       running: true,
     },
+    activeRun: {
+      runId: "run_01",
+      profileLabel: "Generalist",
+      status: "running",
+      summary: "Generalist is using codex.run.",
+      updatedAt: 3500,
+      lastToolName: "codex.run",
+      lastToolSummary: "Queued Codex child as job_codex_live_panel.",
+      link: "/factory?profile=generalist&objective=objective_demo&run=run_01",
+    },
   });
 
-  expect(markup).toMatch(/Codex worker/);
+  expect(markup).toMatch(/Live status/);
+  expect(markup).toMatch(/Realtime from Factory and receipt events/);
   expect(markup).toMatch(/Thread details/);
   expect(markup).toMatch(/Selected profile/);
   expect(markup).toMatch(/Tools in scope/);
@@ -1313,20 +1420,360 @@ test("factory inspector island: renders selected objective controls and recent j
   expect(markup).toMatch(/Stop thread/);
   expect(markup).toMatch(/Archive thread/);
   expect(markup).toMatch(/Latest decision/);
-  expect(markup).toMatch(/Latest child/);
+  expect(markup).toMatch(/>Generalist</);
+  expect(markup).toMatch(/Generalist is using codex.run/);
+  expect(markup).toMatch(/>Codex</);
   expect(markup).toMatch(/Patch the right rail to show live Codex progress/);
   expect(markup).toMatch(/Inspecting src\/views\/factory-chat.ts and refreshing the right rail/);
-  expect(markup).toMatch(/stderr tail/);
-  expect(markup).toMatch(/Job JSON/);
   expect(markup).toMatch(/Run run_01/);
+  expect(markup).toMatch(/Job job_codex_live_panel/);
   expect(markup).toContain(longJobId);
-  expect(markup).toMatch(/Recent jobs[\s\S]*?>1<\/div>/);
+  expect(markup).toMatch(/Recent job history/);
   expect(markup).toMatch(/Open thread/);
   expect(markup).toMatch(/Ship the profile-driven Factory UI/);
   expect(markup).toMatch(/factory-inspector-panel|factory-job-panel/);
   expect(markup).toMatch(/factory-job-list/);
   expect(markup).toMatch(/factory-job-card__title/);
   expect(markup).toMatch(/factory-job-card__summary/);
+});
+
+test("factory inspector island: renders multiple live child streams with lineage and controls", () => {
+  const markup = factoryInspectorIsland({
+    activeProfileId: "generalist",
+    activeProfileLabel: "Generalist",
+    activeProfileTools: ["codex.run", "agent.delegate", "job.control"],
+    profiles: [
+      { id: "generalist", label: "Generalist", selected: true },
+    ],
+    objectives: [],
+    jobs: [{
+      jobId: "job_parent_factory",
+      agentId: "factory",
+      status: "running",
+      summary: "Supervisor is still open.",
+      runId: "run_parent",
+      updatedAt: 1000,
+    }],
+    selectedObjective: undefined,
+    activeRun: {
+      runId: "run_parent",
+      profileLabel: "Generalist",
+      status: "running",
+      summary: "Generalist is still coordinating child work.",
+      updatedAt: 2600,
+      lastToolName: "agent.delegate",
+      lastToolSummary: "Queued a writer follow-up child.",
+      link: "/factory?profile=generalist&run=run_parent",
+    },
+    liveChildren: [{
+      jobId: "job_codex_live",
+      agentId: "codex",
+      worker: "codex",
+      status: "running",
+      summary: "Patching the chat shell.",
+      latestNote: "Editing src/views/factory-chat.ts.",
+      stderrTail: "vite ok",
+      stdoutTail: "tests queued",
+      runId: "run_parent",
+      parentRunId: "run_parent",
+      stream: "agents/factory/demo",
+      parentStream: "agents/factory/demo",
+      task: "Patch the chat shell to show live child streams.",
+      updatedAt: 2000,
+      rawLink: "/jobs/job_codex_live",
+      running: true,
+    }, {
+      jobId: "job_sub_follow_up",
+      agentId: "writer",
+      worker: "writer",
+      status: "running",
+      summary: "Summarizing the latest sub-agent output.",
+      latestNote: "Drafting a receipt summary for the parent run.",
+      runId: "run_parent_sub_01",
+      parentRunId: "run_parent",
+      stream: "agents/factory/demo/sub/run_parent_sub_01",
+      parentStream: "agents/factory/demo",
+      task: "Summarize the latest child worker output for the operator.",
+      updatedAt: 2500,
+      rawLink: "/jobs/job_sub_follow_up",
+      running: true,
+    }],
+  });
+
+  expect(markup).toMatch(/Live status/);
+  expect(markup).toMatch(/Generalist is still coordinating child work/);
+  expect(markup).toMatch(/>Codex</);
+  expect(markup).toMatch(/writer/);
+  expect(markup).toMatch(/agents\/factory\/demo\/sub\/run_parent_sub_01/);
+  expect(markup).toMatch(/Parent stream: agents\/factory\/demo/);
+  expect(markup).toMatch(/Details/);
+  expect(markup).toMatch(/Recent job history/);
+  expect(markup).toMatch(/Supervisor is still open\./);
+});
+
+test("factory route: inspector island includes descendant sub streams from queue lineage", async () => {
+  const stream = factoryChatStream(process.cwd(), "generalist");
+  const app = createRouteTestApp({
+    jobs: [{
+      id: "job_factory_parent",
+      agentId: "factory",
+      lane: "collect",
+      sessionKey: "factory-chat:generalist",
+      singletonMode: "allow",
+      payload: {
+        kind: "factory.run",
+        stream,
+        runId: "run_parent",
+      },
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      commands: [],
+    }, {
+      id: "job_descendant_sub",
+      agentId: "writer",
+      lane: "follow_up",
+      sessionKey: "subagent:job_factory_parent:run_parent_sub_01",
+      singletonMode: "allow",
+      payload: {
+        kind: "writer.run",
+        stream: `${stream}/sub/run_parent_sub_01`,
+        runId: "run_parent_sub_01",
+        problem: "Summarize the nested worker progress.",
+      },
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      createdAt: 3,
+      updatedAt: 4,
+      result: {
+        worker: "writer",
+        summary: "Summarizing the nested worker progress.",
+        lastMessage: "Collecting the latest child updates.",
+      },
+      commands: [],
+    }],
+  });
+
+  const response = await app.request("http://receipt.test/factory/island/inspector?profile=generalist");
+  const markup = await response.text();
+  expect(response.status).toBe(200);
+  expect(markup).toMatch(/Live status/);
+  expect(markup).toMatch(/job_descendant_sub/);
+  expect(markup).toContain(`${stream}/sub/run_parent_sub_01`);
+  expect(markup).toMatch(/Collecting the latest child updates/);
+});
+
+test("factory route: events subscribe to the selected job so queue state changes refresh the chat promptly", async () => {
+  const subscriptions: Array<{ readonly topic: string; readonly stream?: string }> = [];
+  const app = createRouteTestApp({
+    onSubscribeMany: (items) => subscriptions.push(...items),
+  });
+
+  const response = await app.request("http://receipt.test/factory/events?profile=generalist&job=job_queue_01");
+  expect(response.status).toBe(200);
+  expect(subscriptions.some((item) => item.topic === "jobs" && item.stream === "job_queue_01")).toBe(true);
+  expect(subscriptions.some((item) => item.topic === "agent" && typeof item.stream === "string" && item.stream.includes("/generalist"))).toBe(true);
+});
+
+test("factory route: run-scoped chat events subscribe to related child jobs only", async () => {
+  const subscriptions: Array<{ readonly topic: string; readonly stream?: string }> = [];
+  const stream = factoryChatStream(process.cwd(), "generalist", "objective_demo");
+  const app = createRouteTestApp({
+    onSubscribeMany: (items) => subscriptions.push(...items),
+    jobs: [{
+      id: "job_related_parent",
+      agentId: "codex",
+      lane: "collect",
+      sessionKey: "factory-chat:generalist",
+      singletonMode: "allow",
+      payload: {
+        kind: "factory.codex.run",
+        objectiveId: "objective_demo",
+        stream,
+        parentRunId: "run_parent",
+        task: "Patch the shell.",
+      },
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      commands: [],
+    }, {
+      id: "job_related_child",
+      agentId: "writer",
+      lane: "collect",
+      sessionKey: "factory-delegate",
+      singletonMode: "allow",
+      payload: {
+        kind: "writer.run",
+        objectiveId: "objective_demo",
+        runId: "run_child",
+        parentRunId: "run_parent",
+        stream: "agents/writer",
+        parentStream: stream,
+        task: "Write the summary.",
+      },
+      status: "queued",
+      attempt: 1,
+      maxAttempts: 1,
+      createdAt: 3,
+      updatedAt: 4,
+      commands: [],
+    }, {
+      id: "job_unrelated",
+      agentId: "codex",
+      lane: "collect",
+      sessionKey: "factory-chat:generalist",
+      singletonMode: "allow",
+      payload: {
+        kind: "factory.codex.run",
+        objectiveId: "objective_demo",
+        stream,
+        parentRunId: "run_other",
+        task: "Unrelated work.",
+      },
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      createdAt: 5,
+      updatedAt: 6,
+      commands: [],
+    }],
+  });
+
+  const response = await app.request("http://receipt.test/factory/events?profile=generalist&objective=objective_demo&run=run_parent");
+  expect(response.status).toBe(200);
+  expect(subscriptions).toContainEqual({ topic: "jobs", stream: "job_related_parent" });
+  expect(subscriptions).toContainEqual({ topic: "jobs", stream: "job_related_child" });
+  expect(subscriptions).not.toContainEqual({ topic: "jobs", stream: "job_unrelated" });
+});
+
+test("factory route: control events subscribe to focused job updates so work details can stream without polling", async () => {
+  const subscriptions: Array<{ readonly topic: string; readonly stream?: string }> = [];
+  const app = createRouteTestApp({
+    onSubscribeMany: (items) => subscriptions.push(...items),
+  });
+
+  const response = await app.request(
+    "http://receipt.test/factory/control/events?objective=objective_demo&focusKind=job&focusId=job_live_01",
+  );
+  expect(response.status).toBe(200);
+  expect(subscriptions).toContainEqual({ topic: "factory", stream: "objective_demo" });
+  expect(subscriptions).toContainEqual({ topic: "jobs", stream: "job_live_01" });
+});
+
+test("factory route: control events subscribe to focused run lineage and thread stream", async () => {
+  const subscriptions: Array<{ readonly topic: string; readonly stream?: string }> = [];
+  const app = createRouteTestApp({
+    onSubscribeMany: (items) => subscriptions.push(...items),
+    jobs: [{
+      id: "job_run_parent",
+      agentId: "codex",
+      lane: "collect",
+      sessionKey: "factory-chat:generalist",
+      singletonMode: "allow",
+      payload: {
+        kind: "factory.codex.run",
+        objectiveId: "objective_demo",
+        parentRunId: "run_parent",
+        stream: factoryChatStream(process.cwd(), "generalist", "objective_demo"),
+        task: "Patch the shell.",
+      },
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      commands: [],
+    }, {
+      id: "job_run_child",
+      agentId: "writer",
+      lane: "collect",
+      sessionKey: "factory-delegate",
+      singletonMode: "allow",
+      payload: {
+        kind: "writer.run",
+        objectiveId: "objective_demo",
+        runId: "run_child",
+        parentRunId: "run_parent",
+        stream: "agents/writer",
+        parentStream: factoryChatStream(process.cwd(), "generalist", "objective_demo"),
+        task: "Write the summary.",
+      },
+      status: "queued",
+      attempt: 1,
+      maxAttempts: 1,
+      createdAt: 3,
+      updatedAt: 4,
+      commands: [],
+    }, {
+      id: "job_run_other",
+      agentId: "codex",
+      lane: "collect",
+      sessionKey: "factory-chat:generalist",
+      singletonMode: "allow",
+      payload: {
+        kind: "factory.codex.run",
+        objectiveId: "objective_demo",
+        parentRunId: "run_other",
+        stream: factoryChatStream(process.cwd(), "generalist", "objective_demo"),
+        task: "Unrelated work.",
+      },
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      createdAt: 5,
+      updatedAt: 6,
+      commands: [],
+    }],
+  });
+
+  const response = await app.request(
+    "http://receipt.test/factory/control/events?objective=objective_demo&focusKind=run&focusId=generalist:run_parent",
+  );
+  expect(response.status).toBe(200);
+  expect(subscriptions).toContainEqual({ topic: "factory", stream: "objective_demo" });
+  expect(subscriptions).toContainEqual({ topic: "agent", stream: factoryChatStream(process.cwd(), "generalist", "objective_demo") });
+  expect(subscriptions).toContainEqual({ topic: "jobs", stream: "job_run_parent" });
+  expect(subscriptions).toContainEqual({ topic: "jobs", stream: "job_run_child" });
+  expect(subscriptions).not.toContainEqual({ topic: "jobs", stream: "job_run_other" });
+});
+
+test("factory route: inspector island shows queued run state before the first receipts arrive", async () => {
+  const stream = factoryChatStream(process.cwd(), "generalist");
+  const app = createRouteTestApp({
+    jobs: [{
+      id: "job_queue_01",
+      agentId: "factory",
+      lane: "collect",
+      sessionKey: "factory-chat:generalist",
+      singletonMode: "allow",
+      payload: {
+        kind: "factory.run",
+        stream,
+        runId: "run_queue_01",
+        profileId: "generalist",
+        problem: "Check whether queued runs show state immediately.",
+      },
+      status: "queued",
+      attempt: 1,
+      maxAttempts: 1,
+      createdAt: 1,
+      updatedAt: 2,
+      commands: [],
+    }],
+  });
+
+  const response = await app.request("http://receipt.test/factory/island/inspector?profile=generalist&run=run_queue_01&job=job_queue_01");
+  const markup = await response.text();
+  expect(response.status).toBe(200);
+  expect(markup).toMatch(/Live status/);
+  expect(markup).toMatch(/Waiting for a worker to pick up this run/);
+  expect(markup).toMatch(/Run run_queue_01/);
 });
 
 test("factory route: /factory renders chat, /factory/chat redirects, and /factory/control renders work details", async () => {

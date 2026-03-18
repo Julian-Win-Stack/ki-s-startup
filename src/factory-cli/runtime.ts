@@ -115,13 +115,12 @@ export const createFactoryCliRuntime = (
     sse,
     repoRoot: config.repoRoot,
     codexBin: config.codexBin,
-    orchestratorMode: config.orchestratorMode,
   });
 
   const worker = new JobWorker({
     queue,
     workerId: process.env.JOB_WORKER_ID ?? `factory_cli_${process.pid}`,
-    pollMs: Math.max(50, Number(process.env.JOB_POLL_MS ?? 250)),
+    pollMs: Math.max(50, Number(process.env.JOB_POLL_MS ?? 100)),
     leaseMs: Math.max(5_000, Number(process.env.JOB_LEASE_MS ?? 30_000)),
     concurrency: Math.max(1, Number(process.env.JOB_CONCURRENCY ?? 2)),
     handlers: createFactoryWorkerHandlers(service),
@@ -139,7 +138,8 @@ export const createFactoryCliRuntime = (
     closeWatcher(objectiveWatchKey);
     if (!objectiveId) return;
     const locator = createStreamLocator(config.dataDir);
-    const streamFile = await locator.fileFor(`factory/objectives/${objectiveId}`);
+    const streamFile = await locator.fileForExisting(`factory/objectives/${objectiveId}`);
+    if (!streamFile) return;
     watchPath(objectiveWatchKey, streamFile, () => {
       notify({
         type: "objective_changed",
