@@ -506,10 +506,15 @@ export const factoryProfileStream = (repoRoot: string, profileId: string): strin
 export const factoryObjectiveStream = (repoRoot: string, profileId: string, objectiveId: string): string =>
   `${factoryProfileStream(repoRoot, profileId)}/objectives/${encodeURIComponent(objectiveId)}`;
 
-export const factoryChatStream = (repoRoot: string, profileId: string, objectiveId?: string): string =>
+export const factoryChatSessionStream = (repoRoot: string, profileId: string, chatId: string): string =>
+  `${factoryProfileStream(repoRoot, profileId)}/sessions/${encodeURIComponent(chatId)}`;
+
+export const factoryChatStream = (repoRoot: string, profileId: string, objectiveId?: string, chatId?: string): string =>
   objectiveId?.trim()
     ? factoryObjectiveStream(repoRoot, profileId, objectiveId)
-    : factoryProfileStream(repoRoot, profileId);
+    : chatId?.trim()
+      ? factoryChatSessionStream(repoRoot, profileId, chatId)
+      : factoryProfileStream(repoRoot, profileId);
 
 export const discoverFactoryChatProfiles = async (profileRoot: string): Promise<ReadonlyArray<FactoryChatProfile>> => {
   const profilesDir = ensureProfileDir(profileRoot);

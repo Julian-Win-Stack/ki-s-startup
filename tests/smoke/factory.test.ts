@@ -411,6 +411,32 @@ test("factory reducer: replay reconstructs task, candidate, and integration stat
   expect(replayA.integration.promotedCommit).toBe("fedcba9");
 });
 
+test("factory reducer: legacy objective profile snapshots are normalized during replay", () => {
+  const state = reduceFactory(initialFactoryState, {
+    type: "objective.created",
+    objectiveId: "objective_legacy",
+    title: "Legacy objective",
+    prompt: "Open an older Factory thread.",
+    channel: "results",
+    baseHash: "abc1234",
+    checks: [],
+    checksSource: "default",
+    profile: {
+      rootProfileId: "software",
+      rootProfileLabel: "Software",
+      promptPath: "profiles/software/PROFILE.md",
+    } as unknown as FactoryEvent["profile"],
+    policy: DEFAULT_FACTORY_OBJECTIVE_POLICY,
+    createdAt: 1,
+  });
+
+  expect(state.profile.rootProfileId).toBe("software");
+  expect(state.profile.rootProfileLabel).toBe("Software");
+  expect(state.profile.promptPath).toBe("profiles/software/PROFILE.md");
+  expect(state.profile.selectedSkills).toEqual([]);
+  expect(state.profile.objectivePolicy.defaultWorkerType).toBe("codex");
+});
+
 test("factory decomposition: invalid dependency references are dropped and canonicalized", async () => {
   const dataDir = await createTempDir("receipt-factory-decomposition");
   const repoRoot = await createSourceRepo();
@@ -559,20 +585,18 @@ test("factory shell: renders chat surface on /factory with thread-aware links", 
     },
   });
 
-  expect(markup).toMatch(/Chat with/);
+  expect(markup).toMatch(/Blank chat/);
   expect(markup).toMatch(/Generalist/);
   expect(markup).toMatch(/href="\/assets\/factory\.css"/);
   expect(markup).toMatch(/id="factory-chat"/);
   expect(markup).toMatch(/id="factory-sidebar"/);
   expect(markup).toMatch(/id="factory-inspector"/);
   expect(markup).toMatch(/new EventSource\("\/factory\/events\?profile=/);
-  expect(markup).toMatch(/>Chat</);
-  expect(markup).toMatch(/>Thread</);
+  expect(markup).toMatch(/job-refresh/);
   expect(markup).toMatch(/Work Details/);
   expect(markup).toMatch(/NEW CHAT/);
   expect(markup).toMatch(/factory-run-started/);
   expect(markup).toMatch(/Message Factory/);
-  expect(markup).toMatch(/Messages, runs, and recent jobs in this view stay scoped to the current thread\./);
   expect(markup).toMatch(/action="\/factory\/run"/);
   expect(markup).toMatch(/href="\/factory\/control\?objective=objective_demo"/);
   expect(markup).toMatch(/data-run="run_01"/);
@@ -895,8 +919,8 @@ test("factory chat island: renders chat rows and work cards", () => {
   expect(markup).toMatch(/Codex run/);
   expect(markup).toMatch(/job_01/);
   expect(markup).toMatch(/Abort/);
-  expect(markup).toMatch(/Selected profile/);
-  expect(markup).toMatch(/Be the calm operator-facing guide for this repo/);
+  expect(markup).toMatch(/Generalist/);
+  expect(markup).not.toMatch(/Selected profile/);
   expect(markup).toMatch(/replaced the old <code>\/factory<\/code> dashboard/);
 });
 
@@ -1210,7 +1234,7 @@ test("factory sidebar island: blank chat treats old objectives as recent threads
   });
 
   expect(markup).toMatch(/Recent Threads/);
-  expect(markup).toMatch(/New chat is active/);
+  expect(markup).toMatch(/Blank chat is active/);
   expect(markup).toMatch(/Show recent threads/);
 });
 
@@ -1412,12 +1436,11 @@ test("factory inspector island: renders selected objective controls and recent j
   expect(markup).toMatch(/Live status/);
   expect(markup).toMatch(/Realtime from Factory and receipt events/);
   expect(markup).toMatch(/Thread details/);
-  expect(markup).toMatch(/Selected profile/);
-  expect(markup).toMatch(/Tools in scope/);
-  expect(markup).toMatch(/Codex/);
-  expect(markup).toMatch(/Shell/);
-  expect(markup).toMatch(/Status/);
-  expect(markup).toMatch(/Dispatch/);
+  expect(markup).toMatch(/Operations/);
+  expect(markup).toMatch(/Agents active/);
+  expect(markup).toMatch(/Jobs running/);
+  expect(markup).toMatch(/Jobs failed/);
+  expect(markup).toMatch(/Codex live/);
   expect(markup).toMatch(/Work Details/);
   expect(markup).toMatch(/Debug JSON/);
   expect(markup).toMatch(/Receipts/);
@@ -1789,7 +1812,7 @@ test("factory route: /factory renders chat, /factory/chat redirects, and /factor
   const chat = await app.request("http://receipt.test/factory?profile=generalist&run=run_01&job=job_01");
   const chatMarkup = await chat.text();
   expect(chat.status).toBe(200);
-  expect(chatMarkup).toMatch(/Chat with/);
+  expect(chatMarkup).toMatch(/Blank chat/);
   expect(chatMarkup).toMatch(/data-run="run_01"/);
   expect(chatMarkup).toMatch(/data-job="job_01"/);
   expect(chatMarkup).toMatch(/\/factory\/island\/chat\?profile=generalist&run=run_01&job=job_01/);

@@ -20,6 +20,7 @@ import {
   factoryActivatableTasks,
   factoryReadyTasks,
   initialFactoryState,
+  normalizeFactoryObjectiveProfileSnapshot,
   normalizeFactoryObjectivePolicy,
   reduceFactory,
   type FactoryBudgetState,
@@ -744,7 +745,7 @@ export class FactoryService {
   }
 
   private objectiveProfileForState(state: FactoryState): FactoryObjectiveProfileSnapshot {
-    return state.profile ?? DEFAULT_FACTORY_OBJECTIVE_PROFILE;
+    return normalizeFactoryObjectiveProfileSnapshot(state.profile);
   }
 
   private objectiveAllowsWorker(state: FactoryState, workerType: string | undefined): boolean {
@@ -779,7 +780,7 @@ export class FactoryService {
       repoSharedMemoryScope: "factory/repo/shared",
       objectiveMemoryScope: `factory/objectives/${state.objectiveId}`,
       integrationMemoryScope: `factory/objectives/${state.objectiveId}/integration`,
-      profileSkillRefs: state.profile.selectedSkills,
+      profileSkillRefs: this.objectiveProfileForState(state).selectedSkills,
       repoSkillPaths,
       sharedArtifactRefs,
     };
@@ -1669,7 +1670,7 @@ export class FactoryService {
         taskKind: "planned",
         title: spec.title,
         prompt: spec.prompt,
-        workerType: this.normalizeProfileWorkerType(state.profile, spec.workerType),
+        workerType: this.normalizeProfileWorkerType(this.objectiveProfileForState(state), spec.workerType),
         baseCommit: state.baseHash,
         dependsOn: spec.dependsOn,
         status: "pending",
@@ -2290,17 +2291,18 @@ export class FactoryService {
       readonly prefixEvents?: ReadonlyArray<FactoryEvent>;
     },
   ): Promise<void> {
-    const workerType = this.normalizeProfileWorkerType(this.objectiveProfileForState(state), String(task.workerType));
+    const profile = this.objectiveProfileForState(state);
+    const workerType = this.normalizeProfileWorkerType(profile, String(task.workerType));
     if (!this.objectiveAllowsWorker(state, workerType)) {
       throw new FactoryServiceError(
         409,
-        `worker '${workerType}' is not allowed by objective profile '${state.profile.rootProfileId}'`,
+        `worker '${workerType}' is not allowed by objective profile '${profile.rootProfileId}'`,
       );
     }
     if (this.objectiveWorktreeMode(state, workerType) === "forbidden") {
       throw new FactoryServiceError(
         409,
-        `worker '${workerType}' is configured without a task worktree in objective profile '${state.profile.rootProfileId}'`,
+        `worker '${workerType}' is configured without a task worktree in objective profile '${profile.rootProfileId}'`,
       );
     }
     if (state.graph.activeNodeIds.length >= this.effectiveMaxParallelChildren(state)) {
@@ -2377,9 +2379,9 @@ export class FactoryService {
       memoryConfigPath: manifest.memoryConfigPath,
       repoSkillPaths: manifest.repoSkillPaths,
       skillBundlePaths: manifest.skillBundlePaths,
-      profile: state.profile,
-      profilePromptHash: state.profile.promptHash,
-      profileSkillRefs: state.profile.selectedSkills,
+      profile,
+      profilePromptHash: profile.promptHash,
+      profileSkillRefs: profile.selectedSkills,
       sharedArtifactRefs: manifest.sharedArtifactRefs,
       contextRefs: manifest.contextRefs,
       integrationRef: state.integration.branchRef,
@@ -2460,7 +2462,7 @@ export class FactoryService {
       return;
     }
     if (action.type === "reassign_task" && action.taskId && action.workerType) {
-      const nextWorkerType = this.normalizeProfileWorkerType(state.profile, action.workerType);
+      const nextWorkerType = this.normalizeProfileWorkerType(this.objectiveProfileForState(state), action.workerType);
       const events: FactoryEvent[] = [...prefixEvents, {
         type: "task.worker.reassigned",
         objectiveId: state.objectiveId,
@@ -2571,7 +2573,7 @@ export class FactoryService {
         taskKind: "split",
         title: clipText(draft.title, 120) ?? draft.title,
         prompt: draft.prompt,
-        workerType: this.normalizeProfileWorkerType(state.profile, String(draft.workerType)),
+        workerType: this.normalizeProfileWorkerType(this.objectiveProfileForState(state), String(draft.workerType)),
         sourceTaskId,
         baseCommit: this.resolveTaskBaseCommit(state, source),
         dependsOn,
@@ -3061,7 +3063,7 @@ export class FactoryService {
       taskCount: projection.tasks.length,
       integrationStatus: state.integration.status,
       latestCommitHash: state.integration.promotedCommit ?? state.integration.headCommit ?? latestCandidate?.headCommit,
-      profile: state.profile,
+      profile: this.objectiveProfileForState(state),
     };
   }
 
@@ -3115,7 +3117,7 @@ export class FactoryService {
       channel: state.channel,
       baseHash: state.baseHash,
       checks: state.checks,
-      profile: state.profile,
+      profile: this.objectiveProfileForState(state),
       policy: state.policy,
       contextSources: this.buildContextSources(state, repoSkillPaths, sharedArtifactRefs),
       budgetState: this.buildBudgetState(state),
@@ -3294,7 +3296,7 @@ export class FactoryService {
   }> {
     const title = state.title;
     const prompt = state.prompt;
-    const profile = state.profile;
+    const profile = this.objectiveProfileForState(state);
     if (this.llmStructured) {
       try {
         const { parsed } = await this.llmStructured({
@@ -3962,7 +3964,7 @@ export class FactoryService {
       objectiveId: state.objectiveId,
       title: state.title,
       prompt: state.prompt,
-      profile: state.profile,
+      profile: this.objectiveProfileForState(state),
       task: {
         taskId: task.taskId,
         title: task.title,
@@ -4262,6 +4264,7 @@ export class FactoryService {
     readonly sharedArtifactRefs: ReadonlyArray<GraphRef>;
     readonly contextRefs: ReadonlyArray<GraphRef>;
   }> {
+    const profile = this.objectiveProfileForState(state);
     const files = this.taskFilePaths(workspacePath, task.taskId);
     await fs.mkdir(path.dirname(files.manifestPath), { recursive: true });
     await fs.rm(files.resultPath, { force: true });
@@ -4274,8 +4277,8 @@ export class FactoryService {
       taskId: task.taskId,
       title: task.title,
       workerType: task.workerType,
-      profile: state.profile,
-      selectedSkills: state.profile.selectedSkills,
+      profile,
+      selectedSkills: profile.selectedSkills,
       repoSkillPaths,
       generatedAt: Date.now(),
     };
@@ -4288,7 +4291,7 @@ export class FactoryService {
         baseHash: state.baseHash,
         checks: state.checks,
       },
-      profile: state.profile,
+      profile,
       task: {
         taskId: task.taskId,
         title: task.title,
@@ -4477,7 +4480,7 @@ export class FactoryService {
       memoryConfigPath: requireNonEmpty(payload.memoryConfigPath, "memoryConfigPath required"),
       repoSkillPaths: Array.isArray(payload.repoSkillPaths) ? payload.repoSkillPaths.filter((item): item is string => typeof item === "string") : [],
       skillBundlePaths: Array.isArray(payload.skillBundlePaths) ? payload.skillBundlePaths.filter((item): item is string => typeof item === "string") : [],
-      profile: isRecord(payload.profile) ? payload.profile as FactoryObjectiveProfileSnapshot : DEFAULT_FACTORY_OBJECTIVE_PROFILE,
+      profile: normalizeFactoryObjectiveProfileSnapshot(payload.profile),
       profilePromptHash: optionalTrimmedString(payload.profilePromptHash) ?? "",
       profileSkillRefs: Array.isArray(payload.profileSkillRefs) ? payload.profileSkillRefs.filter((item): item is string => typeof item === "string") : [],
       sharedArtifactRefs: Array.isArray(payload.sharedArtifactRefs)

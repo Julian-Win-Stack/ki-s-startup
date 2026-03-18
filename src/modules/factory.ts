@@ -381,6 +381,62 @@ export const DEFAULT_FACTORY_OBJECTIVE_PROFILE: FactoryObjectiveProfileSnapshot 
   },
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+export const normalizeFactoryObjectiveProfileSnapshot = (value: unknown): FactoryObjectiveProfileSnapshot => {
+  if (!isRecord(value)) return DEFAULT_FACTORY_OBJECTIVE_PROFILE;
+  const policyInput = isRecord(value.objectivePolicy) ? value.objectivePolicy : {};
+  const worktreeModes = isRecord(policyInput.worktreeModeByWorker)
+    ? policyInput.worktreeModeByWorker
+    : {};
+  const normalizedWorktreeModes = Object.fromEntries(
+    Object.entries(worktreeModes)
+      .filter(([, mode]) => mode === "required" || mode === "forbidden"),
+  ) as Readonly<Record<string, FactoryObjectiveProfileWorktreeMode>>;
+  return {
+    rootProfileId: typeof value.rootProfileId === "string" && value.rootProfileId.trim()
+      ? value.rootProfileId
+      : DEFAULT_FACTORY_OBJECTIVE_PROFILE.rootProfileId,
+    rootProfileLabel: typeof value.rootProfileLabel === "string" && value.rootProfileLabel.trim()
+      ? value.rootProfileLabel
+      : DEFAULT_FACTORY_OBJECTIVE_PROFILE.rootProfileLabel,
+    resolvedProfileHash: typeof value.resolvedProfileHash === "string"
+      ? value.resolvedProfileHash
+      : DEFAULT_FACTORY_OBJECTIVE_PROFILE.resolvedProfileHash,
+    promptHash: typeof value.promptHash === "string"
+      ? value.promptHash
+      : DEFAULT_FACTORY_OBJECTIVE_PROFILE.promptHash,
+    promptPath: typeof value.promptPath === "string" && value.promptPath.trim()
+      ? value.promptPath
+      : DEFAULT_FACTORY_OBJECTIVE_PROFILE.promptPath,
+    selectedSkills: Array.isArray(value.selectedSkills)
+      ? value.selectedSkills.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : DEFAULT_FACTORY_OBJECTIVE_PROFILE.selectedSkills,
+    objectivePolicy: {
+      allowedWorkerTypes: Array.isArray(policyInput.allowedWorkerTypes)
+        ? policyInput.allowedWorkerTypes.filter((item): item is FactoryWorkerType => typeof item === "string" && item.trim().length > 0)
+        : DEFAULT_FACTORY_OBJECTIVE_PROFILE.objectivePolicy.allowedWorkerTypes,
+      defaultWorkerType: typeof policyInput.defaultWorkerType === "string" && policyInput.defaultWorkerType.trim()
+        ? policyInput.defaultWorkerType
+        : DEFAULT_FACTORY_OBJECTIVE_PROFILE.objectivePolicy.defaultWorkerType,
+      worktreeModeByWorker: {
+        ...DEFAULT_FACTORY_OBJECTIVE_PROFILE.objectivePolicy.worktreeModeByWorker,
+        ...normalizedWorktreeModes,
+      },
+      defaultValidationMode: policyInput.defaultValidationMode === "none"
+        ? "none"
+        : DEFAULT_FACTORY_OBJECTIVE_PROFILE.objectivePolicy.defaultValidationMode,
+      maxParallelChildren: typeof policyInput.maxParallelChildren === "number" && Number.isFinite(policyInput.maxParallelChildren)
+        ? Math.max(1, Math.round(policyInput.maxParallelChildren))
+        : DEFAULT_FACTORY_OBJECTIVE_PROFILE.objectivePolicy.maxParallelChildren,
+      allowObjectiveCreation: typeof policyInput.allowObjectiveCreation === "boolean"
+        ? policyInput.allowObjectiveCreation
+        : DEFAULT_FACTORY_OBJECTIVE_PROFILE.objectivePolicy.allowObjectiveCreation,
+    },
+  };
+};
+
 const clampInt = (value: unknown, min: number, max: number, fallback: number): number => {
   const numeric = typeof value === "number"
     ? value
@@ -985,7 +1041,7 @@ export const reduceFactory: Reducer<FactoryState, FactoryEvent> = (state, event)
         baseHash: event.baseHash,
         checks: event.checks,
         checksSource: event.checksSource,
-        profile: event.profile,
+        profile: normalizeFactoryObjectiveProfileSnapshot(event.profile),
         policy: event.policy,
         status: "decomposing",
         archivedAt: undefined,

@@ -8,8 +8,6 @@ const panelClass = "rounded-[28px] border border-white/10 bg-white/[0.04] shadow
 const softPanelClass = "rounded-[24px] border border-white/10 bg-black/20 backdrop-blur-xl";
 const sectionLabelClass = "text-[11px] font-medium uppercase tracking-[0.28em] text-zinc-500";
 const badgeBaseClass = "inline-flex max-w-full items-center justify-center gap-2 rounded-full border px-3 py-1 text-center text-[11px] font-medium uppercase tracking-[0.18em] whitespace-normal leading-4 break-words [overflow-wrap:anywhere]";
-const iconBadgeChipClass = "inline-flex min-w-0 max-w-full items-center gap-2 rounded-full border px-2.5 py-1.5 text-left";
-const iconBadgeCardClass = "flex min-h-[46px] w-full min-w-0 items-center gap-3 rounded-[18px] border px-3.5 py-2.5 text-left";
 const buttonBaseClass = "inline-flex items-center justify-center rounded-full border px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] transition";
 const inputClass = "w-full rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-emerald-300/40 focus:bg-white/[0.06]";
 const railCardClass = `${softPanelClass} p-4`;
@@ -46,7 +44,6 @@ const startCase = (value?: string): string => {
 };
 
 type Tone = "neutral" | "info" | "success" | "warning" | "danger";
-type BadgeIcon = "profile" | "objective" | "codex" | "terminal" | "search" | "read" | "write" | "status" | "inspect" | "dispatch" | "tool";
 
 const toneForValue = (value?: string): Tone => {
   const normalized = value?.trim().toLowerCase() ?? "";
@@ -121,52 +118,6 @@ const iconBadgeToneClass = (tone: Tone): string => {
   }
 };
 
-const renderIcon = (icon: BadgeIcon): string => {
-  const common = 'fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"';
-  switch (icon) {
-    case "profile":
-      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="M20 21a8 8 0 0 0-16 0"></path><circle cx="12" cy="8" r="4"></circle></svg>`;
-    case "objective":
-      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><circle cx="12" cy="12" r="8"></circle><circle cx="12" cy="12" r="3"></circle></svg>`;
-    case "codex":
-      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="m8 8-4 4 4 4"></path><path d="m16 8 4 4-4 4"></path><path d="m14 4-4 16"></path></svg>`;
-    case "terminal":
-      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="m7 10 3 3-3 3"></path><path d="M13 16h4"></path></svg>`;
-    case "search":
-      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><circle cx="11" cy="11" r="6"></circle><path d="m20 20-4.2-4.2"></path></svg>`;
-    case "read":
-      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="M8 3h7l4 4v14H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"></path><path d="M15 3v5h5"></path><path d="M10 12h7"></path><path d="M10 16h7"></path></svg>`;
-    case "write":
-      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="M12 20h9"></path><path d="m16.5 3.5 4 4"></path><path d="M4 20l3.5-1 10-10a2.8 2.8 0 0 0-4-4l-10 10L2 20Z"></path></svg>`;
-    case "status":
-      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="M3 12h4l3-6 4 12 3-6h4"></path></svg>`;
-    case "inspect":
-      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6S2 12 2 12Z"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
-    case "dispatch":
-      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><path d="M4 12h14"></path><path d="m13 5 7 7-7 7"></path></svg>`;
-    default:
-      return `<svg aria-hidden="true" viewBox="0 0 24 24" class="h-4 w-4" ${common}><circle cx="12" cy="12" r="8"></circle><path d="M12 8v4"></path><path d="M12 16h.01"></path></svg>`;
-  }
-};
-
-const iconBadge = (input: {
-  readonly icon: BadgeIcon;
-  readonly text: string;
-  readonly tone?: Tone;
-  readonly mode?: "chip" | "card";
-}): string => {
-  const mode = input.mode ?? "chip";
-  const rootClass = mode === "card" ? iconBadgeCardClass : iconBadgeChipClass;
-  const iconSizeClass = mode === "card" ? "h-7 w-7" : "h-5 w-5";
-  const textClass = mode === "card"
-    ? "min-w-0 break-words text-sm font-medium leading-5 [overflow-wrap:anywhere]"
-    : "min-w-0 break-words text-xs font-medium leading-5 [overflow-wrap:anywhere]";
-  return `<span class="${rootClass} ${iconBadgeToneClass(input.tone ?? "neutral")}">
-    <span class="flex ${iconSizeClass} shrink-0 items-center justify-center rounded-full bg-black/25">${renderIcon(input.icon)}</span>
-    <span class="${textClass}">${esc(input.text)}</span>
-  </span>`;
-};
-
 const primaryButtonClass = `${buttonBaseClass} border-emerald-300/40 bg-emerald-300 text-zinc-950 hover:bg-emerald-200`;
 const ghostButtonClass = `${buttonBaseClass} border-white/10 bg-white/[0.04] text-zinc-100 hover:bg-white/[0.09]`;
 const dangerButtonClass = `${buttonBaseClass} border-rose-300/25 bg-rose-400/10 text-rose-100 hover:bg-rose-400/20`;
@@ -194,150 +145,6 @@ const objectiveMetaPill = (label: string, value?: string, tone: Tone = "neutral"
   const text = displayLabel(value);
   if (!text) return "";
   return `<span class="${badgeBaseClass} ${badgeToneClass(tone)} px-2.5 py-1 text-[10px] tracking-[0.14em]">${esc(`${label} ${text}`)}</span>`;
-};
-
-const toolBadgeSpec = (tool: string): { readonly icon: BadgeIcon; readonly label: string; readonly tone: Tone } => {
-  const normalized = tool.trim().toLowerCase();
-  if (normalized === "codex.run" || normalized.includes("codex")) {
-    return { icon: "codex", label: "Codex", tone: "info" };
-  }
-  if (normalized === "factory.dispatch") {
-    return { icon: "dispatch", label: "Dispatch", tone: "success" };
-  }
-  if (normalized === "agent.delegate") {
-    return { icon: "dispatch", label: "Delegate", tone: "success" };
-  }
-  if (normalized === "profile.handoff") {
-    return { icon: "dispatch", label: "Profile", tone: "success" };
-  }
-  if (normalized === "factory.status") {
-    return { icon: "inspect", label: "Thread", tone: "info" };
-  }
-  if (normalized === "agent.status") {
-    return { icon: "status", label: "Status", tone: "info" };
-  }
-  if (normalized === "agent.inspect") {
-    return { icon: "inspect", label: "Inspect", tone: "info" };
-  }
-  if (normalized === "ls") {
-    return { icon: "read", label: "Files", tone: "neutral" };
-  }
-  if (normalized === "jobs.list") {
-    return { icon: "status", label: "Jobs", tone: "neutral" };
-  }
-  if (normalized === "codex.status") {
-    return { icon: "codex", label: "Codex live", tone: "info" };
-  }
-  if (normalized === "job.control") {
-    return { icon: "status", label: "Control", tone: "neutral" };
-  }
-  if (normalized === "skill.read") {
-    return { icon: "read", label: "Skills", tone: "neutral" };
-  }
-  if (normalized === "memory.read") {
-    return { icon: "read", label: "Memory", tone: "neutral" };
-  }
-  if (normalized === "memory.search") {
-    return { icon: "search", label: "Mem search", tone: "info" };
-  }
-  if (normalized === "memory.commit") {
-    return { icon: "write", label: "Mem write", tone: "warning" };
-  }
-  if (normalized === "bash" || normalized.includes("shell") || normalized.includes("terminal")) {
-    return { icon: "terminal", label: "Shell", tone: "neutral" };
-  }
-  if (normalized === "grep" || normalized.includes("search")) {
-    return { icon: "search", label: "Search", tone: "info" };
-  }
-  if (normalized === "read" || normalized.endsWith(".read")) {
-    return { icon: "read", label: "Read", tone: "neutral" };
-  }
-  if (normalized === "write" || normalized.endsWith(".write") || normalized.includes("edit")) {
-    return { icon: "write", label: "Write", tone: "warning" };
-  }
-  if (normalized.endsWith(".status")) {
-    return { icon: "status", label: "Status", tone: "info" };
-  }
-  if (normalized.includes("inspect")) {
-    return { icon: "inspect", label: "Inspect", tone: "info" };
-  }
-  if (normalized.includes("dispatch") || normalized.includes("delegate") || normalized.includes("handoff")) {
-    return { icon: "dispatch", label: "Dispatch", tone: "success" };
-  }
-  return { icon: "tool", label: startCase(tool), tone: "neutral" };
-};
-
-const renderSelectedProfileSummary = (input: {
-  readonly profileLabel: string;
-  readonly profileId: string;
-  readonly profileSummary?: string;
-  readonly profileSections?: ReadonlyArray<FactoryProfileSectionView>;
-  readonly tools: ReadonlyArray<string>;
-  readonly objectiveId?: string;
-  readonly includeObjective?: boolean;
-  readonly layout?: "header" | "panel";
-}): string => {
-  const layout = input.layout ?? "header";
-  const badgeMode = layout === "panel" ? "card" : "chip";
-  const contextContainerClass = layout === "panel" ? "grid gap-2" : "mt-3 flex flex-wrap gap-2";
-  const toolContainerClass = layout === "panel" ? "mt-3 grid grid-cols-2 gap-2" : "mt-3 flex flex-wrap gap-1.5";
-  const accentClass = input.profileId === "software"
-    ? "from-amber-300/20 via-orange-300/8 to-transparent"
-    : "from-emerald-300/18 via-sky-300/8 to-transparent";
-  const contextBadges = [
-    iconBadge({
-      icon: "profile",
-      text: input.profileLabel,
-      tone: "neutral",
-      mode: badgeMode,
-    }),
-  ];
-  if (input.includeObjective ?? true) {
-    contextBadges.push(iconBadge({
-      icon: "objective",
-      text: input.objectiveId ? "Thread" : "No thread",
-      tone: input.objectiveId ? "info" : "neutral",
-      mode: badgeMode,
-    }));
-  }
-  return `<div class="space-y-4">
-    <div class="space-y-2">
-      <div class="${sectionLabelClass}">Selected profile</div>
-      <div class="${contextContainerClass}">
-        ${contextBadges.join("")}
-      </div>
-      <div class="font-mono text-[11px] text-zinc-500">${esc(input.profileId)}</div>
-      ${input.profileSummary ? `<div class="overflow-hidden rounded-[24px] border border-white/10 bg-gradient-to-br ${accentClass} px-4 py-4">
-        <div class="text-[10px] uppercase tracking-[0.22em] text-zinc-500">Persona</div>
-        <div class="mt-2 max-w-2xl text-[15px] leading-7 text-zinc-100">${esc(input.profileSummary)}</div>
-      </div>` : ""}
-    </div>
-    ${(input.profileSections?.length ?? 0) > 0 ? `<div class="space-y-2">
-      <div class="${sectionLabelClass}">How it works</div>
-      <div class="grid gap-3">
-        ${(input.profileSections ?? []).map((section) => `<div class="rounded-[22px] border border-white/10 bg-black/20 px-4 py-4">
-          <div class="text-[11px] font-medium uppercase tracking-[0.2em] text-zinc-500">${esc(section.title)}</div>
-          <ul class="mt-3 grid gap-2 text-sm leading-6 text-zinc-300">
-            ${section.items.map((item) => `<li class="flex items-start gap-2"><span class="mt-[9px] h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300/70"></span><span>${esc(item)}</span></li>`).join("")}
-          </ul>
-        </div>`).join("")}
-      </div>
-    </div>` : ""}
-    ${input.tools.length > 0 ? `<div class="space-y-2">
-      <div class="${sectionLabelClass}">Tools in scope</div>
-      <div class="${toolContainerClass}">
-        ${input.tools.map((tool) => {
-          const badgeSpec = toolBadgeSpec(tool);
-          return iconBadge({
-            icon: badgeSpec.icon,
-            text: badgeSpec.label,
-            tone: badgeSpec.tone,
-            mode: badgeMode,
-          });
-        }).join("")}
-      </div>
-    </div>` : ""}
-  </div>`;
 };
 
 export type FactoryChatProfileNav = {
@@ -455,6 +262,7 @@ export type FactorySidebarModel = {
   readonly activeProfileSummary?: string;
   readonly activeProfileSections?: ReadonlyArray<FactoryProfileSectionView>;
   readonly activeProfileTools: ReadonlyArray<string>;
+  readonly chatId?: string;
   readonly profiles: ReadonlyArray<FactoryChatProfileNav>;
   readonly objectives: ReadonlyArray<FactoryChatObjectiveNav>;
   readonly jobs: ReadonlyArray<FactoryChatJobNav>;
@@ -519,6 +327,7 @@ export type FactoryChatShellModel = {
   readonly activeProfileSummary?: string;
   readonly activeProfileSections?: ReadonlyArray<FactoryProfileSectionView>;
   readonly objectiveId?: string;
+  readonly chatId?: string;
   readonly runId?: string;
   readonly jobId?: string;
   readonly chat: FactoryChatIslandModel;
@@ -566,6 +375,32 @@ type FactoryLiveStatusEntry = {
   readonly abortRequested?: boolean;
 };
 
+const shellPill = (label: string, tone: Tone = "neutral"): string =>
+  `<span class="inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] ${badgeToneClass(tone)}">${esc(label)}</span>`;
+
+const shellHeaderTitle = (model: FactoryChatShellModel): string =>
+  model.sidebar.selectedObjective?.title
+    ?? (model.chatId ? "Blank chat" : model.activeProfileLabel);
+
+const renderShellStatusPills = (model: FactoryChatShellModel): string => {
+  const pills: string[] = [shellPill(model.activeProfileLabel, "neutral")];
+  const objective = model.sidebar.selectedObjective;
+  if (objective) {
+    pills.push(shellPill(displayLabel(objective.status) || "thread", toneForValue(objective.status)));
+    pills.push(shellPill(displayLabel(objective.phase) || "phase", toneForValue(objective.phase)));
+    if (typeof objective.queuePosition === "number") pills.push(shellPill(`queue ${objective.queuePosition}`, "warning"));
+  }
+  if (model.sidebar.activeCodex) {
+    pills.push(shellPill(`codex ${displayLabel(model.sidebar.activeCodex.status) || "active"}`, toneForValue(model.sidebar.activeCodex.status)));
+  } else if ((model.sidebar.liveChildren?.length ?? 0) > 0) {
+    pills.push(shellPill(`${model.sidebar.liveChildren!.length} child`, "info"));
+  }
+  if (model.sidebar.activeRun?.status) {
+    pills.push(shellPill(`run ${displayLabel(model.sidebar.activeRun.status)}`, toneForValue(model.sidebar.activeRun.status)));
+  }
+  return pills.join("");
+};
+
 const compactStatusText = (value: string, maxChars = 160): string => {
   const text = value.replace(/\s+/g, " ").trim();
   if (!text) return "";
@@ -574,11 +409,40 @@ const compactStatusText = (value: string, maxChars = 160): string => {
   return clipped;
 };
 
+const systemItemTone = (item: Extract<FactoryChatItem, { readonly kind: "system" }>): Tone => {
+  const metaTone = toneForValue(item.meta);
+  if (metaTone !== "neutral") return metaTone;
+  const titleTone = toneForValue(item.title);
+  if (titleTone !== "neutral") return titleTone;
+  return toneForValue(item.body);
+};
+
+const splitSystemBody = (body: string): { readonly summary: string; readonly detail?: string } => {
+  const normalized = body.trim();
+  if (!normalized) return { summary: "" };
+  const blocks = normalized.split(/\n\s*\n+/).map((block) => block.trim()).filter(Boolean);
+  const summarySource = blocks[0] ?? normalized;
+  const summary = compactStatusText(summarySource, 150);
+  const detailBlocks = blocks.slice(1);
+  const detail = detailBlocks.join("\n\n").trim() || (summary !== normalized ? normalized : "");
+  return {
+    summary,
+    detail: detail || undefined,
+  };
+};
+
+const systemBadgeLabel = (item: Extract<FactoryChatItem, { readonly kind: "system" }>): string => {
+  const metaTone = toneForValue(item.meta);
+  if (item.meta && metaTone !== "neutral") return displayLabel(item.meta) || "update";
+  const titleTone = toneForValue(item.title);
+  if (titleTone !== "neutral") return displayLabel(item.title) || "update";
+  return "update";
+};
+
 const renderChatItem = (
   item: FactoryChatItem,
   activeProfileLabel: string,
   activeProfileId: string,
-  activeProfileSummary?: string,
 ): string => {
   if (item.kind === "user") {
     return `<section class="flex justify-end">
@@ -592,17 +456,15 @@ const renderChatItem = (
   }
   if (item.kind === "assistant") {
     return `<section class="space-y-3">
-      <div class="flex items-start gap-3">
-        <div class="flex h-10 w-10 items-center justify-center rounded-2xl border border-emerald-300/20 bg-emerald-300/10 text-sm font-semibold text-emerald-100">AI</div>
-        <div class="min-w-0 flex-1">
-          <div class="text-sm font-medium text-zinc-100">Selected profile</div>
-          <div class="mt-2 flex flex-wrap items-center gap-2">
-            ${iconBadge({ icon: "profile", text: activeProfileLabel, tone: "neutral" })}
-            <span class="text-xs text-zinc-500">${esc(activeProfileId)}</span>
-            ${item.meta ? `<span class="text-xs text-zinc-500">${esc(item.meta)}</span>` : ""}
+      <div class="flex items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <div class="flex h-10 w-10 items-center justify-center rounded-2xl border border-emerald-300/20 bg-emerald-300/10 text-sm font-semibold text-emerald-100">AI</div>
+          <div class="min-w-0">
+            <div class="text-sm font-medium text-zinc-100">${esc(activeProfileLabel)}</div>
+            <div class="text-xs text-zinc-500">${esc(activeProfileId)}</div>
           </div>
-          ${activeProfileSummary ? `<div class="mt-2 text-sm leading-6 text-zinc-400">${esc(activeProfileSummary)}</div>` : ""}
         </div>
+        ${item.meta ? `<div class="text-xs text-zinc-500">${esc(item.meta)}</div>` : ""}
       </div>
       <div class="${panelClass} px-5 py-4">
         <div class="factory-markdown text-[15px] leading-7 text-zinc-100">${renderMarkdown(item.body)}</div>
@@ -610,13 +472,26 @@ const renderChatItem = (
     </section>`;
   }
   if (item.kind === "system") {
-    return `<section class="${softPanelClass} px-5 py-4">
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="${sectionLabelClass}">System</span>
-        ${item.meta ? `<span class="text-xs text-zinc-500">${esc(item.meta)}</span>` : ""}
+    const tone = systemItemTone(item);
+    const body = splitSystemBody(item.body);
+    return `<section class="rounded-[20px] border px-4 py-3 ${iconBadgeToneClass(tone)} bg-black/20">
+      <div class="flex min-w-0 items-start justify-between gap-3">
+        <div class="min-w-0 flex-1">
+          <div class="flex min-w-0 flex-wrap items-center gap-2">
+            <span class="${sectionLabelClass}">System</span>
+            ${item.meta ? `<span class="text-[11px] leading-5 text-zinc-500">${esc(item.meta)}</span>` : ""}
+          </div>
+          <div class="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+            <div class="text-sm font-semibold text-zinc-100">${esc(item.title)}</div>
+            ${body.summary ? `<div class="min-w-0 text-sm leading-6 text-zinc-300">${esc(body.summary)}</div>` : ""}
+          </div>
+        </div>
+        ${badge(systemBadgeLabel(item), tone)}
       </div>
-      <div class="mt-3 text-base font-semibold text-zinc-100">${esc(item.title)}</div>
-      <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(item.body)}</div>
+      ${body.detail ? `<details class="mt-2 rounded-[16px] border border-white/10 bg-black/20 px-3 py-2.5">
+        <summary class="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-400">Details</summary>
+        <div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-zinc-400 [overflow-wrap:anywhere]">${esc(body.detail)}</div>
+      </details>` : ""}
     </section>`;
   }
   const card = item.card;
@@ -648,24 +523,16 @@ export const factoryChatIsland = (model: FactoryChatIslandModel): string => {
       item,
       model.activeProfileLabel,
       model.activeProfileId,
-      model.activeProfileSummary,
     )).join("")
-    : `<section class="${panelClass} px-6 py-6">
-      <div class="mx-auto max-w-3xl space-y-5">
+    : `<section class="${softPanelClass} px-5 py-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div class="text-base font-semibold text-zinc-100">${esc(model.activeProfileLabel)} is ready.</div>
-          <div class="mt-3 text-sm leading-6 text-zinc-400">${esc(model.activeProfileSummary ?? "Start with status, plan, debug, or a new thread.")}</div>
+          <div class="${sectionLabelClass}">Blank chat</div>
+          <div class="mt-2 text-sm font-medium text-zinc-100">${esc(model.activeProfileLabel)} is ready for a new thread or a quick status request.</div>
         </div>
-        ${renderSelectedProfileSummary({
-          profileLabel: model.activeProfileLabel,
-          profileId: model.activeProfileId,
-          profileSummary: model.activeProfileSummary,
-          profileSections: model.activeProfileSections ?? [],
-          tools: model.activeProfileTools ?? [],
-          includeObjective: false,
-          layout: "panel",
-        })}
+        ${badge("idle", "neutral")}
       </div>
+      <div class="mt-3 text-sm leading-6 text-zinc-400">${esc(model.activeProfileSummary ?? "Ask for status, debug a thread, or start a new delivery thread.")}</div>
     </section>`;
   return `<div class="chat-stack mx-auto flex w-full max-w-4xl flex-col gap-6 px-4 pb-8 pt-6 md:px-8 xl:px-10" data-active-profile="${esc(model.activeProfileId)}" data-active-profile-label="${esc(model.activeProfileLabel)}" data-active-profile-summary="${esc(model.activeProfileSummary ?? "")}">
     ${body}
@@ -704,12 +571,15 @@ export const factoryRailIsland = (model: FactorySidebarModel): string => {
   const selectedObjectiveQuery = model.selectedObjective
     ? `&objective=${encodeURIComponent(model.selectedObjective.objectiveId)}`
     : "";
+  const selectedChatQuery = blankChat && model.chatId
+    ? `&chat=${encodeURIComponent(model.chatId)}`
+    : "";
   const profileLinks = model.profiles.length > 0
     ? model.profiles.map((profile) => {
         const selectedClass = profile.selected
           ? "border-emerald-300/25 bg-emerald-300/10 text-emerald-100"
           : "border-white/10 bg-white/[0.03] text-zinc-300 hover:bg-white/[0.06]";
-        return `<a class="block rounded-[22px] border px-4 py-3 transition ${selectedClass}" href="/factory?profile=${encodeURIComponent(profile.id)}${selectedObjectiveQuery}">
+        return `<a class="block rounded-[22px] border px-4 py-3 transition ${selectedClass}" href="/factory?profile=${encodeURIComponent(profile.id)}${selectedObjectiveQuery}${selectedChatQuery}">
           <div class="text-sm font-medium">${esc(profile.label)}</div>
           ${profile.summary ? `<div class="mt-1 text-xs leading-5 text-zinc-400">${esc(profile.summary)}</div>` : ""}
         </a>`;
@@ -838,6 +708,128 @@ const renderJobRow = (job: FactoryChatJobNav): string => `<div class="factory-jo
   ${job.link ? `<a class="mt-3 inline-flex text-xs font-medium uppercase tracking-[0.16em] text-emerald-200 transition hover:text-emerald-100" href="${esc(job.link)}">Open thread</a>` : ""}
 </div>`;
 
+const isTerminalJobStatusValue = (status?: string): boolean =>
+  status === "completed" || status === "failed" || status === "canceled";
+
+const isActiveJobStatusValue = (status?: string): boolean =>
+  status === "running" || status === "leased";
+
+type FactoryCodexTelemetryCard = {
+  readonly jobId: string;
+  readonly status: string;
+  readonly summary: string;
+  readonly latestNote?: string;
+  readonly stdoutTail?: string;
+  readonly stderrTail?: string;
+  readonly task?: string;
+  readonly runId?: string;
+  readonly updatedAt?: number;
+  readonly rawLink: string;
+  readonly running: boolean;
+  readonly abortRequested?: boolean;
+};
+
+const collectCodexTelemetryCards = (model: FactorySidebarModel): ReadonlyArray<FactoryCodexTelemetryCard> => {
+  const entries = new Map<string, FactoryCodexTelemetryCard>();
+  for (const child of model.liveChildren ?? []) {
+    if (child.worker !== "codex") continue;
+    entries.set(child.jobId, {
+      jobId: child.jobId,
+      status: child.status,
+      summary: child.summary,
+      latestNote: child.latestNote,
+      stdoutTail: child.stdoutTail,
+      stderrTail: child.stderrTail,
+      task: child.task,
+      runId: child.runId,
+      updatedAt: child.updatedAt,
+      rawLink: child.rawLink,
+      running: child.running,
+      abortRequested: child.abortRequested,
+    });
+  }
+  if (model.activeCodex && !entries.has(model.activeCodex.jobId)) {
+    entries.set(model.activeCodex.jobId, {
+      jobId: model.activeCodex.jobId,
+      status: model.activeCodex.status,
+      summary: model.activeCodex.summary,
+      latestNote: model.activeCodex.latestNote,
+      stdoutTail: model.activeCodex.stdoutTail,
+      stderrTail: model.activeCodex.stderrTail,
+      task: model.activeCodex.task,
+      runId: model.activeCodex.runId,
+      updatedAt: model.activeCodex.updatedAt,
+      rawLink: model.activeCodex.rawLink,
+      running: model.activeCodex.running,
+      abortRequested: model.activeCodex.abortRequested,
+    });
+  }
+  return [...entries.values()]
+    .sort((left, right) =>
+      Number(Boolean(right.running)) - Number(Boolean(left.running))
+      || (right.updatedAt ?? 0) - (left.updatedAt ?? 0)
+    )
+    .slice(0, 3);
+};
+
+const renderOpsSummary = (model: FactorySidebarModel): string => {
+  const activeJobs = model.jobs.filter((job) => isActiveJobStatusValue(job.status)).length;
+  const queuedJobs = model.jobs.filter((job) => job.status === "queued").length;
+  const failedJobs = model.jobs.filter((job) => job.status === "failed").length;
+  const codexCards = collectCodexTelemetryCards(model);
+  const codexActive = codexCards.filter((card) => card.running).length;
+  const activeWorkers = new Set<string>();
+  for (const child of model.liveChildren ?? []) {
+    if (child.running) activeWorkers.add(child.worker || child.agentId);
+  }
+  if (model.activeCodex?.running) activeWorkers.add("codex");
+  if (model.activeRun && !isTerminalJobStatusValue(model.activeRun.status) && model.activeRun.status !== "idle") {
+    activeWorkers.add("supervisor");
+  }
+  return `<section class="${railCardClass}">
+    <div class="flex items-center justify-between gap-3">
+      <div class="${sectionLabelClass}">Operations</div>
+      <div class="text-xs text-zinc-500">${esc(`${model.jobs.length}`)} jobs</div>
+    </div>
+    <div class="mt-4 grid gap-2 sm:grid-cols-2">
+      ${statPill("Agents active", `${activeWorkers.size}`)}
+      ${statPill("Jobs running", `${activeJobs}`)}
+      ${statPill("Jobs queued", `${queuedJobs}`)}
+      ${statPill("Jobs failed", `${failedJobs}`)}
+      ${statPill("Codex active", `${codexActive}`)}
+      ${model.selectedObjective
+        ? statPill("Tasks", `${model.selectedObjective.activeTaskCount ?? 0} active / ${model.selectedObjective.readyTaskCount ?? 0} ready`)
+        : statPill("Scope", model.chatId ? "Blank chat" : "Profile stream")}
+    </div>
+  </section>`;
+};
+
+const renderCodexTelemetryCard = (card: FactoryCodexTelemetryCard): string => {
+  const logChunks = [
+    card.latestNote ? `latest:\n${card.latestNote}` : "",
+    card.stderrTail ? `stderr:\n${card.stderrTail}` : "",
+    card.stdoutTail && card.stdoutTail !== card.stderrTail ? `stdout:\n${card.stdoutTail}` : "",
+  ].filter(Boolean).join("\n\n");
+  return `<article class="rounded-[22px] border border-white/10 bg-black/20 px-4 py-4">
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <div class="${sectionLabelClass}">Codex</div>
+        <div class="mt-1 text-sm font-semibold text-zinc-100">${esc(card.task ?? card.summary)}</div>
+        <div class="mt-1 text-sm leading-6 text-zinc-300">${esc(compactStatusText(card.summary, 180))}</div>
+      </div>
+      ${badge(displayLabel(card.status), toneForValue(card.status))}
+    </div>
+    <div class="mt-2 text-[11px] leading-5 text-zinc-500">
+      ${esc([`Job ${card.jobId}`, card.runId ? `Run ${card.runId}` : "", card.updatedAt ? `Updated ${formatTs(card.updatedAt)}` : ""].filter(Boolean).join(" · "))}
+    </div>
+    ${logChunks ? `<pre class="mt-3 max-h-52 overflow-auto rounded-[18px] border border-white/10 bg-black/30 px-3 py-3 text-[12px] leading-5 text-zinc-300 whitespace-pre-wrap [overflow-wrap:anywhere]">${esc(logChunks)}</pre>` : `<div class="mt-3 rounded-[18px] border border-dashed border-white/10 px-3 py-3 text-sm text-zinc-500">No live Codex output yet.</div>`}
+    <div class="mt-3 flex flex-wrap gap-2">
+      <a class="${ghostButtonClass}" href="${esc(card.rawLink)}" target="_blank" rel="noreferrer">Job JSON</a>
+    </div>
+    ${renderJobControls(card.jobId, card.running, card.abortRequested)}
+  </article>`;
+};
+
 const renderLiveStatusEntry = (entry: FactoryLiveStatusEntry): string => {
   const hasInspect = Boolean(entry.detail || entry.link || entry.rawLink || entry.jobId);
   const summary = compactStatusText(entry.summary);
@@ -873,6 +865,7 @@ const renderLiveStatusEntry = (entry: FactoryLiveStatusEntry): string => {
 export const factoryInspectorIsland = (model: FactorySidebarModel): string => {
   const objective = model.selectedObjective;
   const liveChildren = model.liveChildren ?? [];
+  const codexTelemetry = collectCodexTelemetryCards(model);
   const hiddenJobIds = new Set(liveChildren.map((job) => job.jobId));
   if (model.activeCodex?.jobId) hiddenJobIds.add(model.activeCodex.jobId);
   const visibleJobs = model.jobs.filter((job) => !hiddenJobIds.has(job.jobId));
@@ -973,25 +966,27 @@ export const factoryInspectorIsland = (model: FactorySidebarModel): string => {
     ? visibleJobs.map(renderJobRow).join("")
     : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No recent jobs.</div>`;
   return `<div class="space-y-5 px-4 py-5 md:px-5">
-    <section class="${railCardClass}">
-      ${renderSelectedProfileSummary({
-        profileLabel: model.activeProfileLabel,
-        profileId: model.activeProfileId,
-        profileSummary: model.activeProfileSummary,
-        profileSections: model.activeProfileSections ?? [],
-        tools: model.activeProfileTools,
-        includeObjective: false,
-        layout: "panel",
-      })}
-    </section>
+    ${renderOpsSummary(model)}
     <section class="${railCardClass}">
       <div class="flex items-center justify-between gap-3">
         <div class="${sectionLabelClass}">Live status</div>
         <div class="text-xs text-zinc-500">${esc(`${statusEntries.length}`)}</div>
       </div>
-      <div class="mt-3 text-xs leading-5 text-zinc-500">Realtime from Factory and receipt events. This board only shows current state, not the full transcript.</div>
+      <div class="mt-3 text-xs leading-5 text-zinc-500">Realtime from Factory and receipt events. This rail is the current operations board, not the full transcript.</div>
       <div class="mt-4 grid gap-3">
         ${liveStatusMarkup}
+      </div>
+    </section>
+    <section class="${railCardClass}">
+      <div class="flex items-center justify-between gap-3">
+        <div class="${sectionLabelClass}">Codex live</div>
+        <div class="text-xs text-zinc-500">${esc(`${codexTelemetry.length}`)}</div>
+      </div>
+      <div class="mt-3 text-xs leading-5 text-zinc-500">Visible worker tail output for the Codex jobs currently active in this thread, or the most recent failed one if nothing is active.</div>
+      <div class="mt-4 grid gap-3">
+        ${codexTelemetry.length > 0
+          ? codexTelemetry.map(renderCodexTelemetryCard).join("")
+          : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No Codex worker is active in this thread right now.</div>`}
       </div>
     </section>
     <section class="${railCardClass}">
@@ -1062,55 +1057,36 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
   <link rel="stylesheet" href="/assets/factory.css" />
   <script src="/assets/htmx.min.js"></script>
 </head>
-<body class="overflow-x-hidden lg:h-screen lg:overflow-hidden" data-profile="${esc(model.activeProfileId)}" data-objective="${esc(model.objectiveId ?? "")}" data-run="${esc(model.runId ?? "")}" data-job="${esc(model.jobId ?? "")}">
+<body class="overflow-x-hidden lg:h-screen lg:overflow-hidden" data-profile="${esc(model.activeProfileId)}" data-objective="${esc(model.objectiveId ?? "")}" data-chat="${esc(model.chatId ?? "")}" data-run="${esc(model.runId ?? "")}" data-job="${esc(model.jobId ?? "")}">
   <div class="relative min-h-screen bg-background text-foreground lg:h-screen">
     <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(110,231,183,0.14),transparent_28%),radial-gradient(circle_at_top_right,rgba(96,165,250,0.16),transparent_30%),linear-gradient(180deg,rgba(8,10,14,0.94),rgba(8,10,14,1))]"></div>
     <div class="relative flex min-h-screen flex-col lg:grid lg:h-screen lg:min-h-0 lg:grid-cols-[320px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[320px_minmax(0,1fr)_360px]">
       <aside class="order-2 min-w-0 border-t border-white/10 bg-black/30 lg:order-none lg:min-h-0 lg:border-r lg:border-t-0">
         <div class="factory-scrollbar max-h-[40vh] overflow-x-hidden overflow-y-auto lg:h-screen lg:max-h-none">
-          <div id="factory-sidebar" hx-get="/factory/island/sidebar?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:${FACTORY_SIDEBAR_REFRESH_MS}ms" hx-swap="innerHTML">
+          <div id="factory-sidebar" hx-get="/factory/island/sidebar?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}${!model.objectiveId && model.chatId ? `&chat=${encodeURIComponent(model.chatId)}` : ""}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:${FACTORY_SIDEBAR_REFRESH_MS}ms" hx-swap="innerHTML">
             ${factoryRailIsland(model.sidebar)}
           </div>
         </div>
       </aside>
       <main class="order-1 min-w-0 bg-black/20 lg:order-none lg:min-h-0">
         <div class="flex min-h-screen flex-col lg:h-screen lg:min-h-0">
-	          <header class="border-b border-white/10 bg-black/20 backdrop-blur-xl">
-	            <div class="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-4 px-4 py-4 md:px-8 xl:px-10">
-	              <div class="min-w-0">
-	                <div class="${sectionLabelClass}">${model.objectiveId ? "Thread" : "Chat"}</div>
-	                <div class="mt-3">
-	                  <h1 class="text-lg font-semibold text-white">Chat with <span data-profile-label>${esc(model.activeProfileLabel)}</span></h1>
-	                </div>
-                  <div class="mt-3 flex flex-wrap gap-2">
-                    ${navPill({
-                      href: `/factory?profile=${encodeURIComponent(model.activeProfileId)}`,
-                      label: "Chat",
-                      active: !model.objectiveId,
-                    })}
-                    ${model.objectiveId ? navPill({
-                      href: `/factory?profile=${encodeURIComponent(model.activeProfileId)}&objective=${encodeURIComponent(model.objectiveId)}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}`,
-                      label: "Thread",
-                      active: true,
-                    }) : ""}
-                    ${model.objectiveId ? navPill({
-                      href: `/factory/control?objective=${encodeURIComponent(model.objectiveId)}${model.runId ? `&focusKind=run&focusId=${encodeURIComponent(`${model.activeProfileId}:${model.runId}`)}` : ""}`,
-                      label: "Work Details",
-                    }) : ""}
-                  </div>
-	                <div class="mt-3 text-sm leading-6 text-zinc-400" data-profile-summary>${esc(model.activeProfileSummary ?? (model.objectiveId
-	                    ? "Messages, runs, and recent jobs in this view stay scoped to the current thread."
-	                    : "Start a chat here. Factory will keep coordination here until work needs its own thread."))}</div>
-                  ${!model.objectiveId ? `<div class="mt-2 text-xs leading-5 text-zinc-500">New chat is active. Recent threads stay in the rail until you reopen one.</div>` : ""}
-	              </div>
-	              <div class="flex flex-wrap items-center gap-2">
-	                <a class="${ghostButtonClass}" href="/factory?profile=${encodeURIComponent(model.activeProfileId)}">NEW CHAT</a>
-	                ${model.objectiveId ? `<a class="${ghostButtonClass}" href="/factory/control?objective=${encodeURIComponent(model.objectiveId)}">Work Details</a>` : ""}
-	              </div>
-	            </div>
-	          </header>
+          <header class="sticky top-0 z-20 border-b border-white/10 bg-black/35 backdrop-blur-xl">
+            <div class="mx-auto flex w-full max-w-4xl flex-wrap items-center justify-between gap-2 px-4 py-2.5 md:px-8 xl:px-10">
+              <div class="min-w-0 flex flex-1 flex-wrap items-center gap-2">
+                <span class="${sectionLabelClass}">${model.objectiveId ? "Thread" : "Chat"}</span>
+                <h1 class="min-w-0 truncate text-sm font-semibold text-white" data-profile-label>${esc(shellHeaderTitle(model))}</h1>
+                <div class="flex flex-wrap gap-2">
+                  ${renderShellStatusPills(model)}
+                </div>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <a class="${ghostButtonClass}" data-new-chat="true" href="/factory?profile=${encodeURIComponent(model.activeProfileId)}">NEW CHAT</a>
+                ${model.objectiveId ? `<a class="${ghostButtonClass}" href="/factory/control?objective=${encodeURIComponent(model.objectiveId)}">Work Details</a>` : ""}
+              </div>
+            </div>
+          </header>
           <section id="factory-chat-scroll" class="factory-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            <div id="factory-chat" hx-get="/factory/island/chat?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:${FACTORY_CHAT_REFRESH_MS}ms" hx-swap="innerHTML">
+            <div id="factory-chat" hx-get="/factory/island/chat?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}${!model.objectiveId && model.chatId ? `&chat=${encodeURIComponent(model.chatId)}` : ""}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:${FACTORY_CHAT_REFRESH_MS}ms" hx-swap="innerHTML">
               ${factoryChatIsland(model.chat)}
             </div>
           </section>
@@ -1119,6 +1095,7 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
               <form class="${panelClass} px-4 py-4" action="/factory/run" method="post" hx-post="/factory/run" hx-swap="none">
                 <input type="hidden" name="profile" value="${esc(model.activeProfileId)}" />
                 <input type="hidden" name="objective" value="${esc(model.objectiveId ?? "")}" />
+                <input type="hidden" name="chat" value="${esc(model.chatId ?? "")}" />
                 <label class="sr-only" for="factory-prompt">Factory prompt</label>
                 <textarea id="factory-prompt" class="max-h-40 min-h-[72px] w-full resize-none overflow-y-auto border-0 bg-transparent px-1 py-1 text-[15px] leading-7 text-zinc-100 outline-none placeholder:text-zinc-500" name="problem" placeholder="Message Factory" required rows="1"></textarea>
                 <div class="mt-4 flex flex-col gap-4 border-t border-white/10 pt-4 md:flex-row md:items-end md:justify-between">
@@ -1139,7 +1116,7 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
       </main>
       <aside class="order-3 min-w-0 border-t border-white/10 bg-black/30 xl:min-h-0 xl:border-l xl:border-t-0">
         <div class="factory-scrollbar max-h-[45vh] overflow-x-hidden overflow-y-auto xl:h-screen xl:max-h-none">
-          <div id="factory-inspector" class="factory-inspector-panel" hx-get="/factory/island/inspector?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:${FACTORY_INSPECTOR_REFRESH_MS}ms" hx-swap="innerHTML">
+          <div id="factory-inspector" class="factory-inspector-panel" hx-get="/factory/island/inspector?profile=${encodeURIComponent(model.activeProfileId)}${model.objectiveId ? `&objective=${encodeURIComponent(model.objectiveId)}` : ""}${!model.objectiveId && model.chatId ? `&chat=${encodeURIComponent(model.chatId)}` : ""}${model.runId ? `&run=${encodeURIComponent(model.runId)}` : ""}${model.jobId ? `&job=${encodeURIComponent(model.jobId)}` : ""}" hx-trigger="load, factory-refresh from:body throttle:${FACTORY_INSPECTOR_REFRESH_MS}ms" hx-swap="innerHTML">
             ${factoryInspectorIsland(model.sidebar)}
           </div>
         </div>
@@ -1156,16 +1133,20 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
       };
       const profileInputSelector = 'input[name="profile"]';
       const objectiveInputSelector = 'input[name="objective"]';
+      const chatInputSelector = 'input[name="chat"]';
       const syncUrl = function () {
         const url = new URL(window.location.href);
         const profile = document.body.dataset.profile || "generalist";
         const objective = document.body.dataset.objective || "";
+        const chat = document.body.dataset.chat || "";
         const run = document.body.dataset.run || "";
         const job = document.body.dataset.job || "";
         url.pathname = "/factory";
         url.searchParams.set("profile", profile);
         if (objective) url.searchParams.set("objective", objective);
         else url.searchParams.delete("objective");
+        if (!objective && chat) url.searchParams.set("chat", chat);
+        else url.searchParams.delete("chat");
         if (run) url.searchParams.set("run", run);
         else url.searchParams.delete("run");
         if (job) url.searchParams.set("job", job);
@@ -1175,16 +1156,18 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
       const updateIslandUrls = function () {
         const profile = document.body.dataset.profile || "generalist";
         const objective = document.body.dataset.objective || "";
+        const chatId = document.body.dataset.chat || "";
         const run = document.body.dataset.run || "";
         const job = document.body.dataset.job || "";
         const query = "?profile=" + encodeURIComponent(profile)
           + (objective ? "&objective=" + encodeURIComponent(objective) : "")
+          + (!objective && chatId ? "&chat=" + encodeURIComponent(chatId) : "")
           + (run ? "&run=" + encodeURIComponent(run) : "")
           + (job ? "&job=" + encodeURIComponent(job) : "");
-        const chat = document.getElementById("factory-chat");
+        const chatIsland = document.getElementById("factory-chat");
         const sidebar = document.getElementById("factory-sidebar");
         const inspector = document.getElementById("factory-inspector");
-        if (chat) chat.setAttribute("hx-get", "/factory/island/chat" + query);
+        if (chatIsland) chatIsland.setAttribute("hx-get", "/factory/island/chat" + query);
         if (sidebar) sidebar.setAttribute("hx-get", "/factory/island/sidebar" + query);
         if (inspector) inspector.setAttribute("hx-get", "/factory/island/inspector" + query);
       };
@@ -1241,24 +1224,40 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
       };
       const syncObjective = function () {
         const objective = document.body.dataset.objective || "";
+        const chat = document.body.dataset.chat || "";
         document.querySelectorAll(objectiveInputSelector).forEach(function (node) {
           node.value = objective;
+        });
+        document.querySelectorAll(chatInputSelector).forEach(function (node) {
+          node.value = objective ? "" : chat;
         });
         syncUrl();
         updateIslandUrls();
       };
-	      const connect = function () {
-	        const profile = document.body.dataset.profile || "generalist";
-	        const objective = document.body.dataset.objective || "";
-	        if (source) source.close();
-	        source = new EventSource("/factory/events?profile=" + encodeURIComponent(profile) + (objective ? "&objective=" + encodeURIComponent(objective) : ""));
-	        ["agent-refresh", "receipt-refresh", "factory-refresh"].forEach(function (eventName) {
-	          source.addEventListener(eventName, refresh);
-	        });
-	      };
+      const connect = function () {
+        const profile = document.body.dataset.profile || "generalist";
+        const objective = document.body.dataset.objective || "";
+        const chat = document.body.dataset.chat || "";
+        if (source) source.close();
+        source = new EventSource("/factory/events?profile=" + encodeURIComponent(profile) + (objective ? "&objective=" + encodeURIComponent(objective) : "") + (!objective && chat ? "&chat=" + encodeURIComponent(chat) : ""));
+        ["agent-refresh", "receipt-refresh", "job-refresh", "factory-refresh"].forEach(function (eventName) {
+          source.addEventListener(eventName, refresh);
+        });
+      };
       document.addEventListener("click", function (event) {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
+        const newChatLink = target.closest("[data-new-chat]");
+        if (newChatLink instanceof HTMLAnchorElement) {
+          event.preventDefault();
+          const url = new URL(newChatLink.href, window.location.href);
+          url.searchParams.delete("objective");
+          url.searchParams.delete("run");
+          url.searchParams.delete("job");
+          url.searchParams.set("chat", "chat_" + Date.now().toString(36));
+          window.location.href = url.toString();
+          return;
+        }
         const chip = target.closest("[data-prompt-fill]");
         if (!(chip instanceof HTMLElement)) return;
         const prompt = chip.getAttribute("data-prompt-fill");
@@ -1289,13 +1288,18 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => `<!doc
           ? detail.profileId
           : (document.body.dataset.profile || "generalist");
         const nextObjective = typeof detail.objectiveId === "string" ? detail.objectiveId : "";
+        const nextChat = typeof detail.chatId === "string" ? detail.chatId : (document.body.dataset.chat || "");
         document.body.dataset.profile = nextProfile;
         document.body.dataset.objective = nextObjective;
+        document.body.dataset.chat = nextObjective ? "" : nextChat;
         document.querySelectorAll(profileInputSelector).forEach(function (node) {
           node.value = nextProfile;
         });
         document.querySelectorAll(objectiveInputSelector).forEach(function (node) {
           node.value = nextObjective;
+        });
+        document.querySelectorAll(chatInputSelector).forEach(function (node) {
+          node.value = document.body.dataset.chat || "";
         });
         document.body.dataset.run = typeof detail.runId === "string" ? detail.runId : "";
         document.body.dataset.job = typeof detail.jobId === "string" ? detail.jobId : "";
