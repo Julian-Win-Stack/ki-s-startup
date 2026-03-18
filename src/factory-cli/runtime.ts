@@ -100,6 +100,7 @@ export const createFactoryCliRuntime = (
   const queue = jsonlQueue({
     runtime: jobRuntime,
     stream: "jobs",
+    watchDir: config.dataDir,
     onJobChange: (jobs) => {
       notify({
         type: "queue_changed",
@@ -120,7 +121,7 @@ export const createFactoryCliRuntime = (
   const worker = new JobWorker({
     queue,
     workerId: process.env.JOB_WORKER_ID ?? `factory_cli_${process.pid}`,
-    pollMs: Math.max(50, Number(process.env.JOB_POLL_MS ?? 100)),
+    idleResyncMs: Math.max(1_000, Number(process.env.JOB_IDLE_RESYNC_MS ?? process.env.JOB_POLL_MS ?? 5_000)),
     leaseMs: Math.max(5_000, Number(process.env.JOB_LEASE_MS ?? 30_000)),
     concurrency: Math.max(1, Number(process.env.JOB_CONCURRENCY ?? 2)),
     handlers: createFactoryWorkerHandlers(service),

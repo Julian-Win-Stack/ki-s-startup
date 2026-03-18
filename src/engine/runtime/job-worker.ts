@@ -1,13 +1,8 @@
 // ============================================================================
-// Background Job Worker - queue polling + leased execution + retries
+// Background Job Worker - queue wakeups + leased execution + retries
 // ============================================================================
 
 import type { QueueCommandRecord, QueueJob, JsonlQueue } from "../../adapters/jsonl-queue.js";
-
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 
 export type JobExecutionContext = {
   readonly workerId: string;
@@ -27,6 +22,7 @@ export type JobWorkerOptions = {
   readonly queue: JsonlQueue;
   readonly handlers: Readonly<Record<string, JobHandler>>;
   readonly workerId: string;
+  readonly idleResyncMs?: number;
   readonly pollMs?: number;
   readonly leaseMs?: number;
   readonly concurrency?: number;
@@ -38,7 +34,7 @@ export class JobWorker {
   private readonly queue: JsonlQueue;
   private readonly handlers: Readonly<Record<string, JobHandler>>;
   private readonly workerId: string;
-  private readonly pollMs: number;
+  private readonly idleResyncMs: number;
   private readonly leaseMs: number;
   private readonly concurrency: number;
   private readonly onTick?: () => void;
@@ -50,7 +46,7 @@ export class JobWorker {
     this.queue = opts.queue;
     this.handlers = opts.handlers;
     this.workerId = opts.workerId;
-    this.pollMs = Math.max(50, opts.pollMs ?? 100);
+    this.idleResyncMs = Math.max(1_000, opts.idleResyncMs ?? opts.pollMs ?? 5_000);
     this.leaseMs = Math.max(5_000, opts.leaseMs ?? 30_000);
     this.concurrency = Math.max(1, opts.concurrency ?? 2);
     this.onTick = opts.onTick;
@@ -72,13 +68,30 @@ export class JobWorker {
   }
 
   private async loop(): Promise<void> {
+    let seenVersion = this.queue.snapshot().version;
     while (this.running) {
       try {
         await this.tick();
+        const current = this.queue.snapshot();
+        seenVersion = current.version;
+        if (current.queued > 0 && this.active.size < this.concurrency) {
+          continue;
+        }
+        if (this.active.size > 0) {
+          if (this.active.size >= this.concurrency || current.queued === 0) {
+            await Promise.race(this.active.values());
+            seenVersion = this.queue.snapshot().version;
+            continue;
+          }
+        }
+        const next = await this.queue.waitForWork({
+          sinceVersion: seenVersion,
+          timeoutMs: this.idleResyncMs,
+        });
+        seenVersion = next.version;
       } finally {
         if (this.onTick) this.onTick();
       }
-      await sleep(this.pollMs);
     }
   }
 

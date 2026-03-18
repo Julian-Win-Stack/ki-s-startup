@@ -6,6 +6,7 @@ import path from "node:path";
 import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl.ts";
 import { jsonlQueue } from "../../src/adapters/jsonl-queue.ts";
 import { createRuntime } from "../../src/core/runtime.ts";
+import { JobWorker } from "../../src/engine/runtime/job-worker.ts";
 import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../../src/modules/job.ts";
 
 const mkTmp = async (label: string): Promise<string> =>
@@ -266,6 +267,54 @@ test("jsonl queue: onJobChange receives the current job snapshot without deadloc
   }
 });
 
+test("jsonl queue: listJobs remains readable while onJobChange is still awaiting", async () => {
+  const dir = await mkTmp("receipt-queue-read-while-callback");
+  try {
+    const runtime = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob,
+    );
+
+    let releaseCallback: (() => void) | undefined;
+    const callbackEntered = new Promise<void>((resolve) => {
+      releaseCallback = resolve;
+    });
+    let unblockCallback: (() => void) | undefined;
+    const callbackBlocker = new Promise<void>((resolve) => {
+      unblockCallback = resolve;
+    });
+
+    const queue = jsonlQueue({
+      runtime,
+      stream: "jobs",
+      onJobChange: async () => {
+        releaseCallback?.();
+        await callbackBlocker;
+      },
+    });
+
+    const enqueuePromise = queue.enqueue({
+      agentId: "factory",
+      payload: { kind: "factory.run", runId: "r_read_while_callback" },
+      maxAttempts: 1,
+    });
+
+    await callbackEntered;
+    const listed = await queue.listJobs({ limit: 5 });
+    expect(listed[0]?.status).toBe("queued");
+    expect(listed[0]?.agentId).toBe("factory");
+
+    unblockCallback?.();
+    const created = await enqueuePromise;
+    expect(created.status).toBe("queued");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("jsonl queue: list and lease derive from authoritative jobs/<jobId> streams", async () => {
   const dir = await mkTmp("receipt-queue-authoritative-list");
   try {
@@ -297,6 +346,54 @@ test("jsonl queue: list and lease derive from authoritative jobs/<jobId> streams
     const leased = await queue.leaseNext({ workerId: "worker", leaseMs: 5_000 });
     expect(leased?.id).toBe("job_direct");
     expect((await queue.getJob("job_direct"))?.status).toBe("leased");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("jsonl queue: enqueue wakes an idle worker without relying on a short poll interval", async () => {
+  const dir = await mkTmp("receipt-queue-worker-wakeup");
+  try {
+    const runtime = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob,
+    );
+    const queue = jsonlQueue({ runtime, stream: "jobs" });
+    const handled: string[] = [];
+    let workerError: Error | undefined;
+
+    const worker = new JobWorker({
+      queue,
+      workerId: "worker_push",
+      idleResyncMs: 20_000,
+      leaseMs: 5_000,
+      concurrency: 1,
+      handlers: {
+        writer: async (job) => {
+          handled.push(job.id);
+          return { ok: true, result: { ok: true } };
+        },
+      },
+      onError: (error) => {
+        workerError = error;
+      },
+    });
+
+    worker.start();
+    const job = await queue.enqueue({
+      agentId: "writer",
+      payload: { kind: "writer.run", runId: "r_worker_push" },
+      maxAttempts: 1,
+    });
+    const settled = await queue.waitForJob(job.id, 2_000);
+    worker.stop();
+
+    expect(workerError).toBeUndefined();
+    expect(handled).toEqual([job.id]);
+    expect(settled?.status).toBe("completed");
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

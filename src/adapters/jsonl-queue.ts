@@ -2,6 +2,8 @@
 // Receipt-native Queue Adapter - derives queue state from job receipts
 // ============================================================================
 
+import fs from "node:fs";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import type { Runtime } from "../core/runtime.js";
@@ -67,6 +69,23 @@ export type QueueCommandInput = {
   readonly by?: string;
 };
 
+export type QueueSnapshot = {
+  readonly version: number;
+  readonly total: number;
+  readonly queued: number;
+  readonly leased: number;
+  readonly running: number;
+  readonly completed: number;
+  readonly failed: number;
+  readonly canceled: number;
+  readonly updatedAt?: number;
+};
+
+export type WaitForWorkOptions = {
+  readonly sinceVersion?: number;
+  readonly timeoutMs?: number;
+};
+
 export type JsonlQueue = {
   readonly enqueue: (input: EnqueueJobInput) => Promise<QueueJob>;
   readonly leaseNext: (opts: LeaseOptions) => Promise<QueueJob | undefined>;
@@ -93,6 +112,10 @@ export type JsonlQueue = {
   readonly getJob: (jobId: string) => Promise<QueueJob | undefined>;
   readonly listJobs: (opts?: { readonly status?: JobStatus; readonly limit?: number }) => Promise<ReadonlyArray<QueueJob>>;
   readonly waitForJob: (jobId: string, timeoutMs?: number, pollMs?: number) => Promise<QueueJob | undefined>;
+  readonly waitForWork: (opts?: WaitForWorkOptions) => Promise<QueueSnapshot>;
+  readonly notifyWorkAvailable: () => void;
+  readonly snapshot: () => QueueSnapshot;
+  readonly refresh: () => Promise<QueueSnapshot>;
 };
 
 type JsonlQueueOptions = {
@@ -100,6 +123,8 @@ type JsonlQueueOptions = {
   readonly stream: string;
   readonly now?: () => number;
   readonly onJobChange?: (jobs: ReadonlyArray<QueueJob>) => Promise<void> | void;
+  readonly watchDir?: string;
+  readonly watchDebounceMs?: number;
 };
 
 const TERMINAL = new Set<JobStatus>(["completed", "failed", "canceled"]);
@@ -125,19 +150,59 @@ const cloneJob = (job: QueueJob): QueueJob => ({
 
 const eventId = (): string => `jobevt_${Date.now().toString(36)}_${randomUUID().slice(0, 6)}`;
 
+const emptyCounts = (): Record<JobStatus, number> => ({
+  queued: 0,
+  leased: 0,
+  running: 0,
+  completed: 0,
+  failed: 0,
+  canceled: 0,
+});
+
+const compareRecentJobs = (left: QueueJob, right: QueueJob): number =>
+  right.updatedAt - left.updatedAt
+  || right.createdAt - left.createdAt
+  || right.id.localeCompare(left.id);
+
+const compareQueuedJobs = (left: QueueJob, right: QueueJob): number =>
+  lanePriority[left.lane] - lanePriority[right.lane]
+  || left.createdAt - right.createdAt
+  || left.id.localeCompare(right.id);
+
 export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
   const nowTs = opts.now ?? Date.now;
   const jobStateCache = new Map<string, JobState>();
   let knownJobIds: ReadonlyArray<string> | undefined;
-  let lock = Promise.resolve();
+  let writeLock = Promise.resolve();
+  let manifestSyncAt = 0;
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastLocalMutationAt = 0;
+  type QueueWaiter = {
+    readonly ready: (snapshot: QueueSnapshot) => boolean;
+    readonly resolve: (snapshot: QueueSnapshot) => void;
+    timeout?: ReturnType<typeof setTimeout>;
+  };
+  const waiters = new Set<QueueWaiter>();
+  const index = {
+    jobsById: new Map<string, QueueJob>(),
+    recentJobIds: [] as string[],
+    queuedJobIds: [] as string[],
+    sessionJobs: new Map<string, Set<string>>(),
+    counts: emptyCounts(),
+    version: 0,
+    updatedAt: undefined as number | undefined,
+    loaded: false,
+  };
 
-  const withLock = async <T>(op: () => Promise<T>): Promise<T> => {
-    const next = lock.then(op);
-    lock = next.then(() => undefined, () => undefined);
+  const withWriteLock = async <T>(op: () => Promise<T>): Promise<T> => {
+    const next = writeLock.then(op);
+    writeLock = next.then(() => undefined, () => undefined);
     return next;
   };
 
   const jobStream = (jobId: string): string => `${opts.stream}/${jobId}`;
+  const manifestPath = opts.watchDir ? path.join(opts.watchDir, "_streams.json") : undefined;
+  const manifestSyncWindowMs = 250;
 
   const emitToStream = async (stream: string, event: JobEvent, hint?: string): Promise<void> => {
     await opts.runtime.execute(stream, {
@@ -147,30 +212,205 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     });
   };
 
-  const emitEvent = async (event: JobEvent): Promise<void> => {
-    let changedJob: QueueJob | undefined;
+  const snapshot = (): QueueSnapshot => ({
+    version: index.version,
+    total: index.jobsById.size,
+    queued: index.counts.queued,
+    leased: index.counts.leased,
+    running: index.counts.running,
+    completed: index.counts.completed,
+    failed: index.counts.failed,
+    canceled: index.counts.canceled,
+    updatedAt: index.updatedAt,
+  });
+
+  const settleWaiter = (
+    waiter: {
+      readonly ready: (current: QueueSnapshot) => boolean;
+      readonly resolve: (current: QueueSnapshot) => void;
+      timeout?: ReturnType<typeof setTimeout>;
+    },
+    current: QueueSnapshot,
+  ): void => {
+    waiters.delete(waiter);
+    if (waiter.timeout) clearTimeout(waiter.timeout);
+    waiter.resolve(current);
+  };
+
+  const notifyWaiters = (force = false): void => {
+    const current = snapshot();
+    for (const waiter of [...waiters]) {
+      if (force || waiter.ready(current)) settleWaiter(waiter, current);
+    }
+  };
+
+  const waitForSnapshot = async (input: {
+    readonly timeoutMs?: number;
+    readonly ready: (current: QueueSnapshot) => boolean;
+  }): Promise<QueueSnapshot> => {
+    const current = snapshot();
+    if (input.ready(current)) return current;
+    return new Promise<QueueSnapshot>((resolve) => {
+      const waiter: QueueWaiter = {
+        ready: input.ready,
+        resolve,
+      };
+      if (typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs) && input.timeoutMs >= 0) {
+        waiter.timeout = setTimeout(() => {
+          settleWaiter(waiter, snapshot());
+        }, input.timeoutMs);
+      }
+      waiters.add(waiter);
+    });
+  };
+
+  const removeJobId = (items: string[], jobId: string): void => {
+    const indexOfId = items.indexOf(jobId);
+    if (indexOfId >= 0) items.splice(indexOfId, 1);
+  };
+
+  const insertJobId = (
+    items: string[],
+    job: QueueJob,
+    compare: (left: QueueJob, right: QueueJob) => number,
+  ): void => {
+    let low = 0;
+    let high = items.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      const existing = index.jobsById.get(items[mid]!);
+      if (!existing || compare(job, existing) < 0) high = mid;
+      else low = mid + 1;
+    }
+    items.splice(low, 0, job.id);
+  };
+
+  const removeSessionMember = (job: QueueJob): void => {
+    if (!job.sessionKey) return;
+    const members = index.sessionJobs.get(job.sessionKey);
+    if (!members) return;
+    members.delete(job.id);
+    if (members.size === 0) index.sessionJobs.delete(job.sessionKey);
+  };
+
+  const addSessionMember = (job: QueueJob): void => {
+    if (!job.sessionKey) return;
+    const members = index.sessionJobs.get(job.sessionKey) ?? new Set<string>();
+    members.add(job.id);
+    index.sessionJobs.set(job.sessionKey, members);
+  };
+
+  const shouldQueueJob = (job: QueueJob): boolean =>
+    job.status === "queued" && !job.abortRequested;
+
+  const upsertIndexedJob = (job: QueueJob): void => {
+    const previous = index.jobsById.get(job.id);
+    if (previous) {
+      index.counts[previous.status] -= 1;
+      removeJobId(index.recentJobIds, previous.id);
+      if (shouldQueueJob(previous)) removeJobId(index.queuedJobIds, previous.id);
+      removeSessionMember(previous);
+    }
+    const stored = cloneJob(job);
+    index.jobsById.set(stored.id, stored);
+    index.counts[stored.status] += 1;
+    insertJobId(index.recentJobIds, stored, compareRecentJobs);
+    if (shouldQueueJob(stored)) insertJobId(index.queuedJobIds, stored, compareQueuedJobs);
+    addSessionMember(stored);
+    index.version += 1;
+    index.updatedAt = Math.max(index.updatedAt ?? 0, stored.updatedAt, stored.createdAt);
+    index.loaded = true;
+  };
+
+  const resetIndex = (jobs: ReadonlyArray<QueueJob>): QueueJob[] => {
+    const previousJobs = new Map(index.jobsById);
+    const nextJobs = jobs.map(cloneJob);
+    const nextById = new Map<string, QueueJob>();
+    const nextSessionJobs = new Map<string, Set<string>>();
+    for (const job of nextJobs) {
+      nextById.set(job.id, job);
+      if (job.sessionKey) {
+        const members = nextSessionJobs.get(job.sessionKey) ?? new Set<string>();
+        members.add(job.id);
+        nextSessionJobs.set(job.sessionKey, members);
+      }
+    }
+    index.jobsById = nextById;
+    index.recentJobIds = [...nextJobs]
+      .sort(compareRecentJobs)
+      .map((job) => job.id);
+    index.queuedJobIds = nextJobs
+      .filter((job) => shouldQueueJob(job))
+      .sort(compareQueuedJobs)
+      .map((job) => job.id);
+    index.sessionJobs = nextSessionJobs;
+    index.counts = emptyCounts();
+    index.updatedAt = undefined;
+    for (const job of nextJobs) {
+      index.counts[job.status] += 1;
+      index.updatedAt = Math.max(index.updatedAt ?? 0, job.updatedAt, job.createdAt);
+    }
+    index.loaded = true;
+    const changed = nextJobs.filter((job) => JSON.stringify(previousJobs.get(job.id)) !== JSON.stringify(job));
+    if (previousJobs.size !== nextJobs.length || changed.length > 0 || index.version === 0) {
+      index.version += 1;
+    }
+    return changed;
+  };
+
+  const publishChangedJobs = async (changed: ReadonlyMap<string, QueueJob>): Promise<void> => {
+    if (changed.size === 0) return;
+    await opts.onJobChange?.([...changed.values()].map(cloneJob));
+  };
+
+  const publishChangedJobList = async (changed: ReadonlyArray<QueueJob>): Promise<void> => {
+    if (changed.length === 0) return;
+    await opts.onJobChange?.(changed.map(cloneJob));
+  };
+
+  const loadQueueJob = async (jobId: string): Promise<QueueJob | undefined> => {
+    const state = await opts.runtime.state(jobStream(jobId));
+    jobStateCache.set(jobId, state);
+    const record = state.jobs[jobId];
+    return record ? toQueueJob(record) : undefined;
+  };
+
+  const emitEvent = async (
+    event: JobEvent,
+    changedJobs: Map<string, QueueJob>,
+  ): Promise<void> => {
     if ("jobId" in event) {
       await emitToStream(jobStream(event.jobId), event, eventId());
-      const state = await opts.runtime.state(jobStream(event.jobId));
-      jobStateCache.set(event.jobId, state);
-      const record = state.jobs[event.jobId];
-      if (record) changedJob = toQueueJob(record);
+      const changedJob = await loadQueueJob(event.jobId);
+      if (changedJob) {
+        upsertIndexedJob(changedJob);
+        changedJobs.set(changedJob.id, cloneJob(changedJob));
+      }
       knownJobIds = knownJobIds && knownJobIds.includes(event.jobId)
         ? knownJobIds
         : [...(knownJobIds ?? []), event.jobId];
+      lastLocalMutationAt = nowTs();
     }
-    if (changedJob) await opts.onJobChange?.([changedJob]);
-  };
-
-  const ensureJobState = async (jobId: string): Promise<JobState> => {
-    const cached = jobStateCache.get(jobId);
-    if (cached) return cached;
-    const loaded = await opts.runtime.state(jobStream(jobId));
-    jobStateCache.set(jobId, loaded);
-    return loaded;
   };
 
   const discoverJobIds = async (): Promise<ReadonlyArray<string>> => {
+    if (manifestPath) {
+      const raw = await fs.promises.readFile(manifestPath, "utf-8").catch(() => "");
+      if (raw.trim()) {
+        try {
+          const parsed = JSON.parse(raw) as { readonly byStream?: Record<string, string> };
+          const prefix = `${opts.stream}/`;
+          const ids = Object.keys(parsed.byStream ?? {})
+            .map((stream) => stream.startsWith(prefix) ? stream.slice(prefix.length) : "")
+            .filter((jobId) => Boolean(jobId) && !jobId.includes("/"))
+            .sort((a, b) => a.localeCompare(b));
+          knownJobIds = ids;
+          return ids;
+        } catch {
+          // Fall through to the runtime manifest view.
+        }
+      }
+    }
     if (!opts.runtime.listStreams) {
       return knownJobIds ?? [];
     }
@@ -215,19 +455,75 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     commands: record.commands.map(toCommandRecord),
   });
 
-  const getQueueJob = async (jobId: string): Promise<QueueJob | undefined> => {
-    const record = (await ensureJobState(jobId)).jobs[jobId];
-    return record ? toQueueJob(record) : undefined;
+  const refresh = async (): Promise<QueueSnapshot> => {
+    const changed = await withWriteLock(async () => {
+      const ids = await discoverJobIds();
+      const jobs = (await Promise.all(ids.map((jobId) => loadQueueJob(jobId))))
+        .filter((job): job is QueueJob => Boolean(job));
+      return resetIndex(jobs);
+    });
+    if (changed.length > 0) notifyWaiters();
+    await publishChangedJobList(changed);
+    return snapshot();
   };
 
-  const listAllJobs = async (): Promise<ReadonlyArray<QueueJob>> => {
+  const syncDiscoveredJobs = async (force = false): Promise<void> => {
+    const ts = nowTs();
+    if (!force && index.loaded && ts - manifestSyncAt < manifestSyncWindowMs) return;
+    manifestSyncAt = ts;
     const ids = await discoverJobIds();
-    const jobs = await Promise.all(ids.map((jobId) => getQueueJob(jobId)));
-    return jobs.filter((job): job is QueueJob => Boolean(job));
+    if (!index.loaded && ids.length === 0) {
+      index.loaded = true;
+      return;
+    }
+    const missing = ids.filter((jobId) => !index.jobsById.has(jobId));
+    if (missing.length === 0) {
+      index.loaded = true;
+      return;
+    }
+    const changed = new Map<string, QueueJob>();
+    await withWriteLock(async () => {
+      for (const jobId of missing) {
+        const loaded = await loadQueueJob(jobId);
+        if (!loaded) continue;
+        upsertIndexedJob(loaded);
+        changed.set(loaded.id, cloneJob(loaded));
+      }
+      index.loaded = true;
+    });
+    if (changed.size > 0) notifyWaiters();
+    await publishChangedJobs(changed);
   };
 
-  const handleExpiredLeases = async (timestamp: number): Promise<void> => {
-    for (const job of await listAllJobs()) {
+  const ensureIndexLoaded = async (): Promise<void> => {
+    if (index.loaded) return;
+    await refresh();
+  };
+
+  const getIndexedJob = async (jobId: string): Promise<QueueJob | undefined> => {
+    await ensureIndexLoaded();
+    const indexed = index.jobsById.get(jobId);
+    if (indexed) return cloneJob(indexed);
+    const loaded = await loadQueueJob(jobId);
+    if (!loaded) return undefined;
+    const changed = new Map<string, QueueJob>();
+    await withWriteLock(async () => {
+      upsertIndexedJob(loaded);
+      knownJobIds = knownJobIds && knownJobIds.includes(jobId)
+        ? knownJobIds
+        : [...(knownJobIds ?? []), jobId];
+      changed.set(loaded.id, cloneJob(loaded));
+    });
+    notifyWaiters();
+    await publishChangedJobs(changed);
+    return cloneJob(loaded);
+  };
+
+  const handleExpiredLeases = async (
+    timestamp: number,
+    changedJobs: Map<string, QueueJob>,
+  ): Promise<void> => {
+    for (const job of [...index.jobsById.values()]) {
       if ((job.status !== "leased" && job.status !== "running") || !job.leaseUntil) continue;
       if (job.leaseUntil > timestamp) continue;
       const retryable = job.attempt < job.maxAttempts;
@@ -236,16 +532,9 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
         jobId: job.id,
         retryable,
         willRetry: retryable,
-      });
+      }, changedJobs);
     }
   };
-
-  const sortedJobs = (all: ReadonlyArray<QueueJob>): QueueJob[] =>
-    [...all].sort((a, b) =>
-      lanePriority[a.lane] - lanePriority[b.lane]
-      || a.createdAt - b.createdAt
-      || a.id.localeCompare(b.id)
-    );
 
   const sortedByRecent = (all: ReadonlyArray<QueueJob>): QueueJob[] =>
     [...all].sort((a, b) =>
@@ -254,20 +543,26 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       || b.id.localeCompare(a.id)
     );
 
-  const activeBySession = async (sessionKey: string, excludeId?: string): Promise<QueueJob[]> =>
-    (await listAllJobs()).filter((job) =>
-      job.sessionKey === sessionKey
-      && !TERMINAL.has(job.status)
-      && job.id !== excludeId
-    );
+  const activeBySession = (sessionKey: string, excludeId?: string): QueueJob[] => {
+    const members = index.sessionJobs.get(sessionKey);
+    if (!members) return [];
+    return [...members]
+      .map((jobId) => index.jobsById.get(jobId))
+      .filter((job): job is QueueJob => Boolean(job))
+      .filter((job) => !TERMINAL.has(job.status) && job.id !== excludeId);
+  };
 
-  const requestAbort = async (job: QueueJob, reason: string): Promise<void> => {
+  const requestAbort = async (
+    job: QueueJob,
+    reason: string,
+    changedJobs: Map<string, QueueJob>,
+  ): Promise<void> => {
     if (job.status === "queued") {
       await emitEvent({
         type: "job.canceled",
         jobId: job.id,
         reason,
-      });
+      }, changedJobs);
       return;
     }
     const ts = nowTs();
@@ -280,10 +575,14 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       lane: "steer",
       payload: { reason },
       createdAt: ts,
-    });
+    }, changedJobs);
   };
 
-  const requestSteer = async (job: QueueJob, payload: Record<string, unknown>): Promise<void> => {
+  const requestSteer = async (
+    job: QueueJob,
+    payload: Record<string, unknown>,
+    changedJobs: Map<string, QueueJob>,
+  ): Promise<void> => {
     const ts = nowTs();
     const commandId = `cmd_${ts.toString(36)}_${randomUUID().slice(0, 6)}`;
     await emitEvent({
@@ -294,241 +593,355 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       lane: "steer",
       payload,
       createdAt: ts,
-    });
+    }, changedJobs);
   };
 
+  const scheduleWatchRefresh = (): void => {
+    if (!opts.watchDir) return;
+    if (nowTs() - lastLocalMutationAt < 120) return;
+    if (refreshTimer) return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      void refresh().catch(() => undefined);
+    }, Math.max(25, opts.watchDebounceMs ?? 60));
+  };
+
+  if (opts.watchDir) {
+    try {
+      fs.watch(opts.watchDir, (_eventType, filename) => {
+        if (typeof filename !== "string" || filename.length === 0) {
+          scheduleWatchRefresh();
+          return;
+        }
+        if (filename === "_streams.json" || filename.endsWith(".jsonl")) {
+          scheduleWatchRefresh();
+        }
+      });
+    } catch {
+      // Best-effort wake bridge only.
+    }
+  }
+
   return {
-    enqueue: async (input) => withLock(async () => {
-      const ts = nowTs();
-      const jobId = input.jobId ?? `job_${ts.toString(36)}_${randomUUID().slice(0, 6)}`;
-      const existing = await getQueueJob(jobId);
-      if (existing) {
-        return cloneJob(existing);
-      }
-      const singletonMode = input.singletonMode ?? "allow";
-      const sessionKey = typeof input.sessionKey === "string" && input.sessionKey.trim()
-        ? input.sessionKey.trim()
-        : undefined;
-      if (sessionKey) {
-        const active = sortedByRecent(await activeBySession(sessionKey, jobId));
-        if (singletonMode === "cancel" && active.length > 0) {
-          for (const prior of active) {
-            await requestAbort(prior, "singleton cancel");
-          }
-        } else if (singletonMode === "steer" && active.length > 0) {
-          const target = active[0];
-          if (target) {
-            await requestSteer(target, {
-              fromSessionKey: sessionKey,
-              fromEnqueue: true,
-              payload: input.payload,
-            });
-            return cloneJob(target);
+    enqueue: async (input) => {
+      await ensureIndexLoaded();
+      await syncDiscoveredJobs(true);
+      const changed = new Map<string, QueueJob>();
+      const created = await withWriteLock(async () => {
+        const ts = nowTs();
+        const jobId = input.jobId ?? `job_${ts.toString(36)}_${randomUUID().slice(0, 6)}`;
+        const existing = index.jobsById.get(jobId);
+        if (existing) return cloneJob(existing);
+        const singletonMode = input.singletonMode ?? "allow";
+        const sessionKey = typeof input.sessionKey === "string" && input.sessionKey.trim()
+          ? input.sessionKey.trim()
+          : undefined;
+        if (sessionKey) {
+          const active = sortedByRecent(activeBySession(sessionKey, jobId));
+          if (singletonMode === "cancel" && active.length > 0) {
+            for (const prior of active) {
+              await requestAbort(prior, "singleton cancel", changed);
+            }
+          } else if (singletonMode === "steer" && active.length > 0) {
+            const target = active[0];
+            if (target) {
+              await requestSteer(target, {
+                fromSessionKey: sessionKey,
+                fromEnqueue: true,
+                payload: input.payload,
+              }, changed);
+              return cloneJob(target);
+            }
           }
         }
-      }
-      const job: QueueJob = {
-        id: jobId,
-        agentId: input.agentId,
-        lane: input.lane ?? "collect",
-        sessionKey,
-        singletonMode,
-        payload: input.payload,
-        status: "queued",
-        attempt: 0,
-        maxAttempts: Math.max(1, Math.min(input.maxAttempts ?? 2, 8)),
-        createdAt: ts,
-        updatedAt: ts,
-        commands: [],
-      };
-      await emitEvent({
-        type: "job.enqueued",
-        jobId: job.id,
-        agentId: job.agentId,
-        lane: job.lane,
-        payload: job.payload,
-        maxAttempts: job.maxAttempts,
-        sessionKey: job.sessionKey,
-        singletonMode: job.singletonMode,
-        createdAt: job.createdAt,
+        const job: QueueJob = {
+          id: jobId,
+          agentId: input.agentId,
+          lane: input.lane ?? "collect",
+          sessionKey,
+          singletonMode,
+          payload: input.payload,
+          status: "queued",
+          attempt: 0,
+          maxAttempts: Math.max(1, Math.min(input.maxAttempts ?? 2, 8)),
+          createdAt: ts,
+          updatedAt: ts,
+          commands: [],
+        };
+        await emitEvent({
+          type: "job.enqueued",
+          jobId: job.id,
+          agentId: job.agentId,
+          lane: job.lane,
+          payload: job.payload,
+          maxAttempts: job.maxAttempts,
+          sessionKey: job.sessionKey,
+          singletonMode: job.singletonMode,
+          createdAt: job.createdAt,
+        }, changed);
+        const next = index.jobsById.get(job.id);
+        if (!next) throw new Error(`Invariant: missing job ${job.id} after enqueue`);
+        return cloneJob(next);
       });
-      const created = await getQueueJob(job.id);
-      if (!created) throw new Error(`Invariant: missing job ${job.id} after enqueue`);
-      return cloneJob(created);
-    }),
+      notifyWaiters();
+      await publishChangedJobs(changed);
+      return created;
+    },
 
-    leaseNext: async (lease) => withLock(async () => {
-      const ts = nowTs();
-      await handleExpiredLeases(ts);
-      const candidates = sortedJobs(
-        (await listAllJobs()).filter((job) =>
-          job.status === "queued"
-          && !job.abortRequested
-          && (!lease.agentId || job.agentId === lease.agentId)
-        )
-      );
-      const next = candidates[0];
-      if (!next) return undefined;
-      const attempt = next.attempt + 1;
-      await emitEvent({
-        type: "job.leased",
-        jobId: next.id,
-        workerId: lease.workerId,
-        leaseMs: Math.max(1_000, lease.leaseMs),
-        attempt,
+    leaseNext: async (lease) => {
+      await ensureIndexLoaded();
+      await syncDiscoveredJobs();
+      const changed = new Map<string, QueueJob>();
+      const leased = await withWriteLock(async () => {
+        const ts = nowTs();
+        await handleExpiredLeases(ts, changed);
+        const next = index.queuedJobIds
+          .map((jobId) => index.jobsById.get(jobId))
+          .find((job) => job
+            && (!lease.agentId || job.agentId === lease.agentId));
+        if (!next) return undefined;
+        const attempt = next.attempt + 1;
+        await emitEvent({
+          type: "job.leased",
+          jobId: next.id,
+          workerId: lease.workerId,
+          leaseMs: Math.max(1_000, lease.leaseMs),
+          attempt,
+        }, changed);
+        const current = index.jobsById.get(next.id);
+        return current ? cloneJob(current) : undefined;
       });
-      return getQueueJob(next.id);
-    }),
+      if (changed.size > 0) notifyWaiters();
+      await publishChangedJobs(changed);
+      return leased;
+    },
 
-    heartbeat: async (jobId, workerId, leaseMs) => withLock(async () => {
-      const current = await getQueueJob(jobId);
-      if (!current) return undefined;
-      if (TERMINAL.has(current.status)) return cloneJob(current);
-      if (current.leaseOwner && current.leaseOwner !== workerId) return undefined;
-      await emitEvent({
-        type: "job.heartbeat",
-        jobId,
-        workerId,
-        leaseMs: Math.max(1_000, leaseMs),
+    heartbeat: async (jobId, workerId, leaseMs) => {
+      await ensureIndexLoaded();
+      const changed = new Map<string, QueueJob>();
+      const current = await withWriteLock(async () => {
+        const currentJob = index.jobsById.get(jobId) ?? await loadQueueJob(jobId);
+        if (!currentJob) return undefined;
+        if (TERMINAL.has(currentJob.status)) return cloneJob(currentJob);
+        if (currentJob.leaseOwner && currentJob.leaseOwner !== workerId) return undefined;
+        await emitEvent({
+          type: "job.heartbeat",
+          jobId,
+          workerId,
+          leaseMs: Math.max(1_000, leaseMs),
+        }, changed);
+        const next = index.jobsById.get(jobId);
+        return next ? cloneJob(next) : undefined;
       });
-      return getQueueJob(jobId);
-    }),
+      if (changed.size > 0) notifyWaiters();
+      await publishChangedJobs(changed);
+      return current;
+    },
 
-    progress: async (jobId, workerId, result) => withLock(async () => {
-      const current = await getQueueJob(jobId);
-      if (!current) return undefined;
-      if (TERMINAL.has(current.status)) return cloneJob(current);
-      if (current.leaseOwner && current.leaseOwner !== workerId) return undefined;
-      await emitEvent({
-        type: "job.progress",
-        jobId,
-        workerId,
-        result,
+    progress: async (jobId, workerId, result) => {
+      await ensureIndexLoaded();
+      const changed = new Map<string, QueueJob>();
+      const current = await withWriteLock(async () => {
+        const currentJob = index.jobsById.get(jobId) ?? await loadQueueJob(jobId);
+        if (!currentJob) return undefined;
+        if (TERMINAL.has(currentJob.status)) return cloneJob(currentJob);
+        if (currentJob.leaseOwner && currentJob.leaseOwner !== workerId) return undefined;
+        await emitEvent({
+          type: "job.progress",
+          jobId,
+          workerId,
+          result,
+        }, changed);
+        const next = index.jobsById.get(jobId);
+        return next ? cloneJob(next) : undefined;
       });
-      return getQueueJob(jobId);
-    }),
+      if (changed.size > 0) notifyWaiters();
+      await publishChangedJobs(changed);
+      return current;
+    },
 
-    complete: async (jobId, workerId, result) => withLock(async () => {
-      const current = await getQueueJob(jobId);
-      if (!current) return undefined;
-      if (TERMINAL.has(current.status)) return cloneJob(current);
-      if (current.leaseOwner && current.leaseOwner !== workerId) return undefined;
-      await emitEvent({
-        type: "job.completed",
-        jobId,
-        workerId,
-        result,
+    complete: async (jobId, workerId, result) => {
+      await ensureIndexLoaded();
+      const changed = new Map<string, QueueJob>();
+      const current = await withWriteLock(async () => {
+        const currentJob = index.jobsById.get(jobId) ?? await loadQueueJob(jobId);
+        if (!currentJob) return undefined;
+        if (TERMINAL.has(currentJob.status)) return cloneJob(currentJob);
+        if (currentJob.leaseOwner && currentJob.leaseOwner !== workerId) return undefined;
+        await emitEvent({
+          type: "job.completed",
+          jobId,
+          workerId,
+          result,
+        }, changed);
+        const next = index.jobsById.get(jobId);
+        return next ? cloneJob(next) : undefined;
       });
-      return getQueueJob(jobId);
-    }),
+      if (changed.size > 0) notifyWaiters();
+      await publishChangedJobs(changed);
+      return current;
+    },
 
-    fail: async (jobId, workerId, error, noRetry, result) => withLock(async () => {
-      const current = await getQueueJob(jobId);
-      if (!current) return undefined;
-      if (TERMINAL.has(current.status)) return cloneJob(current);
-      if (current.leaseOwner && current.leaseOwner !== workerId) return undefined;
-
-      const retryable = current.attempt < current.maxAttempts && !noRetry;
-      await emitEvent({
-        type: "job.failed",
-        jobId,
-        workerId,
-        error,
-        retryable,
-        willRetry: retryable,
-        result: retryable ? undefined : result,
+    fail: async (jobId, workerId, error, noRetry, result) => {
+      await ensureIndexLoaded();
+      const changed = new Map<string, QueueJob>();
+      const current = await withWriteLock(async () => {
+        const currentJob = index.jobsById.get(jobId) ?? await loadQueueJob(jobId);
+        if (!currentJob) return undefined;
+        if (TERMINAL.has(currentJob.status)) return cloneJob(currentJob);
+        if (currentJob.leaseOwner && currentJob.leaseOwner !== workerId) return undefined;
+        const retryable = currentJob.attempt < currentJob.maxAttempts && !noRetry;
+        await emitEvent({
+          type: "job.failed",
+          jobId,
+          workerId,
+          error,
+          retryable,
+          willRetry: retryable,
+          result: retryable ? undefined : result,
+        }, changed);
+        const next = index.jobsById.get(jobId);
+        return next ? cloneJob(next) : undefined;
       });
-      return getQueueJob(jobId);
-    }),
+      if (changed.size > 0) notifyWaiters();
+      await publishChangedJobs(changed);
+      return current;
+    },
 
-    cancel: async (jobId, reason, by) => withLock(async () => {
-      const current = await getQueueJob(jobId);
-      if (!current) return undefined;
-      if (TERMINAL.has(current.status)) return cloneJob(current);
-      await emitEvent({
-        type: "job.canceled",
-        jobId,
-        reason,
-        by,
+    cancel: async (jobId, reason, by) => {
+      await ensureIndexLoaded();
+      const changed = new Map<string, QueueJob>();
+      const current = await withWriteLock(async () => {
+        const currentJob = index.jobsById.get(jobId) ?? await loadQueueJob(jobId);
+        if (!currentJob) return undefined;
+        if (TERMINAL.has(currentJob.status)) return cloneJob(currentJob);
+        await emitEvent({
+          type: "job.canceled",
+          jobId,
+          reason,
+          by,
+        }, changed);
+        const next = index.jobsById.get(jobId);
+        return next ? cloneJob(next) : undefined;
       });
-      return getQueueJob(jobId);
-    }),
+      if (changed.size > 0) notifyWaiters();
+      await publishChangedJobs(changed);
+      return current;
+    },
 
-    queueCommand: async (input) => withLock(async () => {
-      const current = await getQueueJob(input.jobId);
-      if (!current) return undefined;
-      const ts = nowTs();
-      const command: QueueCommandRecord = {
-        id: `cmd_${ts.toString(36)}_${randomUUID().slice(0, 6)}`,
-        command: input.command,
-        lane: commandLane(input.command),
-        payload: input.payload,
-        by: input.by,
-        createdAt: ts,
-      };
-      await emitEvent({
-        type: "queue.command",
-        jobId: input.jobId,
-        commandId: command.id,
-        command: input.command,
-        lane: commandLane(input.command),
-        payload: input.payload,
-        by: input.by,
-        createdAt: ts,
-      });
-      if (input.command === "abort") {
-        if (current.status === "queued") {
+    queueCommand: async (input) => {
+      await ensureIndexLoaded();
+      const changed = new Map<string, QueueJob>();
+      const command = await withWriteLock(async () => {
+        const current = index.jobsById.get(input.jobId) ?? await loadQueueJob(input.jobId);
+        if (!current) return undefined;
+        const ts = nowTs();
+        const queuedCommand: QueueCommandRecord = {
+          id: `cmd_${ts.toString(36)}_${randomUUID().slice(0, 6)}`,
+          command: input.command,
+          lane: commandLane(input.command),
+          payload: input.payload,
+          by: input.by,
+          createdAt: ts,
+        };
+        await emitEvent({
+          type: "queue.command",
+          jobId: input.jobId,
+          commandId: queuedCommand.id,
+          command: input.command,
+          lane: commandLane(input.command),
+          payload: input.payload,
+          by: input.by,
+          createdAt: ts,
+        }, changed);
+        if (input.command === "abort" && current.status === "queued") {
           await emitEvent({
             type: "job.canceled",
             jobId: input.jobId,
             reason: "abort requested",
             by: input.by,
-          });
+          }, changed);
         }
-      }
+        return queuedCommand;
+      });
+      if (changed.size > 0) notifyWaiters();
+      await publishChangedJobs(changed);
       return command;
-    }),
+    },
 
-    consumeCommands: async (jobId, filter) => withLock(async () => {
-      const current = await getQueueJob(jobId);
-      if (!current) return [];
-      const wanted = new Set(filter ?? ["steer", "follow_up", "abort"]);
-      const unconsumed = current.commands.filter((cmd) => !cmd.consumedAt && wanted.has(cmd.command));
-      if (unconsumed.length === 0) return [];
-      const ts = nowTs();
-      for (const cmd of unconsumed) {
-        await emitEvent({
-          type: "queue.command.consumed",
-          jobId,
-          commandId: cmd.id,
-          consumedAt: ts,
-        });
-      }
-      return unconsumed.map((cmd) => ({ ...cmd, consumedAt: ts }));
-    }),
+    consumeCommands: async (jobId, filter) => {
+      await ensureIndexLoaded();
+      const changed = new Map<string, QueueJob>();
+      const consumed = await withWriteLock(async () => {
+        const current = index.jobsById.get(jobId) ?? await loadQueueJob(jobId);
+        if (!current) return [];
+        const wanted = new Set(filter ?? ["steer", "follow_up", "abort"]);
+        const unconsumed = current.commands.filter((cmd) => !cmd.consumedAt && wanted.has(cmd.command));
+        if (unconsumed.length === 0) return [];
+        const ts = nowTs();
+        for (const cmd of unconsumed) {
+          await emitEvent({
+            type: "queue.command.consumed",
+            jobId,
+            commandId: cmd.id,
+            consumedAt: ts,
+          }, changed);
+        }
+        return unconsumed.map((cmd) => ({ ...cmd, consumedAt: ts }));
+      });
+      if (changed.size > 0) notifyWaiters();
+      await publishChangedJobs(changed);
+      return consumed;
+    },
 
-    getJob: async (jobId) => withLock(async () => {
-      const found = await getQueueJob(jobId);
-      return found ? cloneJob(found) : undefined;
-    }),
+    getJob: async (jobId) => getIndexedJob(jobId),
 
-    listJobs: async (options) => withLock(async () => {
+    listJobs: async (options) => {
+      await ensureIndexLoaded();
+      await syncDiscoveredJobs();
       const limit = Math.max(1, Math.min(options?.limit ?? 50, 500));
-      const values = (await listAllJobs())
-        .filter((job) => (options?.status ? job.status === options.status : true))
-        .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
-      return values.slice(0, limit).map(cloneJob);
-    }),
-
-    waitForJob: async (jobId, timeoutMs = 15_000, pollMs = 200) => {
-      const end = nowTs() + Math.max(0, timeoutMs);
-      while (nowTs() <= end) {
-        const current = await getQueueJob(jobId);
-        if (current && TERMINAL.has(current.status)) return cloneJob(current);
-        await new Promise((resolve) => setTimeout(resolve, Math.max(20, pollMs)));
+      const listed: QueueJob[] = [];
+      for (const jobId of index.recentJobIds) {
+        const job = index.jobsById.get(jobId);
+        if (!job) continue;
+        if (options?.status && job.status !== options.status) continue;
+        listed.push(cloneJob(job));
+        if (listed.length >= limit) break;
       }
-      const current = await getQueueJob(jobId);
+      return listed;
+    },
+
+    waitForJob: async (jobId, timeoutMs = 15_000, _pollMs = 200) => {
+      void _pollMs;
+      const end = nowTs() + Math.max(0, timeoutMs);
+      let sinceVersion = snapshot().version;
+      while (nowTs() <= end) {
+        const current = await getIndexedJob(jobId);
+        if (current && TERMINAL.has(current.status)) return cloneJob(current);
+        const remaining = Math.max(0, end - nowTs());
+        const next = await waitForSnapshot({
+          timeoutMs: remaining,
+          ready: (currentSnapshot) => currentSnapshot.version > sinceVersion,
+        });
+        sinceVersion = next.version;
+      }
+      const current = await getIndexedJob(jobId);
       return current ? cloneJob(current) : undefined;
     },
+
+    waitForWork: async (options) => {
+      const sinceVersion = options?.sinceVersion ?? snapshot().version;
+      return waitForSnapshot({
+        timeoutMs: options?.timeoutMs,
+        ready: (current) => current.queued > 0 || current.version > sinceVersion,
+      });
+    },
+
+    notifyWorkAvailable: () => {
+      notifyWaiters(true);
+    },
+
+    snapshot,
+    refresh,
   };
 };

@@ -37,9 +37,9 @@
   ],
   "mode": "supervisor",
   "discoveryBudget": 2,
-  "suspendOnAsyncChild": true,
+  "suspendOnAsyncChild": false,
   "allowPollingWhileChildRunning": true,
-  "finalWhileChildRunning": "waiting_message",
+  "finalWhileChildRunning": "allow",
   "childDedupe": "by_run_and_prompt",
   "objective": {
     "defaultWorker": "codex",

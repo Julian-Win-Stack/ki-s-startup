@@ -1071,7 +1071,7 @@ const buildMissionLink = (input: {
   readonly focusId?: string;
 }): string => {
   const params = new URLSearchParams();
-  if (input.objectiveId) params.set("objective", input.objectiveId);
+  if (input.objectiveId) params.set("thread", input.objectiveId);
   if (input.panel) params.set("panel", input.panel);
   if (input.focusKind) params.set("focusKind", input.focusKind);
   if (input.focusId) params.set("focusId", input.focusId);
@@ -1088,13 +1088,16 @@ const buildChatLink = (input: {
 }): string => {
   const params = new URLSearchParams();
   if (input.profileId) params.set("profile", input.profileId);
-  if (input.objectiveId) params.set("objective", input.objectiveId);
+  if (input.objectiveId) params.set("thread", input.objectiveId);
   if (!input.objectiveId && input.chatId) params.set("chat", input.chatId);
   if (input.runId) params.set("run", input.runId);
   if (input.jobId) params.set("job", input.jobId);
   const query = params.toString();
   return `/factory${query ? `?${query}` : ""}`;
 };
+
+const makeFactoryChatId = (): string =>
+  `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
 const chatItemPreview = (item: FactoryChatItem): string => {
   if (item.kind === "user" || item.kind === "assistant") return item.body;
@@ -1353,7 +1356,8 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
   };
 
   const requestedObjectiveId = (req: Request): string | undefined =>
-    optionalTrimmedString(new URL(req.url).searchParams.get("objective"));
+    optionalTrimmedString(new URL(req.url).searchParams.get("thread"))
+    ?? optionalTrimmedString(new URL(req.url).searchParams.get("objective"));
 
   const requestedProfileId = (req: Request): string | undefined =>
     optionalTrimmedString(new URL(req.url).searchParams.get("profile"));
@@ -1375,6 +1379,38 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
   const requestedFocusId = (req: Request): string | undefined =>
     optionalTrimmedString(new URL(req.url).searchParams.get("focusId"));
+
+  const projectionCacheTtlMs = 180;
+  const chatShellCache = new Map<string, {
+    readonly expiresAt: number;
+    readonly value: Promise<FactoryChatShellModel>;
+  }>();
+  const missionShellCache = new Map<string, {
+    readonly expiresAt: number;
+    readonly value: Promise<FactoryMissionShellModel>;
+  }>();
+
+  const withProjectionCache = async <T>(
+    cache: Map<string, { readonly expiresAt: number; readonly value: Promise<T> }>,
+    key: string,
+    build: () => Promise<T>,
+  ): Promise<T> => {
+    const now = Date.now();
+    const cached = cache.get(key);
+    if (cached && cached.expiresAt > now) return cached.value;
+    const value = build();
+    cache.set(key, {
+      expiresAt: now + projectionCacheTtlMs,
+      value,
+    });
+    setTimeout(() => {
+      const current = cache.get(key);
+      if (current?.value === value && current.expiresAt <= Date.now()) {
+        cache.delete(key);
+      }
+    }, projectionCacheTtlMs + 20);
+    return value;
+  };
 
   const buildChatShellModel = async (input: {
     readonly profileId?: string;
@@ -1525,6 +1561,11 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       activeProfileSummary: activeProfileOverview.summary,
       activeProfileSections: activeProfileOverview.sections,
       activeProfileTools: resolved.toolAllowlist,
+      selectedThread: selectedObjectiveCard,
+      jobs: relevantJobs,
+      activeCodex,
+      liveChildren,
+      activeRun,
       items: chatItems,
     };
     const sidebarModel: FactorySidebarModel = {
@@ -1555,6 +1596,22 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       sidebar: sidebarModel,
     };
   };
+
+  const buildChatShellModelCached = async (input: {
+    readonly profileId?: string;
+    readonly objectiveId?: string;
+    readonly chatId?: string;
+    readonly runId?: string;
+    readonly jobId?: string;
+  }): Promise<FactoryChatShellModel> => withProjectionCache(
+    chatShellCache,
+    JSON.stringify({
+      input,
+      queueVersion: ctx.queue.snapshot?.().version ?? 0,
+      objectiveVersion: typeof service.projectionVersion === "function" ? service.projectionVersion() : 0,
+    }),
+    () => buildChatShellModel(input),
+  );
 
   const buildMissionShellModel = async (input: {
     readonly objectiveId?: string;
@@ -1921,6 +1978,21 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     };
   };
 
+  const buildMissionShellModelCached = async (input: {
+    readonly objectiveId?: string;
+    readonly panel: FactoryMissionPanel;
+    readonly focusKind: FactoryMissionFocusKind;
+    readonly focusId?: string;
+  }): Promise<FactoryMissionShellModel> => withProjectionCache(
+    missionShellCache,
+    JSON.stringify({
+      input,
+      queueVersion: ctx.queue.snapshot?.().version ?? 0,
+      objectiveVersion: typeof service.projectionVersion === "function" ? service.projectionVersion() : 0,
+    }),
+    () => buildMissionShellModel(input),
+  );
+
   const collectChatSubscriptionJobIds = async (input: {
     readonly profileId?: string;
     readonly objectiveId?: string;
@@ -1998,7 +2070,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     },
     register: (app: Hono) => {
       app.get("/factory", async (c) => wrap(
-        async () => buildChatShellModel({
+        async () => buildChatShellModelCached({
           profileId: requestedProfileId(c.req.raw),
           objectiveId: requestedObjectiveId(c.req.raw),
           chatId: requestedChatId(c.req.raw),
@@ -2006,6 +2078,20 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           jobId: requestedJobId(c.req.raw),
         }),
         (model) => html(factoryChatShell(model))
+      ));
+
+      app.get("/factory/new-chat", async (c) => wrap(
+        async () => buildChatLink({
+          profileId: requestedProfileId(c.req.raw) ?? "generalist",
+          chatId: makeFactoryChatId(),
+        }),
+        (location) => new Response(null, {
+          status: 303,
+          headers: {
+            Location: location,
+            "Cache-Control": "no-store",
+          },
+        })
       ));
 
       app.get("/factory/events", async (c) => wrap(
@@ -2044,7 +2130,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
       app.get("/factory/island/chat", async (c) => wrap(
         async () => {
-          const model = await buildChatShellModel({
+          const model = await buildChatShellModelCached({
             profileId: requestedProfileId(c.req.raw),
             objectiveId: requestedObjectiveId(c.req.raw),
             chatId: requestedChatId(c.req.raw),
@@ -2058,7 +2144,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
       app.get("/factory/island/sidebar", async (c) => wrap(
         async () => {
-          const model = await buildChatShellModel({
+          const model = await buildChatShellModelCached({
             profileId: requestedProfileId(c.req.raw),
             objectiveId: requestedObjectiveId(c.req.raw),
             chatId: requestedChatId(c.req.raw),
@@ -2072,7 +2158,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
       app.get("/factory/island/inspector", async (c) => wrap(
         async () => {
-          const model = await buildChatShellModel({
+          const model = await buildChatShellModelCached({
             profileId: requestedProfileId(c.req.raw),
             objectiveId: requestedObjectiveId(c.req.raw),
             chatId: requestedChatId(c.req.raw),
@@ -2137,7 +2223,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
       app.get("/factory/chat/island/chat", async (c) => wrap(
         async () => {
-          const model = await buildChatShellModel({
+          const model = await buildChatShellModelCached({
             profileId: requestedProfileId(c.req.raw),
             objectiveId: requestedObjectiveId(c.req.raw),
             chatId: requestedChatId(c.req.raw),
@@ -2151,7 +2237,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
       app.get("/factory/chat/island/sidebar", async (c) => wrap(
         async () => {
-          const model = await buildChatShellModel({
+          const model = await buildChatShellModelCached({
             profileId: requestedProfileId(c.req.raw),
             objectiveId: requestedObjectiveId(c.req.raw),
             chatId: requestedChatId(c.req.raw),
@@ -2165,7 +2251,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
       app.get("/factory/chat/island/inspector", async (c) => wrap(
         async () => {
-          const model = await buildChatShellModel({
+          const model = await buildChatShellModelCached({
             profileId: requestedProfileId(c.req.raw),
             objectiveId: requestedObjectiveId(c.req.raw),
             chatId: requestedChatId(c.req.raw),
@@ -2178,7 +2264,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       ));
 
       app.get("/factory/control", async (c) => wrap(
-        async () => buildMissionShellModel({
+        async () => buildMissionShellModelCached({
           objectiveId: requestedObjectiveId(c.req.raw),
           panel: requestedPanel(c.req.raw),
           focusKind: requestedFocusKind(c.req.raw),
@@ -2222,7 +2308,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
       app.get("/factory/control/island/rail", async (c) => wrap(
         async () => {
-          const model = await buildMissionShellModel({
+          const model = await buildMissionShellModelCached({
             objectiveId: requestedObjectiveId(c.req.raw),
             panel: requestedPanel(c.req.raw),
             focusKind: requestedFocusKind(c.req.raw),
@@ -2235,7 +2321,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
       app.get("/factory/control/island/main", async (c) => wrap(
         async () => {
-          const model = await buildMissionShellModel({
+          const model = await buildMissionShellModelCached({
             objectiveId: requestedObjectiveId(c.req.raw),
             panel: requestedPanel(c.req.raw),
             focusKind: requestedFocusKind(c.req.raw),
@@ -2248,7 +2334,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
       app.get("/factory/control/island/inspector", async (c) => wrap(
         async () => {
-          const model = await buildMissionShellModel({
+          const model = await buildMissionShellModelCached({
             objectiveId: requestedObjectiveId(c.req.raw),
             panel: requestedPanel(c.req.raw),
             focusKind: requestedFocusKind(c.req.raw),
@@ -2379,23 +2465,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             runId,
             jobId: created.id,
           });
-          if (c.req.header("HX-Request") === "true") {
-            return emptyHtml({
-              "HX-Replace-Url": location,
-              "HX-Trigger": JSON.stringify({
-                "factory-run-started": {
-                  profileId: resolved.root.id,
-                  profileLabel: resolved.root.label,
-                  profileSummary: describeProfileMarkdown(resolved.root.mdBody).summary ?? "",
-                  objectiveId: objectiveId ?? "",
-                  chatId: chatId ?? "",
-                  jobId: created.id,
-                  runId,
-                  location,
-                },
-              }),
-            });
-          }
           return new Response(null, {
             status: 303,
             headers: {

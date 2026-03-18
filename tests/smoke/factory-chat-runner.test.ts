@@ -769,6 +769,95 @@ test("factory chat runner: finalizer rewrites premature software success text wh
   expect(result.finalResponse).not.toContain("already complete and validated");
 });
 
+test("factory chat runner: active-monitor software policy keeps polling and preserves the operator response while child work runs", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-active-monitor");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  await writeProfile(profileRoot, {
+    id: "software",
+    label: "Software",
+    default: true,
+    toolAllowlist: ["codex.run", "codex.status"],
+    orchestration: {
+      executionMode: "supervisor",
+      suspendOnAsyncChild: false,
+      allowPollingWhileChildRunning: true,
+      finalWhileChildRunning: "allow",
+      childDedupe: "by_run_and_prompt",
+    },
+  });
+
+  const actions = [
+    {
+      thought: "queue codex work",
+      action: {
+        type: "tool",
+        name: "codex.run",
+        input: JSON.stringify({ prompt: "Inspect the current thread shell and report progress." }),
+        text: null,
+      },
+    },
+    {
+      thought: "keep monitoring the child",
+      action: {
+        type: "tool",
+        name: "codex.status",
+        input: "{}",
+        text: null,
+      },
+    },
+    {
+      thought: "respond as an active supervisor",
+      action: {
+        type: "final",
+        name: null,
+        input: "{}",
+        text: "Codex is still running and I am watching the live worker state from this thread.",
+      },
+    },
+  ];
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_software_active_monitor",
+    problem: "Ship the bug fix.",
+    profileId: "software",
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: {} as never,
+    repoRoot,
+    profileRoot,
+  });
+
+  expect(result.status).toBe("completed");
+  expect(result.finalResponse).toContain("watching the live worker state");
+  expect(result.finalResponse).not.toContain("Child work is still running as");
+
+  const chain = await agentRuntime.chain(agentRunStream("agents/factory/demo", "run_software_active_monitor"));
+  const statusCall = chain.find((receipt) =>
+    receipt.body.type === "tool.observed"
+    && receipt.body.tool === "codex.status"
+  )?.body;
+  expect(statusCall && "error" in statusCall ? statusCall.error : undefined).toBeUndefined();
+  expect(statusCall && "output" in statusCall ? statusCall.output : "").toContain('"worker": "codex"');
+});
+
 test("factory chat runner: accepts valid JSON-object strings for tool input", async () => {
   const dataDir = await createTempDir("receipt-factory-chat-object-input");
   const repoRoot = await createTempDir("receipt-factory-chat-repo");

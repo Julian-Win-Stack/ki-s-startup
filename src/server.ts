@@ -223,7 +223,7 @@ const JOB_STREAM = "jobs";
 const IMPROVEMENT_STREAM = "improvement";
 const INSPECTOR_STREAM = "agents/inspector";
 const jobWorkerId = process.env.JOB_WORKER_ID ?? `worker_${process.pid}`;
-const jobPollMs = Number(process.env.JOB_POLL_MS ?? 100);
+const jobIdleResyncMs = Number(process.env.JOB_IDLE_RESYNC_MS ?? process.env.JOB_POLL_MS ?? 5_000);
 const jobLeaseMs = Number(process.env.JOB_LEASE_MS ?? 30_000);
 const subJobWaitMsRaw = Number(process.env.SUBJOB_WAIT_MS ?? 1_500);
 const subJobWaitMs = Number.isFinite(subJobWaitMsRaw)
@@ -264,6 +264,7 @@ let queue!: ReturnType<typeof jsonlQueue>;
 queue = jsonlQueue({
   runtime: jobRuntime,
   stream: JOB_STREAM,
+  watchDir: DATA_DIR,
   onJobChange: async (jobs) => {
     for (const job of jobs) {
       sse.publish("jobs", job.id);
@@ -1288,7 +1289,7 @@ const createWorkerHandler = (spec: WorkerHandlerSpec): JobHandler =>
 const worker = new JobWorker({
   queue,
   workerId: jobWorkerId,
-  pollMs: jobPollMs,
+  idleResyncMs: jobIdleResyncMs,
   leaseMs: jobLeaseMs,
   concurrency: Math.max(1, Number(process.env.JOB_CONCURRENCY ?? 2)),
   handlers: {

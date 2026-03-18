@@ -694,6 +694,15 @@ export class FactoryService {
 
   private readonly runtime: Runtime<FactoryCmd, FactoryEvent, FactoryState>;
   private readonly llmStructured?: FactoryServiceOptions["llmStructured"];
+  private objectiveProjectionVersion = 0;
+  private objectiveListCache?: {
+    readonly version: number;
+    readonly cards: ReadonlyArray<FactoryObjectiveCard>;
+  };
+  private readonly objectiveCardCache = new Map<string, {
+    readonly key: string;
+    readonly card: FactoryObjectiveCard;
+  }>();
 
   constructor(opts: FactoryServiceOptions) {
     this.dataDir = opts.dataDir;
@@ -719,6 +728,20 @@ export class FactoryService {
 
   async ensureBootstrap(): Promise<void> {
     await this.git.ensureReady();
+  }
+
+  projectionVersion(): number {
+    return this.objectiveProjectionVersion;
+  }
+
+  private invalidateObjectiveProjection(objectiveId?: string): void {
+    this.objectiveProjectionVersion += 1;
+    this.objectiveListCache = undefined;
+    if (objectiveId) {
+      this.objectiveCardCache.delete(objectiveId);
+    } else {
+      this.objectiveCardCache.clear();
+    }
   }
 
   private objectiveArtifactsDir(objectiveId: string): string {
@@ -930,12 +953,21 @@ export class FactoryService {
   }
 
   async listObjectives(): Promise<ReadonlyArray<FactoryObjectiveCard>> {
+    const cached = this.objectiveListCache;
+    if (cached && cached.version === this.objectiveProjectionVersion) {
+      return cached.cards;
+    }
     const states = await this.listObjectiveStates();
     const queuePositions = this.queuePositionsForStates(states);
     const details = await Promise.all(
       states.map((state) => this.buildObjectiveCard(state, queuePositions.get(state.objectiveId))),
     );
-    return details.sort((a, b) => b.updatedAt - a.updatedAt);
+    const cards = details.sort((a, b) => b.updatedAt - a.updatedAt);
+    this.objectiveListCache = {
+      version: this.objectiveProjectionVersion,
+      cards,
+    };
+    return cards;
   }
 
   async getObjectiveState(objectiveId: string): Promise<FactoryState> {
@@ -3037,11 +3069,14 @@ export class FactoryService {
       readonly candidateId?: string;
     }>,
   ): Promise<FactoryObjectiveCard> {
+    const cacheKey = `${state.updatedAt}:${queuePosition ?? ""}`;
+    const cached = this.objectiveCardCache.get(state.objectiveId);
+    if (cached?.key === cacheKey) return cached.card;
     const projection = buildFactoryProjection(state);
     const latestCandidate = projection.candidates.at(-1);
     const resolvedReceipts = receipts ?? this.summarizedReceipts(await this.runtime.chain(objectiveStream(state.objectiveId)), 60);
     const slotState = state.scheduler.slotState ?? "active";
-    return {
+    const card = {
       objectiveId: state.objectiveId,
       title: state.title,
       status: state.status,
@@ -3065,6 +3100,11 @@ export class FactoryService {
       latestCommitHash: state.integration.promotedCommit ?? state.integration.headCommit ?? latestCandidate?.headCommit,
       profile: this.objectiveProfileForState(state),
     };
+    this.objectiveCardCache.set(state.objectiveId, {
+      key: cacheKey,
+      card,
+    });
+    return card;
   }
 
   private async buildObjectiveDetail(state: FactoryState, queuePosition?: number): Promise<FactoryObjectiveDetail> {
@@ -3239,6 +3279,7 @@ export class FactoryService {
       }
       throw err;
     }
+    this.invalidateObjectiveProjection(objectiveId);
     this.sse.publish("factory", objectiveId);
     this.sse.publish("receipt");
   }
