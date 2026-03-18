@@ -22,23 +22,30 @@ const writeProfile = async (root: string, input: {
   readonly default?: boolean;
   readonly imports?: ReadonlyArray<string>;
   readonly routeHints?: ReadonlyArray<string>;
+  readonly capabilities?: ReadonlyArray<string>;
   readonly toolAllowlist?: ReadonlyArray<string>;
   readonly skills?: ReadonlyArray<string>;
+  readonly mode?: "interactive" | "supervisor";
+  readonly discoveryBudget?: number;
+  readonly suspendOnAsyncChild?: boolean;
+  readonly allowPollingWhileChildRunning?: boolean;
+  readonly finalWhileChildRunning?: "allow" | "waiting_message" | "reject";
+  readonly childDedupe?: "none" | "by_run_and_prompt";
   readonly orchestration?: {
     readonly executionMode?: "interactive" | "supervisor";
     readonly discoveryBudget?: number;
-    readonly suspendOnAsyncChild?: boolean;
-    readonly allowPollingWhileChildRunning?: boolean;
-    readonly finalWhileChildRunning?: "allow" | "waiting_message" | "reject";
-    readonly childDedupe?: "none" | "by_run_and_prompt";
+  };
+  readonly objective?: {
+    readonly allowedWorkers?: ReadonlyArray<string>;
+    readonly defaultWorker?: string;
+    readonly worktreeModeByWorker?: Readonly<Record<string, "required" | "forbidden">>;
+    readonly validation?: "repo_profile" | "none";
+    readonly maxParallelChildren?: number;
+    readonly allowObjectiveCreation?: boolean;
   };
   readonly objectivePolicy?: {
     readonly allowedWorkerTypes?: ReadonlyArray<string>;
     readonly defaultWorkerType?: string;
-    readonly worktreeModeByWorker?: Readonly<Record<string, "required" | "forbidden">>;
-    readonly defaultValidationMode?: "repo_profile" | "none";
-    readonly maxParallelChildren?: number;
-    readonly allowObjectiveCreation?: boolean;
   };
 }): Promise<void> => {
   const dir = path.join(root, "profiles", input.id);
@@ -49,10 +56,18 @@ const writeProfile = async (root: string, input: {
     enabled: input.enabled ?? true,
     default: input.default ?? false,
     imports: input.imports ?? [],
+    capabilities: input.capabilities ?? [],
     routeHints: input.routeHints ?? [],
     toolAllowlist: input.toolAllowlist ?? [],
     skills: input.skills ?? [],
+    mode: input.mode,
+    discoveryBudget: input.discoveryBudget,
+    suspendOnAsyncChild: input.suspendOnAsyncChild,
+    allowPollingWhileChildRunning: input.allowPollingWhileChildRunning,
+    finalWhileChildRunning: input.finalWhileChildRunning,
+    childDedupe: input.childDedupe,
     orchestration: input.orchestration ?? {},
+    objective: input.objective ?? {},
     objectivePolicy: input.objectivePolicy ?? {},
     handoffTargets: [],
   };
@@ -78,43 +93,39 @@ test("factory chat profiles: resolves imports, route hints, and profile hashes s
   await writeProfile(profileRoot, {
     id: "shared",
     label: "Shared",
-    toolAllowlist: ["memory.read", "factory.status"],
+    capabilities: ["memory.read", "status.read"],
     skills: ["skills/shared/SKILL.md"],
-    objectivePolicy: {
-      allowedWorkerTypes: ["codex", "inspector"],
+    objective: {
+      allowedWorkers: ["codex", "inspector"],
       maxParallelChildren: 2,
     },
-    orchestration: {
-      executionMode: "supervisor",
-      childDedupe: "by_run_and_prompt",
-    },
+    mode: "supervisor",
+    childDedupe: "by_run_and_prompt",
   });
   await writeProfile(profileRoot, {
     id: "reviewer",
     label: "Reviewer",
     imports: ["shared"],
     routeHints: ["review", "critique"],
-    toolAllowlist: ["profile.handoff"],
+    capabilities: ["profile.handoff"],
     skills: ["skills/reviewer/SKILL.md"],
-    objectivePolicy: {
-      defaultWorkerType: "inspector",
+    objective: {
+      defaultWorker: "inspector",
       worktreeModeByWorker: {
         inspector: "forbidden",
       },
-      defaultValidationMode: "none",
+      validation: "none",
       allowObjectiveCreation: true,
     },
-    orchestration: {
-      discoveryBudget: 1,
-      finalWhileChildRunning: "reject",
-    },
+    discoveryBudget: 1,
+    finalWhileChildRunning: "reject",
   });
   await writeProfile(profileRoot, {
     id: "generalist",
     label: "Generalist",
     default: true,
     routeHints: ["ship", "debug"],
-    toolAllowlist: ["codex.run"],
+    capabilities: ["async.dispatch"],
   });
 
   const resolved = await resolveFactoryChatProfile({
@@ -125,7 +136,8 @@ test("factory chat profiles: resolves imports, route hints, and profile hashes s
 
   expect(resolved.root.id).toBe("reviewer");
   expect(resolved.imports.map((profile) => profile.id)).toEqual(["shared"]);
-  expect(resolved.toolAllowlist).toEqual(["memory.read", "factory.status", "profile.handoff"]);
+  expect(resolved.capabilities).toEqual(["memory.read", "status.read", "profile.handoff"]);
+  expect(resolved.toolAllowlist).toEqual(["memory.read", "memory.search", "memory.summarize", "agent.inspect", "agent.status", "jobs.list", "codex.status", "factory.status", "profile.handoff"]);
   expect(resolved.skills).toEqual(["skills/shared/SKILL.md", "skills/reviewer/SKILL.md"]);
   expect(resolved.orchestration.executionMode).toBe("supervisor");
   expect(resolved.orchestration.discoveryBudget).toBe(1);
@@ -154,13 +166,13 @@ test("factory chat profiles: routes concrete bug-fix prompts to the software pro
     label: "Generalist",
     default: true,
     routeHints: ["factory", "status", "delivery"],
-    toolAllowlist: ["jobs.list"],
+    capabilities: ["status.read"],
   });
   await writeProfile(profileRoot, {
     id: "software",
     label: "Software",
     routeHints: ["bug", "fix", "ui", "tailwind", "truncate"],
-    toolAllowlist: ["codex.run", "write"],
+    capabilities: ["async.dispatch", "repo.write"],
   });
 
   const resolved = await resolveFactoryChatProfile({
@@ -171,7 +183,7 @@ test("factory chat profiles: routes concrete bug-fix prompts to the software pro
 
   expect(resolved.root.id).toBe("software");
   expect(resolved.selectionReason).toBe("route_hint");
-  expect(resolved.toolAllowlist).toEqual(["codex.run", "write"]);
+  expect(resolved.toolAllowlist).toEqual(["codex.run", "agent.delegate", "write", "bash"]);
 });
 
 test("factory chat profiles: route hints match whole words and phrases instead of loose substrings", async () => {
@@ -182,13 +194,13 @@ test("factory chat profiles: route hints match whole words and phrases instead o
     label: "Generalist",
     default: true,
     routeHints: ["status"],
-    toolAllowlist: ["jobs.list"],
+    capabilities: ["status.read"],
   });
   await writeProfile(profileRoot, {
     id: "software",
     label: "Software",
     routeHints: ["ui", "failing test"],
-    toolAllowlist: ["codex.run"],
+    capabilities: ["async.dispatch"],
   });
 
   const resolved = await resolveFactoryChatProfile({
@@ -209,13 +221,13 @@ test("factory chat profiles: allowDefaultOverride lets the default profile yield
     label: "Generalist",
     default: true,
     routeHints: ["status", "planning"],
-    toolAllowlist: ["jobs.list"],
+    capabilities: ["status.read"],
   });
   await writeProfile(profileRoot, {
     id: "software",
     label: "Software",
     routeHints: ["bug", "fix", "ui"],
-    toolAllowlist: ["codex.run"],
+    capabilities: ["async.dispatch"],
   });
 
   const resolved = await resolveFactoryChatProfile({

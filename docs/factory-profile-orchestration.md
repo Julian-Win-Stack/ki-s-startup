@@ -32,7 +32,7 @@ The main `/factory` chat surface is backed by a repo-customizable profile packag
 
 Each `PROFILE.md` contains:
 
-- a JSON frontmatter block for machine-readable policy
+- a small JSON frontmatter block for machine-readable orchestration policy
 - the markdown body for the operator-facing instructions
 
 At runtime, Factory:
@@ -40,7 +40,7 @@ At runtime, Factory:
 1. discovers enabled profiles
 2. selects one by explicit request, route hints, or default
 3. resolves imported profiles into a final profile stack
-4. builds a merged system prompt and tool allowlist
+4. expands profile capabilities into primitive tools, builds a merged system prompt and tool allowlist
 5. runs the Factory chat agent against that profile
 6. lets the profile answer directly, inspect memory, queue subagents, queue Codex, dispatch Factory objectives, or hand off to another profile
 
@@ -105,25 +105,55 @@ The metadata currently supports:
 - `enabled`
 - `default`
 - `imports`
-- `toolAllowlist`
+- `capabilities`
+- `toolAllowlist` for rare direct overrides
 - `handoffTargets`
 - `routeHints`
-- `orchestration`
+- `skills`
+- orchestration shorthand such as `mode`, `discoveryBudget`, and `childDedupe`
+- objective shorthand such as `defaultWorker` and `maxParallelChildren`
 
 ### Orchestration policy
 
-Profiles can now carry a machine-readable orchestration policy under `PROFILE.md` frontmatter `orchestration`.
+Profiles now carry a small machine-readable orchestration policy in `PROFILE.md` frontmatter. The preferred shape is shorthand fields instead of a large nested policy blob.
 
 Current supported fields:
 
-- `executionMode`: `interactive` or `supervisor`
+- `mode`: `interactive` or `supervisor`
 - `discoveryBudget`: max discovery-tool steps before delivery is required
 - `suspendOnAsyncChild`: whether the parent should stop taking more repo-action tools while a child worker is active
 - `allowPollingWhileChildRunning`: whether status-style tools are still allowed during an active child run
 - `finalWhileChildRunning`: `allow`, `waiting_message`, or `reject`
 - `childDedupe`: `none` or `by_run_and_prompt`
 
-This is the first step toward making parent/worker supervision a profile capability instead of a hardcoded runtime special case.
+Objective overrides are also shorthand:
+
+- `objective.defaultWorker`
+- `objective.allowedWorkers`
+- `objective.maxParallelChildren`
+- `objective.validation`
+- `objective.allowObjectiveCreation`
+
+Legacy `orchestration`, `objectivePolicy`, and direct `toolAllowlist` fields still resolve, but built-in profiles now prefer capabilities plus small overrides.
+
+### Capabilities
+
+Profiles should describe orchestration intent, not carry giant raw tool arrays. Capability groups expand to primitive tools in `src/services/factory-chat-profiles.ts`.
+
+Current capability groups include:
+
+- `repo.read` -> `ls`, `read`, `grep`
+- `repo.write` -> `write`, `bash`
+- `memory.read` -> memory inspection tools
+- `memory.write` -> memory commit/diff tools
+- `skill.read` -> `skill.read`
+- `status.read` -> `agent.inspect`, `agent.status`, `jobs.list`, `codex.status`, `factory.status`
+- `async.dispatch` -> `codex.run`, `agent.delegate`
+- `async.control` -> `job.control`
+- `objective.control` -> `factory.dispatch`
+- `profile.handoff` -> `profile.handoff`
+
+This keeps profiles readable while the runtime still receives an exact tool allowlist.
 
 ### Profile resolver
 
@@ -132,7 +162,7 @@ The resolver in `src/services/factory-chat-profiles.ts` is responsible for:
 - discovering enabled profiles
 - selecting the root profile
 - walking profile imports
-- merging tool allowlists
+- expanding and merging capability-derived tools
 - merging handoff targets
 - merging orchestration policy
 - building a deterministic resolved hash
@@ -156,6 +186,7 @@ It wraps the generic Receipt agent runner with Factory-specific behavior:
 - profile-scoped tool allowlist
 - Factory-specific tool specs
 - Factory-specific async tools like `codex.run`, `factory.dispatch`, and `profile.handoff`
+- Codex-focused live status inspection through `codex.status`
 
 The loop is intentionally constrained:
 

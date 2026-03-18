@@ -11,6 +11,26 @@ const PROFILE_DIR = "profiles";
 
 export type FactoryChatProfileObjectiveWorktreeMode = "required" | "forbidden";
 export type FactoryChatProfileObjectiveValidationMode = "repo_profile" | "none";
+export type FactoryChatProfileCapability =
+  | "repo.read"
+  | "repo.write"
+  | "memory.read"
+  | "memory.write"
+  | "skill.read"
+  | "status.read"
+  | "async.dispatch"
+  | "async.control"
+  | "objective.control"
+  | "profile.handoff";
+
+export type FactoryChatProfileObjectiveManifest = {
+  readonly allowedWorkers?: ReadonlyArray<string>;
+  readonly defaultWorker?: string;
+  readonly worktreeModeByWorker?: Readonly<Record<string, FactoryChatProfileObjectiveWorktreeMode>>;
+  readonly validation?: FactoryChatProfileObjectiveValidationMode;
+  readonly maxParallelChildren?: number;
+  readonly allowObjectiveCreation?: boolean;
+};
 
 export type FactoryChatProfileObjectivePolicyManifest = {
   readonly allowedWorkerTypes?: ReadonlyArray<string>;
@@ -36,11 +56,19 @@ export type FactoryChatProfileManifest = {
   readonly enabled?: boolean;
   readonly default?: boolean;
   readonly imports?: ReadonlyArray<string>;
+  readonly capabilities?: ReadonlyArray<string>;
   readonly toolAllowlist?: ReadonlyArray<string>;
   readonly handoffTargets?: ReadonlyArray<string>;
   readonly routeHints?: ReadonlyArray<string>;
   readonly skills?: ReadonlyArray<string>;
+  readonly mode?: "interactive" | "supervisor";
+  readonly discoveryBudget?: number;
+  readonly suspendOnAsyncChild?: boolean;
+  readonly allowPollingWhileChildRunning?: boolean;
+  readonly finalWhileChildRunning?: "allow" | "waiting_message" | "reject";
+  readonly childDedupe?: "none" | "by_run_and_prompt";
   readonly orchestration?: FactoryChatProfileOrchestrationManifest;
+  readonly objective?: FactoryChatProfileObjectiveManifest;
   readonly objectivePolicy?: FactoryChatProfileObjectivePolicyManifest;
 };
 
@@ -50,6 +78,7 @@ type FactoryChatNormalizedProfileManifest = {
   readonly enabled: boolean;
   readonly default?: boolean;
   readonly imports: ReadonlyArray<string>;
+  readonly capabilities: ReadonlyArray<FactoryChatProfileCapability>;
   readonly toolAllowlist: ReadonlyArray<string>;
   readonly handoffTargets: ReadonlyArray<string>;
   readonly routeHints: ReadonlyArray<string>;
@@ -82,6 +111,7 @@ export type FactoryChatProfile = {
   readonly enabled: boolean;
   readonly isDefault: boolean;
   readonly imports: ReadonlyArray<string>;
+  readonly capabilities: ReadonlyArray<FactoryChatProfileCapability>;
   readonly toolAllowlist: ReadonlyArray<string>;
   readonly handoffTargets: ReadonlyArray<string>;
   readonly routeHints: ReadonlyArray<string>;
@@ -100,6 +130,7 @@ export type FactoryChatResolvedProfile = {
   readonly root: FactoryChatProfile;
   readonly imports: ReadonlyArray<FactoryChatProfile>;
   readonly stack: ReadonlyArray<FactoryChatProfile>;
+  readonly capabilities: ReadonlyArray<FactoryChatProfileCapability>;
   readonly toolAllowlist: ReadonlyArray<string>;
   readonly handoffTargets: ReadonlyArray<string>;
   readonly skills: ReadonlyArray<string>;
@@ -115,6 +146,19 @@ export type FactoryChatResolvedProfile = {
 };
 
 const unique = (items: ReadonlyArray<string>): ReadonlyArray<string> => [...new Set(items.filter(Boolean))];
+
+const PROFILE_CAPABILITY_TOOLS = {
+  "repo.read": ["ls", "read", "grep"],
+  "repo.write": ["write", "bash"],
+  "memory.read": ["memory.read", "memory.search", "memory.summarize"],
+  "memory.write": ["memory.commit", "memory.diff"],
+  "skill.read": ["skill.read"],
+  "status.read": ["agent.inspect", "agent.status", "jobs.list", "codex.status", "factory.status"],
+  "async.dispatch": ["codex.run", "agent.delegate"],
+  "async.control": ["job.control"],
+  "objective.control": ["factory.dispatch"],
+  "profile.handoff": ["profile.handoff"],
+} as const satisfies Record<FactoryChatProfileCapability, ReadonlyArray<string>>;
 
 const FACTORY_OBJECTIVE_WORKTREE_DEFAULTS = {
   codex: "required",
@@ -140,6 +184,19 @@ const ensureProfileDir = (profileRoot: string): string =>
 
 const normalizeHintText = (value: string): string =>
   value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+const normalizeCapabilities = (raw: ReadonlyArray<string> | undefined): ReadonlyArray<FactoryChatProfileCapability> =>
+  unique(Array.isArray(raw)
+    ? raw.filter((item): item is string => typeof item === "string").map((item) => item.trim())
+    : []).map((item) => {
+      if (item in PROFILE_CAPABILITY_TOOLS) return item as FactoryChatProfileCapability;
+      throw new Error(`unknown factory profile capability '${item}'`);
+    });
+
+const expandCapabilitiesToTools = (
+  capabilities: ReadonlyArray<FactoryChatProfileCapability>,
+): ReadonlyArray<string> =>
+  unique(capabilities.flatMap((capability) => [...PROFILE_CAPABILITY_TOOLS[capability]]));
 
 const normalizeObjectiveWorktreeMode = (
   value: unknown,
@@ -176,6 +233,18 @@ const normalizeObjectivePolicyManifest = (
   };
 };
 
+const normalizeObjectiveManifest = (
+  raw: FactoryChatProfileObjectiveManifest | undefined,
+): FactoryChatProfileObjectivePolicyManifest =>
+  normalizeObjectivePolicyManifest(raw ? {
+    allowedWorkerTypes: raw.allowedWorkers,
+    defaultWorkerType: raw.defaultWorker,
+    worktreeModeByWorker: raw.worktreeModeByWorker,
+    defaultValidationMode: raw.validation,
+    maxParallelChildren: raw.maxParallelChildren,
+    allowObjectiveCreation: raw.allowObjectiveCreation,
+  } : undefined);
+
 const normalizeOrchestrationManifest = (
   raw: FactoryChatProfileOrchestrationManifest | undefined,
 ): FactoryChatProfileOrchestrationManifest => {
@@ -201,39 +270,59 @@ const normalizeOrchestrationManifest = (
   };
 };
 
+const normalizeOrchestrationShorthand = (
+  raw: FactoryChatProfileManifest,
+): FactoryChatProfileOrchestrationManifest =>
+  normalizeOrchestrationManifest({
+    executionMode: raw.mode,
+    discoveryBudget: raw.discoveryBudget,
+    suspendOnAsyncChild: raw.suspendOnAsyncChild,
+    allowPollingWhileChildRunning: raw.allowPollingWhileChildRunning,
+    finalWhileChildRunning: raw.finalWhileChildRunning,
+    childDedupe: raw.childDedupe,
+  });
+
+const mergeOrchestrationManifestEntries = (
+  merged: FactoryChatProfileOrchestrationManifest,
+  next: FactoryChatProfileOrchestrationManifest,
+): FactoryChatProfileOrchestrationManifest => ({
+  executionMode: next.executionMode ?? merged.executionMode,
+  discoveryBudget: next.discoveryBudget ?? merged.discoveryBudget,
+  suspendOnAsyncChild: next.suspendOnAsyncChild ?? merged.suspendOnAsyncChild,
+  allowPollingWhileChildRunning: next.allowPollingWhileChildRunning ?? merged.allowPollingWhileChildRunning,
+  finalWhileChildRunning: next.finalWhileChildRunning ?? merged.finalWhileChildRunning,
+  childDedupe: next.childDedupe ?? merged.childDedupe,
+});
+
+const mergeObjectivePolicyManifestEntries = (
+  merged: FactoryChatProfileObjectivePolicyManifest,
+  next: FactoryChatProfileObjectivePolicyManifest,
+): FactoryChatProfileObjectivePolicyManifest => ({
+  allowedWorkerTypes: next.allowedWorkerTypes ?? merged.allowedWorkerTypes,
+  defaultWorkerType: next.defaultWorkerType ?? merged.defaultWorkerType,
+  worktreeModeByWorker: next.worktreeModeByWorker
+    ? {
+        ...(merged.worktreeModeByWorker ?? {}),
+        ...next.worktreeModeByWorker,
+      }
+    : merged.worktreeModeByWorker,
+  defaultValidationMode: next.defaultValidationMode ?? merged.defaultValidationMode,
+  maxParallelChildren: next.maxParallelChildren ?? merged.maxParallelChildren,
+  allowObjectiveCreation: next.allowObjectiveCreation ?? merged.allowObjectiveCreation,
+});
+
 const mergeOrchestrationManifests = (
   stack: ReadonlyArray<FactoryChatProfile>,
 ): FactoryChatProfileOrchestrationManifest =>
   stack.reduce<FactoryChatProfileOrchestrationManifest>((merged, profile) => {
-    const next = profile.orchestration;
-    return {
-      executionMode: next.executionMode ?? merged.executionMode,
-      discoveryBudget: next.discoveryBudget ?? merged.discoveryBudget,
-      suspendOnAsyncChild: next.suspendOnAsyncChild ?? merged.suspendOnAsyncChild,
-      allowPollingWhileChildRunning: next.allowPollingWhileChildRunning ?? merged.allowPollingWhileChildRunning,
-      finalWhileChildRunning: next.finalWhileChildRunning ?? merged.finalWhileChildRunning,
-      childDedupe: next.childDedupe ?? merged.childDedupe,
-    };
+    return mergeOrchestrationManifestEntries(merged, profile.orchestration);
   }, {});
 
 const mergeObjectivePolicyManifests = (
   stack: ReadonlyArray<FactoryChatProfile>,
 ): FactoryChatProfileObjectivePolicyManifest =>
   stack.reduce<FactoryChatProfileObjectivePolicyManifest>((merged, profile) => {
-    const next = profile.objectivePolicy;
-    return {
-      allowedWorkerTypes: next.allowedWorkerTypes ?? merged.allowedWorkerTypes,
-      defaultWorkerType: next.defaultWorkerType ?? merged.defaultWorkerType,
-      worktreeModeByWorker: next.worktreeModeByWorker
-        ? {
-            ...(merged.worktreeModeByWorker ?? {}),
-            ...next.worktreeModeByWorker,
-          }
-        : merged.worktreeModeByWorker,
-      defaultValidationMode: next.defaultValidationMode ?? merged.defaultValidationMode,
-      maxParallelChildren: next.maxParallelChildren ?? merged.maxParallelChildren,
-      allowObjectiveCreation: next.allowObjectiveCreation ?? merged.allowObjectiveCreation,
-    };
+    return mergeObjectivePolicyManifestEntries(merged, profile.objectivePolicy);
   }, {});
 
 const resolveOrchestrationPolicy = (
@@ -303,6 +392,15 @@ const renderOrchestrationPolicy = (policy: FactoryChatResolvedOrchestrationPolic
   `- Child dedupe: ${policy.childDedupe}`,
 ].join("\n");
 
+const renderCapabilities = (
+  capabilities: ReadonlyArray<FactoryChatProfileCapability>,
+  tools: ReadonlyArray<string>,
+): string => [
+  "## Capabilities",
+  `- Capability groups: ${capabilities.join(", ") || "none"}`,
+  `- Tool surface: ${tools.join(", ") || "none"}`,
+].join("\n");
+
 const renderObjectivePolicy = (policy: FactoryChatResolvedObjectivePolicy, skills: ReadonlyArray<string>): string => [
   "## Objective Policy",
   `- Objective creation: ${policy.allowObjectiveCreation ? "allowed" : "forbidden"}`,
@@ -334,19 +432,32 @@ const bestRouteHintMatch = (
     : undefined;
 };
 
-const parseManifest = (raw: FactoryChatProfileManifest, dirName: string): FactoryChatNormalizedProfileManifest => ({
-  id: (raw.id ?? dirName).trim(),
-  label: (raw.label ?? raw.id ?? dirName).trim(),
-  enabled: raw.enabled !== false,
-  default: raw.default === true,
-  imports: unique(Array.isArray(raw.imports) ? raw.imports.filter((item): item is string => typeof item === "string").map((item) => item.trim()) : []),
-  toolAllowlist: unique(Array.isArray(raw.toolAllowlist) ? raw.toolAllowlist.filter((item): item is string => typeof item === "string").map((item) => item.trim()) : []),
-  handoffTargets: unique(Array.isArray(raw.handoffTargets) ? raw.handoffTargets.filter((item): item is string => typeof item === "string").map((item) => item.trim()) : []),
-  routeHints: unique(Array.isArray(raw.routeHints) ? raw.routeHints.filter((item): item is string => typeof item === "string").map((item) => item.trim().toLowerCase()) : []),
-  skills: unique(Array.isArray(raw.skills) ? raw.skills.filter((item): item is string => typeof item === "string").map((item) => item.trim()) : []),
-  orchestration: normalizeOrchestrationManifest(raw.orchestration),
-  objectivePolicy: normalizeObjectivePolicyManifest(raw.objectivePolicy),
-});
+const parseManifest = (raw: FactoryChatProfileManifest, dirName: string): FactoryChatNormalizedProfileManifest => {
+  const capabilities = normalizeCapabilities(raw.capabilities);
+  const explicitTools = unique(Array.isArray(raw.toolAllowlist)
+    ? raw.toolAllowlist.filter((item): item is string => typeof item === "string").map((item) => item.trim())
+    : []);
+  return {
+    id: (raw.id ?? dirName).trim(),
+    label: (raw.label ?? raw.id ?? dirName).trim(),
+    enabled: raw.enabled !== false,
+    default: raw.default === true,
+    imports: unique(Array.isArray(raw.imports) ? raw.imports.filter((item): item is string => typeof item === "string").map((item) => item.trim()) : []),
+    capabilities,
+    toolAllowlist: unique([...expandCapabilitiesToTools(capabilities), ...explicitTools]),
+    handoffTargets: unique(Array.isArray(raw.handoffTargets) ? raw.handoffTargets.filter((item): item is string => typeof item === "string").map((item) => item.trim()) : []),
+    routeHints: unique(Array.isArray(raw.routeHints) ? raw.routeHints.filter((item): item is string => typeof item === "string").map((item) => item.trim().toLowerCase()) : []),
+    skills: unique(Array.isArray(raw.skills) ? raw.skills.filter((item): item is string => typeof item === "string").map((item) => item.trim()) : []),
+    orchestration: mergeOrchestrationManifestEntries(
+      normalizeOrchestrationManifest(raw.orchestration),
+      normalizeOrchestrationShorthand(raw),
+    ),
+    objectivePolicy: mergeObjectivePolicyManifestEntries(
+      normalizeObjectivePolicyManifest(raw.objectivePolicy),
+      normalizeObjectiveManifest(raw.objective),
+    ),
+  };
+};
 
 const parseProfileMarkdown = (
   raw: string,
@@ -417,6 +528,7 @@ export const discoverFactoryChatProfiles = async (profileRoot: string): Promise<
         enabled: manifest.enabled,
         isDefault: manifest.default === true,
         imports: manifest.imports ?? [],
+        capabilities: manifest.capabilities ?? [],
         toolAllowlist: manifest.toolAllowlist ?? [],
         handoffTargets: manifest.handoffTargets ?? [],
         routeHints: manifest.routeHints ?? [],
@@ -490,6 +602,7 @@ export const resolveFactoryChatProfile = async (input: {
   };
   walkImports(selection.profile);
   const stack = [...imported, selection.profile];
+  const mergedCapabilities = unique(stack.flatMap((profile) => [...profile.capabilities])) as ReadonlyArray<FactoryChatProfileCapability>;
   const mergedToolAllowlist = unique(stack.flatMap((profile) => [...profile.toolAllowlist]));
   const mergedHandoffTargets = unique(stack.flatMap((profile) => [...profile.handoffTargets]));
   const mergedSkills = unique(stack.flatMap((profile) => [...profile.skills]));
@@ -503,6 +616,8 @@ export const resolveFactoryChatProfile = async (input: {
   const resolvedHash = sha256(stableStringify({
     root: selection.profile.id,
     imports: imported.map((profile) => profile.id),
+    capabilities: mergedCapabilities,
+    toolAllowlist: mergedToolAllowlist,
     skills: mergedSkills,
     objectivePolicy,
     orchestration,
@@ -512,8 +627,11 @@ export const resolveFactoryChatProfile = async (input: {
     "You are the active Factory profile in the product UI.",
     "Answer directly and use Receipt-native tools when needed; do not behave like a wrapper around another assistant.",
     "Use available Receipt-native tools to answer directly, inspect state, queue work, run Codex, dispatch Factory, or hand off profiles when appropriate.",
+    "Do not output self-descriptive capability JSON or schema-like blobs about what you can do. The UI already projects your profile, tools, and status; answer the user's actual request directly.",
     "",
     renderOrchestrationPolicy(orchestration),
+    "",
+    renderCapabilities(mergedCapabilities, mergedToolAllowlist),
     "",
     renderObjectivePolicy(objectivePolicy, mergedSkills),
     "",
@@ -526,6 +644,7 @@ export const resolveFactoryChatProfile = async (input: {
     root: selection.profile,
     imports: imported,
     stack,
+    capabilities: mergedCapabilities,
     toolAllowlist: mergedToolAllowlist,
     handoffTargets: mergedHandoffTargets,
     skills: mergedSkills,

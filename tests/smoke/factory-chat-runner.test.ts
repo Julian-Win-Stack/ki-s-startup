@@ -65,8 +65,15 @@ const writeProfile = async (root: string, input: {
   readonly id: string;
   readonly label: string;
   readonly default?: boolean;
-  readonly toolAllowlist: ReadonlyArray<string>;
+  readonly capabilities?: ReadonlyArray<string>;
+  readonly toolAllowlist?: ReadonlyArray<string>;
   readonly handoffTargets?: ReadonlyArray<string>;
+  readonly mode?: "interactive" | "supervisor";
+  readonly discoveryBudget?: number;
+  readonly suspendOnAsyncChild?: boolean;
+  readonly allowPollingWhileChildRunning?: boolean;
+  readonly finalWhileChildRunning?: "allow" | "waiting_message" | "reject";
+  readonly childDedupe?: "none" | "by_run_and_prompt";
   readonly orchestration?: {
     readonly executionMode?: "interactive" | "supervisor";
     readonly discoveryBudget?: number;
@@ -85,7 +92,14 @@ const writeProfile = async (root: string, input: {
     default: input.default ?? false,
     imports: [],
     routeHints: [],
-    toolAllowlist: input.toolAllowlist,
+    capabilities: input.capabilities ?? [],
+    toolAllowlist: input.toolAllowlist ?? [],
+    mode: input.mode,
+    discoveryBudget: input.discoveryBudget,
+    suspendOnAsyncChild: input.suspendOnAsyncChild,
+    allowPollingWhileChildRunning: input.allowPollingWhileChildRunning,
+    finalWhileChildRunning: input.finalWhileChildRunning,
+    childDedupe: input.childDedupe,
     orchestration: input.orchestration ?? {},
     handoffTargets: input.handoffTargets ?? [],
   };
@@ -169,6 +183,86 @@ test("factory chat runner: codex.run queues work asynchronously and returns imme
   expect(observed && "output" in observed ? observed.output : "").toContain('"status": "queued"');
   expect(observed && "output" in observed ? observed.output : "").toContain('"jobId":');
   expect(observed && "output" in observed ? observed.output : "").toContain("codex child queued as");
+});
+
+test("factory chat runner: codex.status reports live codex work for the current run", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-codex-status");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  await writeProfile(profileRoot, {
+    id: "software",
+    label: "Software",
+    default: true,
+    capabilities: ["async.dispatch", "status.read"],
+    mode: "supervisor",
+    suspendOnAsyncChild: true,
+    allowPollingWhileChildRunning: true,
+    finalWhileChildRunning: "waiting_message",
+  });
+
+  const actions = [
+    {
+      thought: "queue codex",
+      action: {
+        type: "tool",
+        name: "codex.run",
+        input: JSON.stringify({ prompt: "Inspect the failing sidebar flow." }),
+        text: null,
+      },
+    },
+    {
+      thought: "check codex status",
+      action: {
+        type: "tool",
+        name: "codex.status",
+        input: "{}",
+        text: null,
+      },
+    },
+    {
+      thought: "respond",
+      action: {
+        type: "final",
+        name: null,
+        input: "{}",
+        text: "Codex is still running; keep this thread open for updates.",
+      },
+    },
+  ];
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_codex_status",
+    problem: "Check Codex progress.",
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: {} as never,
+    repoRoot,
+    profileRoot,
+  });
+
+  expect(result.status).toBe("completed");
+  const chain = await agentRuntime.chain(agentRunStream("agents/factory/demo", "run_codex_status"));
+  const statusObservation = chain.find((receipt) => receipt.body.type === "tool.observed" && receipt.body.tool === "codex.status")?.body;
+  expect(statusObservation && "output" in statusObservation ? statusObservation.output : "").toContain('"worker": "codex"');
+  expect(statusObservation && "output" in statusObservation ? statusObservation.output : "").toContain('"activeCount": 1');
+  expect(statusObservation && "output" in statusObservation ? statusObservation.output : "").toContain('"status": "queued"');
 });
 
 test("factory chat runner: agent.delegate queues work and agent.status sees the queued job", async () => {

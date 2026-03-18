@@ -225,6 +225,9 @@ const toolBadgeSpec = (tool: string): { readonly icon: BadgeIcon; readonly label
   if (normalized === "jobs.list") {
     return { icon: "status", label: "Jobs", tone: "neutral" };
   }
+  if (normalized === "codex.status") {
+    return { icon: "codex", label: "Codex live", tone: "info" };
+  }
   if (normalized === "job.control") {
     return { icon: "status", label: "Control", tone: "neutral" };
   }
@@ -268,6 +271,7 @@ const renderSelectedProfileSummary = (input: {
   readonly profileLabel: string;
   readonly profileId: string;
   readonly profileSummary?: string;
+  readonly profileSections?: ReadonlyArray<FactoryProfileSectionView>;
   readonly tools: ReadonlyArray<string>;
   readonly objectiveId?: string;
   readonly includeObjective?: boolean;
@@ -277,6 +281,9 @@ const renderSelectedProfileSummary = (input: {
   const badgeMode = layout === "panel" ? "card" : "chip";
   const contextContainerClass = layout === "panel" ? "grid gap-2" : "mt-3 flex flex-wrap gap-2";
   const toolContainerClass = layout === "panel" ? "mt-3 grid grid-cols-2 gap-2" : "mt-3 flex flex-wrap gap-1.5";
+  const accentClass = input.profileId === "software"
+    ? "from-amber-300/20 via-orange-300/8 to-transparent"
+    : "from-emerald-300/18 via-sky-300/8 to-transparent";
   const contextBadges = [
     iconBadge({
       icon: "profile",
@@ -300,8 +307,22 @@ const renderSelectedProfileSummary = (input: {
         ${contextBadges.join("")}
       </div>
       <div class="font-mono text-[11px] text-zinc-500">${esc(input.profileId)}</div>
-      ${input.profileSummary ? `<div class="text-sm leading-6 text-zinc-400">${esc(input.profileSummary)}</div>` : ""}
+      ${input.profileSummary ? `<div class="overflow-hidden rounded-[24px] border border-white/10 bg-gradient-to-br ${accentClass} px-4 py-4">
+        <div class="text-[10px] uppercase tracking-[0.22em] text-zinc-500">Persona</div>
+        <div class="mt-2 max-w-2xl text-[15px] leading-7 text-zinc-100">${esc(input.profileSummary)}</div>
+      </div>` : ""}
     </div>
+    ${(input.profileSections?.length ?? 0) > 0 ? `<div class="space-y-2">
+      <div class="${sectionLabelClass}">How it works</div>
+      <div class="grid gap-3">
+        ${(input.profileSections ?? []).map((section) => `<div class="rounded-[22px] border border-white/10 bg-black/20 px-4 py-4">
+          <div class="text-[11px] font-medium uppercase tracking-[0.2em] text-zinc-500">${esc(section.title)}</div>
+          <ul class="mt-3 grid gap-2 text-sm leading-6 text-zinc-300">
+            ${section.items.map((item) => `<li class="flex items-start gap-2"><span class="mt-[9px] h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300/70"></span><span>${esc(item)}</span></li>`).join("")}
+          </ul>
+        </div>`).join("")}
+      </div>
+    </div>` : ""}
     ${input.tools.length > 0 ? `<div class="space-y-2">
       <div class="${sectionLabelClass}">Tools in scope</div>
       <div class="${toolContainerClass}">
@@ -423,10 +444,16 @@ export type FactoryLiveRunCard = {
   readonly link?: string;
 };
 
+export type FactoryProfileSectionView = {
+  readonly title: string;
+  readonly items: ReadonlyArray<string>;
+};
+
 export type FactorySidebarModel = {
   readonly activeProfileId: string;
   readonly activeProfileLabel: string;
   readonly activeProfileSummary?: string;
+  readonly activeProfileSections?: ReadonlyArray<FactoryProfileSectionView>;
   readonly activeProfileTools: ReadonlyArray<string>;
   readonly profiles: ReadonlyArray<FactoryChatProfileNav>;
   readonly objectives: ReadonlyArray<FactoryChatObjectiveNav>;
@@ -481,6 +508,8 @@ export type FactoryChatIslandModel = {
   readonly activeProfileId: string;
   readonly activeProfileLabel: string;
   readonly activeProfileSummary?: string;
+  readonly activeProfileSections?: ReadonlyArray<FactoryProfileSectionView>;
+  readonly activeProfileTools?: ReadonlyArray<string>;
   readonly items: ReadonlyArray<FactoryChatItem>;
 };
 
@@ -488,6 +517,7 @@ export type FactoryChatShellModel = {
   readonly activeProfileId: string;
   readonly activeProfileLabel: string;
   readonly activeProfileSummary?: string;
+  readonly activeProfileSections?: ReadonlyArray<FactoryProfileSectionView>;
   readonly objectiveId?: string;
   readonly runId?: string;
   readonly jobId?: string;
@@ -620,10 +650,21 @@ export const factoryChatIsland = (model: FactoryChatIslandModel): string => {
       model.activeProfileId,
       model.activeProfileSummary,
     )).join("")
-    : `<section class="${panelClass} px-6 py-6 text-center">
-      <div class="mx-auto max-w-2xl">
-        <div class="text-base font-semibold text-zinc-100">${esc(model.activeProfileLabel)} is ready.</div>
-        <div class="mt-3 text-sm leading-6 text-zinc-400">${esc(model.activeProfileSummary ?? "Start with status, plan, debug, or a new thread.")}</div>
+    : `<section class="${panelClass} px-6 py-6">
+      <div class="mx-auto max-w-3xl space-y-5">
+        <div>
+          <div class="text-base font-semibold text-zinc-100">${esc(model.activeProfileLabel)} is ready.</div>
+          <div class="mt-3 text-sm leading-6 text-zinc-400">${esc(model.activeProfileSummary ?? "Start with status, plan, debug, or a new thread.")}</div>
+        </div>
+        ${renderSelectedProfileSummary({
+          profileLabel: model.activeProfileLabel,
+          profileId: model.activeProfileId,
+          profileSummary: model.activeProfileSummary,
+          profileSections: model.activeProfileSections ?? [],
+          tools: model.activeProfileTools ?? [],
+          includeObjective: false,
+          layout: "panel",
+        })}
       </div>
     </section>`;
   return `<div class="chat-stack mx-auto flex w-full max-w-4xl flex-col gap-6 px-4 pb-8 pt-6 md:px-8 xl:px-10" data-active-profile="${esc(model.activeProfileId)}" data-active-profile-label="${esc(model.activeProfileLabel)}" data-active-profile-summary="${esc(model.activeProfileSummary ?? "")}">
@@ -937,6 +978,7 @@ export const factoryInspectorIsland = (model: FactorySidebarModel): string => {
         profileLabel: model.activeProfileLabel,
         profileId: model.activeProfileId,
         profileSummary: model.activeProfileSummary,
+        profileSections: model.activeProfileSections ?? [],
         tools: model.activeProfileTools,
         includeObjective: false,
         layout: "panel",

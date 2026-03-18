@@ -132,15 +132,53 @@ const profileLabel = (profileId?: string): string => {
   return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (match) => match.toUpperCase());
 };
 
-const summarizeProfileMarkdown = (value: string): string | undefined => {
+type FactoryProfileSectionView = {
+  readonly title: string;
+  readonly items: ReadonlyArray<string>;
+};
+
+const clipProfileText = (value: string, max = 180): string =>
+  value.length > max ? `${value.slice(0, max - 1)}…` : value;
+
+const describeProfileMarkdown = (value: string): {
+  readonly summary?: string;
+  readonly sections: ReadonlyArray<FactoryProfileSectionView>;
+} => {
   const withoutFrontmatter = value.replace(/^---[\s\S]*?---\s*/, "");
-  const lines = withoutFrontmatter
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  const summary = lines.find((line) => !line.startsWith("#") && !line.startsWith("-") && !line.startsWith("```"));
-  if (!summary) return undefined;
-  return summary.length > 180 ? `${summary.slice(0, 179)}…` : summary;
+  const lines = withoutFrontmatter.split(/\r?\n/).map((line) => line.trim());
+  let summary: string | undefined;
+  const sections: FactoryProfileSectionView[] = [];
+  let currentSection: { title: string; items: string[] } | undefined;
+  const flushSection = (): void => {
+    if (!currentSection || currentSection.items.length === 0) return;
+    sections.push({
+      title: currentSection.title,
+      items: currentSection.items.slice(0, 4),
+    });
+  };
+  for (const line of lines) {
+    if (!line || line.startsWith("```")) continue;
+    if (line.startsWith("## ")) {
+      flushSection();
+      currentSection = { title: line.slice(3).trim(), items: [] };
+      continue;
+    }
+    if (!summary && !line.startsWith("#") && !line.startsWith("-")) {
+      summary = clipProfileText(line);
+      continue;
+    }
+    if (line.startsWith("- ")) {
+      const item = line.slice(2).trim();
+      if (!item) continue;
+      if (!currentSection) currentSection = { title: "How I Work", items: [] };
+      currentSection.items.push(item);
+    }
+  }
+  flushSection();
+  return {
+    summary,
+    sections: sections.slice(0, 3),
+  };
 };
 
 const tryParseJson = (value: string): Record<string, unknown> | undefined => {
@@ -538,6 +576,7 @@ const buildLiveChildCards = (
 const interestingTools = new Set([
   "agent.delegate",
   "agent.status",
+  "codex.status",
   "job.control",
   "codex.run",
   "factory.dispatch",
@@ -692,6 +731,28 @@ const workCardFromObservation = (observation: ToolObservation): FactoryWorkCard 
       meta: durationLabel,
       jobId: asString(parsed?.jobId),
       running: !isTerminalJobStatus(asString(parsed?.status)),
+    };
+  }
+  if (observation.tool === "codex.status") {
+    const jobs = Array.isArray(parsed?.jobs)
+      ? parsed.jobs.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      : [];
+    const latest = (parsed?.latest && typeof parsed.latest === "object" && !Array.isArray(parsed.latest)
+      ? parsed.latest
+      : jobs[0]) as Record<string, unknown> | undefined;
+    const latestStatus = asString(latest?.status);
+    return {
+      key: `${observation.tool}-${asString(latest?.jobId) ?? observation.summary ?? "codex-status"}`,
+      title: "Codex status",
+      worker: "codex",
+      status: latestStatus ?? "unknown",
+      summary: observation.summary ?? asString(latest?.summary) ?? "Checked Codex status.",
+      detail: observation.output,
+      meta: durationLabel,
+      jobId: asString(latest?.jobId),
+      running: typeof parsed?.activeCount === "number"
+        ? parsed.activeCount > 0
+        : !isTerminalJobStatus(latestStatus),
     };
   }
   if (observation.tool === "job.control") {
@@ -1087,6 +1148,7 @@ const describeRunActivity = (
   if (state.status === "completed") return "Run completed.";
   if (tool === "jobs.list") return `${profileLabel} is checking live jobs.`;
   if (tool === "agent.status") return `${profileLabel} is checking child status.`;
+  if (tool === "codex.status") return `${profileLabel} is checking Codex progress.`;
   if (tool === "factory.status") return `${profileLabel} is checking thread status.`;
   if (tool === "factory.dispatch") return `${profileLabel} is updating the Factory thread.`;
   if (tool === "codex.run") return `${profileLabel} queued Codex work and is waiting for progress.`;
@@ -1311,11 +1373,12 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     const runChainsById = new Map(runIds.map((runId, index) => [runId, runChains[index]!] as const));
     const jobsById = new Map(jobs.map((job) => [job.id, job] as const));
     const chatItems = runChains.flatMap((runChain, index) => buildChatItemsForRun(runIds[index]!, runChain, jobsById));
+    const activeProfileOverview = describeProfileMarkdown(resolved.root.mdBody);
 
     const profileNav: ReadonlyArray<FactoryChatProfileNav> = profiles.map((profile) => ({
       id: profile.id,
       label: profile.label,
-      summary: summarizeProfileMarkdown(profile.mdBody),
+      summary: describeProfileMarkdown(profile.mdBody).summary,
       selected: profile.id === resolved.root.id,
     }));
     const objectiveNav: ReadonlyArray<FactoryChatObjectiveNav> = objectives
@@ -1416,13 +1479,16 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     const chatModel: FactoryChatIslandModel = {
       activeProfileId: resolved.root.id,
       activeProfileLabel: resolved.root.label,
-      activeProfileSummary: summarizeProfileMarkdown(resolved.root.mdBody),
+      activeProfileSummary: activeProfileOverview.summary,
+      activeProfileSections: activeProfileOverview.sections,
+      activeProfileTools: resolved.toolAllowlist,
       items: chatItems,
     };
     const sidebarModel: FactorySidebarModel = {
       activeProfileId: resolved.root.id,
       activeProfileLabel: resolved.root.label,
-      activeProfileSummary: summarizeProfileMarkdown(resolved.root.mdBody),
+      activeProfileSummary: activeProfileOverview.summary,
+      activeProfileSections: activeProfileOverview.sections,
       activeProfileTools: resolved.toolAllowlist,
       profiles: profileNav,
       objectives: objectiveNav,
@@ -1435,7 +1501,8 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     return {
       activeProfileId: resolved.root.id,
       activeProfileLabel: resolved.root.label,
-      activeProfileSummary: summarizeProfileMarkdown(resolved.root.mdBody),
+      activeProfileSummary: activeProfileOverview.summary,
+      activeProfileSections: activeProfileOverview.sections,
       objectiveId: input.objectiveId,
       runId: activeRunId,
       jobId: input.jobId,
@@ -2258,7 +2325,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 "factory-run-started": {
                   profileId: resolved.root.id,
                   profileLabel: resolved.root.label,
-                  profileSummary: summarizeProfileMarkdown(resolved.root.mdBody) ?? "",
+                  profileSummary: describeProfileMarkdown(resolved.root.mdBody).summary ?? "",
                   objectiveId: objectiveId ?? "",
                   jobId: created.id,
                   runId,

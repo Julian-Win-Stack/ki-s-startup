@@ -855,6 +855,12 @@ test("factory chat island: renders chat rows and work cards", () => {
   const markup = factoryChatIsland({
     activeProfileId: "generalist",
     activeProfileLabel: "Generalist",
+    activeProfileSummary: "Be the calm operator-facing guide for this repo.",
+    activeProfileSections: [{
+      title: "Operating Style",
+      items: ["Sound like a clear, grounded operator.", "Prefer receipts over guessing."],
+    }],
+    activeProfileTools: ["factory.status", "codex.status"],
     items: [
       {
         key: "u1",
@@ -890,6 +896,7 @@ test("factory chat island: renders chat rows and work cards", () => {
   expect(markup).toMatch(/job_01/);
   expect(markup).toMatch(/Abort/);
   expect(markup).toMatch(/Selected profile/);
+  expect(markup).toMatch(/Be the calm operator-facing guide for this repo/);
   expect(markup).toMatch(/replaced the old <code>\/factory<\/code> dashboard/);
 });
 

@@ -262,6 +262,39 @@ const listChildJobsForRun = async (queue: JsonlQueue, runId: string): Promise<Re
   return jobs.filter((job) => asString(job.payload.parentRunId) === runId);
 };
 
+const jobMatchesProfileContext = (
+  job: QueueJob,
+  input: {
+    readonly runId?: string;
+    readonly stream: string;
+    readonly profileId: string;
+    readonly objectiveId?: string;
+  },
+): boolean => {
+  const parentRunId = asString(job.payload.parentRunId);
+  const parentStream = asString(job.payload.parentStream);
+  const payloadStream = asString(job.payload.stream);
+  const profileId = asString(job.payload.profileId);
+  const objectiveId = asString(job.payload.objectiveId);
+  return parentRunId === input.runId
+    || parentStream === input.stream
+    || payloadStream === input.stream
+    || profileId === input.profileId
+    || (Boolean(input.objectiveId) && objectiveId === input.objectiveId);
+};
+
+const codexJobPriority = (
+  job: QueueJob,
+  input: {
+    readonly runId: string;
+    readonly objectiveId?: string;
+  },
+): number => {
+  if (asString(job.payload.parentRunId) === input.runId) return 3;
+  if (input.objectiveId && asString(job.payload.objectiveId) === input.objectiveId) return 2;
+  return isActiveJobStatus(job.status) ? 1 : 0;
+};
+
 const buildActiveChildWaitingMessage = (jobs: ReadonlyArray<QueueJob>): string => {
   const snapshots = jobs.map((job) => normalizeJobSnapshot(job));
   const primary = snapshots[0];
@@ -410,6 +443,8 @@ const createJobsListTool = (input: {
   readonly queue: JsonlQueue;
   readonly stream: string;
   readonly profile: FactoryChatResolvedProfile;
+  readonly runId: string;
+  readonly objectiveId?: string;
 }): AgentToolExecutor =>
   async (toolInput) => {
     const limit = typeof toolInput.limit === "number" && Number.isFinite(toolInput.limit)
@@ -419,14 +454,12 @@ const createJobsListTool = (input: {
     const statusFilter = asString(toolInput.status);
     const jobs = await input.queue.listJobs({ limit: 120 });
     const filtered = jobs
-      .filter((job) => {
-        const parentStream = asString(job.payload.parentStream);
-        const payloadStream = asString(job.payload.stream);
-        const profileId = asString(job.payload.profileId);
-        return parentStream === input.stream
-          || payloadStream === input.stream
-          || profileId === input.profile.root.id;
-      })
+      .filter((job) => jobMatchesProfileContext(job, {
+        runId: input.runId,
+        stream: input.stream,
+        profileId: input.profile.root.id,
+        objectiveId: input.objectiveId,
+      }))
       .filter((job) => includeCompleted || (job.status !== "completed" && job.status !== "failed" && job.status !== "canceled"))
       .filter((job) => !statusFilter || job.status === statusFilter)
       .slice(0, limit)
@@ -434,6 +467,66 @@ const createJobsListTool = (input: {
     return {
       output: JSON.stringify(filtered, null, 2),
       summary: `${filtered.length} jobs`,
+    };
+  };
+
+const createCodexStatusTool = (input: {
+  readonly queue: JsonlQueue;
+  readonly runId: string;
+  readonly stream: string;
+  readonly profile: FactoryChatResolvedProfile;
+  readonly objectiveId?: string;
+}): AgentToolExecutor =>
+  async (toolInput) => {
+    const jobId = asString(toolInput.jobId);
+    if (jobId) {
+      const job = await input.queue.getJob(jobId);
+      if (!job) throw new Error(`job ${jobId} not found`);
+      if (job.agentId !== "codex") throw new Error(`job ${jobId} is not a codex job`);
+      const snapshot = normalizeJobSnapshot(job);
+      return {
+        output: JSON.stringify({
+          worker: "codex",
+          activeCount: isActiveJobStatus(job.status) ? 1 : 0,
+          latest: snapshot,
+          jobs: [snapshot],
+        }, null, 2),
+        summary: `codex ${jobId}: ${String(snapshot.status)}`,
+      };
+    }
+    const limit = typeof toolInput.limit === "number" && Number.isFinite(toolInput.limit)
+      ? Math.max(1, Math.min(Math.floor(toolInput.limit), 10))
+      : 5;
+    const includeCompleted = toolInput.includeCompleted === true;
+    const jobs = (await input.queue.listJobs({ limit: 200 }))
+      .filter((job) => job.agentId === "codex")
+      .filter((job) => jobMatchesProfileContext(job, {
+        runId: input.runId,
+        stream: input.stream,
+        profileId: input.profile.root.id,
+        objectiveId: input.objectiveId,
+      }))
+      .filter((job) => includeCompleted || isActiveJobStatus(job.status))
+      .sort((left, right) =>
+        codexJobPriority(right, { runId: input.runId, objectiveId: input.objectiveId })
+        - codexJobPriority(left, { runId: input.runId, objectiveId: input.objectiveId })
+        || right.updatedAt - left.updatedAt);
+    const snapshots = jobs.slice(0, limit).map((job) => normalizeJobSnapshot(job));
+    const latest = snapshots[0];
+    const activeCount = jobs.filter((job) => isActiveJobStatus(job.status)).length;
+    const summary = latest
+      ? activeCount > 0
+        ? `codex active: ${String(latest.jobId)} (${String(latest.status)})`
+        : `latest codex job ${String(latest.jobId)} is ${String(latest.status)}`
+      : "no codex jobs found for this context";
+    return {
+      output: JSON.stringify({
+        worker: "codex",
+        activeCount,
+        latest: latest ?? null,
+        jobs: snapshots,
+      }, null, 2),
+      summary,
     };
   };
 
@@ -558,6 +651,7 @@ const discoveryTools = new Set([
   "read",
   "grep",
   "agent.status",
+  "codex.status",
   "jobs.list",
   "agent.inspect",
   "skill.read",
@@ -572,6 +666,7 @@ const deliveryTools = new Set([
 
 const monitorWhileChildRunningTools = new Set([
   "agent.status",
+  "codex.status",
   "jobs.list",
   "agent.inspect",
   "job.control",
@@ -784,8 +879,17 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
     }),
     "jobs.list": createJobsListTool({
       queue: input.queue,
+      runId: input.runId,
       stream: input.stream,
       profile: resolvedProfile,
+      objectiveId: input.objectiveId,
+    }),
+    "codex.status": createCodexStatusTool({
+      queue: input.queue,
+      runId: input.runId,
+      stream: input.stream,
+      profile: resolvedProfile,
+      objectiveId: input.objectiveId,
     }),
     "job.control": createJobControlTool({
       queue: input.queue,
@@ -922,6 +1026,7 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
       "agent.delegate": "{\"agentId\": string, \"task\": string, \"config\"?: object} — Queue a Receipt-native subagent and return its live job handle immediately.",
       "agent.status": "{\"jobId\": string} — Inspect a queued or running child job and return its latest normalized state. Do not pass the current factory job id.",
       "jobs.list": "{\"limit\"?: number, \"status\"?: string, \"includeCompleted\"?: boolean} — List recent jobs related to the current Factory profile thread.",
+      "codex.status": "{\"jobId\"?: string, \"limit\"?: number, \"includeCompleted\"?: boolean} — Inspect live Codex work for the current run, objective, or profile thread. With jobId, inspect that Codex child directly.",
       "job.control": "{\"jobId\": string, \"command\": \"steer\"|\"follow_up\"|\"abort\", \"problem\"?: string, \"config\"?: object, \"note\"?: string, \"reason\"?: string} — Queue a steer, follow-up, or abort command for a running child job. Do not pass the current factory job id.",
       "codex.run": "{\"prompt\": string, \"timeoutMs\"?: number} — Queue a focused Codex run against the repo and return its live child job handle immediately. Reuse that returned jobId for agent.status/job.control.",
       "factory.dispatch": "{\"action\"?: \"create\"|\"react\"|\"promote\"|\"cancel\"|\"cleanup\"|\"archive\", \"objectiveId\"?: string, \"prompt\"?: string, \"title\"?: string, \"baseHash\"?: string, \"checks\"?: string[], \"channel\"?: string, \"reason\"?: string} — Create or operate on a Factory objective. 'react' means re-evaluate the objective and dispatch the next eligible work.",
