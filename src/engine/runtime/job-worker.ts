@@ -82,6 +82,7 @@ export class JobWorker {
     const waited = await this.queue.waitForWork({
       sinceVersion,
       timeoutMs: this.idleResyncMs,
+      wakeOnQueued: false,
     });
     if (waited.queued > 0 || waited.version > sinceVersion) {
       return waited;
@@ -93,10 +94,10 @@ export class JobWorker {
     let seenVersion = this.queue.snapshot().version;
     while (this.running) {
       try {
-        await this.tick();
+        const leasedAny = await this.tick();
         const current = this.queue.snapshot();
         seenVersion = current.version;
-        if (current.queued > 0 && this.active.size < this.concurrency) {
+        if (leasedAny && this.active.size < this.concurrency) {
           continue;
         }
         if (this.active.size > 0) {
@@ -129,7 +130,8 @@ export class JobWorker {
     }
   }
 
-  private async tick(): Promise<void> {
+  private async tick(): Promise<boolean> {
+    let leasedAny = false;
     while (this.active.size < this.concurrency) {
       const leased = await this.queue.leaseNext({
         workerId: this.workerId,
@@ -137,6 +139,7 @@ export class JobWorker {
         ...(this.leaseAgentIds?.length ? { agentIds: this.leaseAgentIds } : {}),
       });
       if (!leased) break;
+      leasedAny = true;
       const runPromise = this.runLeased(leased)
         .catch((err) => {
           this.reportError(err);
@@ -146,6 +149,7 @@ export class JobWorker {
         });
       this.active.set(leased.id, runPromise);
     }
+    return leasedAny;
   }
 
   private async runLeased(job: QueueJob): Promise<void> {
@@ -161,19 +165,13 @@ export class JobWorker {
 
     await this.queue.heartbeat(job.id, this.workerId, this.leaseMs);
 
-    const heartbeat = setInterval(() => {
-      void this.queue.heartbeat(job.id, this.workerId, this.leaseMs).catch((err) => {
-        this.reportError(err);
-      });
-    }, Math.max(1_000, Math.floor(this.leaseMs / 2)));
+    const handler = this.handlers[job.agentId];
+    if (!handler) {
+      await this.queue.fail(job.id, this.workerId, `No handler for agent '${job.agentId}'`, true);
+      return;
+    }
 
     try {
-      const handler = this.handlers[job.agentId];
-      if (!handler) {
-        await this.queue.fail(job.id, this.workerId, `No handler for agent '${job.agentId}'`, true);
-        return;
-      }
-
       const result = await handler(job, {
         workerId: this.workerId,
         pullCommands,
@@ -191,8 +189,6 @@ export class JobWorker {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await this.queue.fail(job.id, this.workerId, message);
-    } finally {
-      clearInterval(heartbeat);
     }
   }
 }

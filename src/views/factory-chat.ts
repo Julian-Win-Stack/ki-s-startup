@@ -510,12 +510,13 @@ const renderFactoryChatClientScript = (): string => `
             setComposerStatus("Enter a chat message or slash command.");
             return;
           }
+          var formData = new window.FormData(activeForm);
           setComposerBusy(true);
           setComposerStatus("");
           try {
             const response = await window.fetch(activeForm.action, {
               method: activeForm.method || "POST",
-              body: new window.FormData(activeForm),
+              body: formData,
               headers: {
                 Accept: "application/json",
               },

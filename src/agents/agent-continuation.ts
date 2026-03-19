@@ -1,5 +1,6 @@
 import type { EnqueueJobInput } from "../adapters/jsonl-queue.js";
 import type { AgentIterationBudgetHandler } from "./agent.js";
+import { isStuckProgress } from "./agent.js";
 
 export const AGENT_AUTO_CONTINUATION_LADDER = [10, 20, 40, 80] as const;
 
@@ -38,7 +39,8 @@ type QueuedBudgetContinuationOptions = {
 export const createQueuedBudgetContinuation = (
   opts: QueuedBudgetContinuationOptions,
 ): AgentIterationBudgetHandler =>
-  async ({ runId, problem, config }) => {
+  async ({ runId, problem, config, progress }) => {
+    if (isStuckProgress(progress)) return undefined;
     const depth = opts.continuationDepth ?? 0;
     const nextMaxIterations = nextIterationBudget(config.maxIterations, opts.budgetLadder);
     if (nextMaxIterations === undefined) return undefined;

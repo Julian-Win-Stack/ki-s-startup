@@ -7,12 +7,6 @@ const ROOT = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));
 
 const ROUTE_FILES = [
   "src/server.ts",
-  "src/agents/todo.agent.ts",
-  "src/agents/writer.agent.ts",
-  "src/agents/theorem.agent.ts",
-  "src/agents/axiom-simple.agent.ts",
-  "src/agents/monitor.agent.ts",
-  "src/agents/inspector.agent.ts",
 ] as const;
 
 const escapeRegex = (value: string): string =>

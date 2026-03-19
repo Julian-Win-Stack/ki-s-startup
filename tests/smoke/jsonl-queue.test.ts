@@ -399,61 +399,39 @@ test("jsonl queue: enqueue wakes an idle worker without relying on a short poll 
   }
 });
 
-test("jsonl queue: cross-queue enqueue wakes a worker watching the shared data dir", async () => {
-  const dir = await mkTmp("receipt-queue-cross-queue-wakeup");
+test("jsonl queue: waitForWork performs at most one refresh per idle timeout window", async () => {
+  const dir = await mkTmp("receipt-queue-idle-refresh");
   try {
-    const workerRuntime = createRuntime<JobCmd, JobEvent, JobState>(
+    const runtime = createRuntime<JobCmd, JobEvent, JobState>(
       jsonlStore<JobEvent>(dir),
       jsonBranchStore(dir),
       decideJob,
       reduceJob,
       initialJob,
     );
-    const clientRuntime = createRuntime<JobCmd, JobEvent, JobState>(
-      jsonlStore<JobEvent>(dir),
-      jsonBranchStore(dir),
-      decideJob,
-      reduceJob,
-      initialJob,
-    );
-    const workerQueue = jsonlQueue({ runtime: workerRuntime, stream: "jobs", watchDir: dir });
-    const clientQueue = jsonlQueue({ runtime: clientRuntime, stream: "jobs", watchDir: dir });
-    const handled: string[] = [];
-    const workerErrors: string[] = [];
+    let listStreamsCalls = 0;
+    const baseListStreams = runtime.listStreams.bind(runtime);
+    (runtime as typeof runtime & {
+      listStreams: (prefix?: string) => Promise<ReadonlyArray<string>>;
+    }).listStreams = async (prefix?: string) => {
+      listStreamsCalls += 1;
+      return baseListStreams(prefix);
+    };
 
-    const worker = new JobWorker({
-      queue: workerQueue,
-      workerId: "worker_cross_queue",
-      idleResyncMs: 20_000,
-      leaseMs: 5_000,
-      concurrency: 1,
-      handlers: {
-        writer: async (job) => {
-          handled.push(job.id);
-          return { ok: true, result: { ok: true } };
-        },
-      },
-      onError: (error) => {
-        workerErrors.push(error.message);
-      },
-    });
+    const queue = jsonlQueue({ runtime, stream: "jobs" });
+    const startedAt = Date.now();
+    const snapshot = await queue.waitForWork({ timeoutMs: 650 });
 
-    worker.start();
-    const job = await clientQueue.enqueue({
-      agentId: "writer",
-      payload: { kind: "writer.run", runId: "r_cross_queue" },
-      maxAttempts: 1,
-    });
-    const settled = await clientQueue.waitForJob(job.id, 2_000);
-    worker.stop();
-
-    expect(workerErrors).toEqual([]);
-    expect(handled).toEqual([job.id]);
-    expect(settled?.status).toBe("completed");
+    expect(snapshot.queued).toBe(0);
+    expect(snapshot.version).toBeGreaterThanOrEqual(0);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(600);
+    expect(listStreamsCalls).toBe(1);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test.skip("jsonl queue: cross-queue enqueue wakes a worker watching the shared data dir (removed: single-process)", () => {});
 
 test("jsonl queue: worker wakes for a child queued by an active parent before the parent finishes", async () => {
   const dir = await mkTmp("receipt-queue-parent-child-wakeup");
@@ -534,6 +512,50 @@ test("jsonl queue: worker wakes for a child queued by an active parent before th
     expect(handled).toContain(createdChildId);
     expect(parentSettled?.status).toBe("completed");
     expect(childSettled?.status).toBe("completed");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("job worker: does not busy-spin on queued work it cannot lease", async () => {
+  const dir = await mkTmp("receipt-queue-unmatched-worker");
+  try {
+    const runtime = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob,
+    );
+    const queue = jsonlQueue({ runtime, stream: "jobs" });
+    await queue.enqueue({
+      agentId: "codex",
+      payload: { kind: "factory.codex.run", runId: "r_unmatched" },
+      maxAttempts: 1,
+    });
+
+    let ticks = 0;
+    const worker = new JobWorker({
+      queue,
+      workerId: "worker_writer_only",
+      leaseAgentIds: ["writer"],
+      idleResyncMs: 500,
+      leaseMs: 5_000,
+      concurrency: 1,
+      handlers: {
+        writer: async () => ({ ok: true }),
+      },
+      onTick: () => {
+        ticks += 1;
+      },
+    });
+
+    worker.start();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    worker.stop();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(ticks).toBeLessThan(20);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -716,6 +738,9 @@ test("jsonl queue: scoped workers prevent parent and control jobs from starving 
     ]);
     const jobs = await queue.listJobs({ limit: 10 });
     const codexJob = jobs.find((job) => job.agentId === "codex");
+    const codexSettled = codexJob
+      ? await queue.waitForJob(codexJob.id, 2_000)
+      : undefined;
     const parentSettled = await queue.waitForJob(parentJob.id, 2_000);
 
     generalWorker.stop();
@@ -724,7 +749,7 @@ test("jsonl queue: scoped workers prevent parent and control jobs from starving 
 
     expect(workerErrors).toEqual([]);
     expect(codexCompleted).toBe(true);
-    expect(codexJob?.status).toBe("completed");
+    expect(codexSettled?.status).toBe("completed");
     expect(parentSettled?.status).toBe("completed");
     expect(handled.some((entry) => entry.startsWith("agent:"))).toBe(true);
     expect(handled.some((entry) => entry.startsWith("factory-control:"))).toBe(true);

@@ -51,11 +51,7 @@ import {
 } from "./factory-codex-artifacts.js";
 import { createRuntime, type Runtime } from "../core/runtime.js";
 import { type GraphRef } from "../core/graph.js";
-import type { Chain } from "../core/types.js";
 import { CONTROL_RECEIPT_TYPES } from "../engine/runtime/control-receipts.js";
-import { action } from "../sdk/actions.js";
-import { defineAgent, runDefinedAgent } from "../sdk/agent.js";
-import { receipt, type ReceiptBody, type ReceiptDeclaration } from "../sdk/receipt.js";
 import { makeEventId, optionalTrimmedString, requireTrimmedString, trimmedString } from "../framework/http.js";
 import type { SseHub } from "../framework/sse-hub.js";
 import { resolveCliInvocation } from "../lib/runtime-paths.js";
@@ -64,13 +60,7 @@ import {
   type FactoryAction,
   type FactoryActionTaskDraft,
   buildFactoryDecisionSet,
-  describeFactoryDecision,
-  factoryActionConfidence,
-  factoryActionScoreScalar,
-  factoryMergePolicy,
   summarizeFactoryAction,
-  type FactoryDecisionSet,
-  type FactoryMergeView,
 } from "../engine/merge/factory-policy.js";
 
 const execFileAsync = promisify(execFile);
@@ -201,14 +191,54 @@ const objectiveTaskStatusPriority = (status: FactoryTaskStatus): number => {
   }
 };
 
-export class FactoryServiceError extends Error {
-  readonly status: number;
-
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
+export {
+  FactoryServiceError,
+  type FactoryServiceOptions,
+  type FactoryObjectiveInput,
+  type FactoryObjectiveComposeInput,
+  type FactoryQueuedJobCommand,
+  type FactoryContextSources,
+  type FactoryTaskView,
+  type FactoryObjectiveCard,
+  type FactoryObjectiveDetail,
+  type FactoryComposeModel,
+  type FactoryBoardSection,
+  type FactoryBoardProjection,
+  type FactoryLiveProjection,
+  type FactoryLiveOutputTargetKind,
+  type FactoryLiveOutputSnapshot,
+  type FactoryDebugProjection,
+  type FactoryTaskJobPayload,
+  type FactoryIntegrationJobPayload,
+  type FactoryObjectiveControlJobPayload,
+  type FactoryObjectiveReceiptSummary,
+  type FactoryObjectiveReceiptQuery,
+  type FactoryRepoProfileProgress,
+} from "./factory-types.js";
+import {
+  FactoryServiceError,
+  type FactoryServiceOptions,
+  type FactoryObjectiveInput,
+  type FactoryObjectiveComposeInput,
+  type FactoryQueuedJobCommand,
+  type FactoryContextSources,
+  type FactoryTaskView,
+  type FactoryObjectiveCard,
+  type FactoryObjectiveDetail,
+  type FactoryComposeModel,
+  type FactoryBoardSection,
+  type FactoryBoardProjection,
+  type FactoryLiveProjection,
+  type FactoryLiveOutputTargetKind,
+  type FactoryLiveOutputSnapshot,
+  type FactoryDebugProjection,
+  type FactoryTaskJobPayload,
+  type FactoryIntegrationJobPayload,
+  type FactoryObjectiveControlJobPayload,
+  type FactoryObjectiveReceiptSummary,
+  type FactoryObjectiveReceiptQuery,
+  type FactoryRepoProfileProgress,
+} from "./factory-types.js";
 
 class FactoryStaleObjectiveError extends Error {
   readonly objectiveId: string;
@@ -221,290 +251,12 @@ class FactoryStaleObjectiveError extends Error {
   }
 }
 
-export type FactoryServiceOptions = {
-  readonly dataDir: string;
-  readonly queue: JsonlQueue;
-  readonly jobRuntime: Runtime<JobCmd, JobEvent, JobState>;
-  readonly sse: SseHub;
-  readonly codexExecutor: CodexExecutor;
-  readonly memoryTools?: MemoryTools;
-  readonly repoRoot?: string;
-  readonly profileRoot?: string;
-  readonly llmStructured?: <Schema extends z.ZodTypeAny>(opts: {
-    readonly system?: string;
-    readonly user: string;
-    readonly schema: Schema;
-    readonly schemaName: string;
-  }) => Promise<{ readonly parsed: z.infer<Schema>; readonly raw: string }>;
-};
 
-export type FactoryObjectiveInput = {
-  readonly title: string;
-  readonly prompt: string;
-  readonly baseHash?: string;
-  readonly checks?: ReadonlyArray<string>;
-  readonly channel?: string;
-  readonly policy?: FactoryObjectivePolicy;
-  readonly profileId?: string;
-  readonly startImmediately?: boolean;
-};
 
-export type FactoryObjectiveComposeInput = {
-  readonly prompt: string;
-  readonly objectiveId?: string;
-  readonly title?: string;
-  readonly baseHash?: string;
-  readonly checks?: ReadonlyArray<string>;
-  readonly channel?: string;
-  readonly policy?: FactoryObjectivePolicy;
-  readonly profileId?: string;
-  readonly startImmediately?: boolean;
-};
 
-export type FactoryQueuedJobCommand = {
-  readonly job: QueueJob;
-  readonly command: QueueCommandRecord;
-};
 
-export type FactoryContextSources = {
-  readonly repoSharedMemoryScope: string;
-  readonly objectiveMemoryScope: string;
-  readonly integrationMemoryScope: string;
-  readonly profileSkillRefs: ReadonlyArray<string>;
-  readonly repoSkillPaths: ReadonlyArray<string>;
-  readonly sharedArtifactRefs: ReadonlyArray<GraphRef>;
-};
 
-export type FactoryTaskView = FactoryTaskRecord & {
-  readonly candidate?: FactoryCandidateRecord;
-  readonly jobStatus?: JobStatus | "missing";
-  readonly job?: JobRecord;
-  readonly workspaceExists: boolean;
-  readonly workspaceDirty: boolean;
-  readonly workspaceHead?: string;
-  readonly elapsedMs?: number;
-  readonly stdoutPath?: string;
-  readonly stderrPath?: string;
-  readonly lastMessagePath?: string;
-  readonly stdoutTail?: string;
-  readonly stderrTail?: string;
-  readonly lastMessage?: string;
-};
 
-export type FactoryObjectiveCard = {
-  readonly objectiveId: string;
-  readonly title: string;
-  readonly status: FactoryObjectiveStatus;
-  readonly phase: FactoryObjectivePhase;
-  readonly scheduler: {
-    readonly slotState: FactoryObjectiveSlotState;
-    readonly queuePosition?: number;
-  };
-  readonly repoProfile: FactoryRepoProfileRecord;
-  readonly archivedAt?: number;
-  readonly updatedAt: number;
-  readonly latestSummary?: string;
-  readonly blockedReason?: string;
-  readonly blockedExplanation?: {
-    readonly summary: string;
-    readonly taskId?: string;
-    readonly candidateId?: string;
-    readonly receiptType?: string;
-    readonly receiptHash?: string;
-  };
-  readonly latestDecision?: {
-    readonly summary: string;
-    readonly at: number;
-    readonly source: "plan" | "orchestrator" | "fallback" | "runtime" | "system";
-    readonly selectedActionId?: string;
-  };
-  readonly nextAction?: string;
-  readonly activeTaskCount: number;
-  readonly readyTaskCount: number;
-  readonly taskCount: number;
-  readonly integrationStatus: FactoryState["integration"]["status"];
-  readonly latestCommitHash?: string;
-  readonly profile: FactoryObjectiveProfileSnapshot;
-};
-
-export type FactoryObjectiveDetail = FactoryObjectiveCard & {
-  readonly prompt: string;
-  readonly channel: string;
-  readonly baseHash: string;
-  readonly checks: ReadonlyArray<string>;
-  readonly profile: FactoryObjectiveProfileSnapshot;
-  readonly policy: FactoryNormalizedObjectivePolicy;
-  readonly contextSources: FactoryContextSources;
-  readonly budgetState: FactoryBudgetState;
-  readonly createdAt: number;
-  readonly tasks: ReadonlyArray<FactoryTaskView>;
-  readonly candidates: ReadonlyArray<FactoryCandidateRecord>;
-  readonly integration: FactoryState["integration"];
-  readonly recentReceipts: ReadonlyArray<{
-    readonly type: string;
-    readonly hash: string;
-    readonly ts: number;
-    readonly summary: string;
-    readonly taskId?: string;
-    readonly candidateId?: string;
-  }>;
-  readonly evidenceCards: ReadonlyArray<{
-    readonly kind: "decision" | "plan" | "blocked" | "merge" | "promotion";
-    readonly title: string;
-    readonly summary: string;
-    readonly at: number;
-    readonly taskId?: string;
-    readonly candidateId?: string;
-    readonly receiptHash?: string;
-    readonly receiptType: string;
-  }>;
-  readonly activity: ReadonlyArray<{
-    readonly kind: "task" | "job" | "receipt";
-    readonly title: string;
-    readonly summary: string;
-    readonly at: number;
-    readonly taskId?: string;
-    readonly candidateId?: string;
-  }>;
-  readonly latestRebracket?: FactoryState["latestRebracket"];
-};
-
-export type FactoryComposeModel = {
-  readonly defaultBranch: string;
-  readonly sourceDirty: boolean;
-  readonly sourceBranch?: string;
-  readonly objectiveCount: number;
-  readonly defaultPolicy: FactoryNormalizedObjectivePolicy;
-  readonly repoProfile: FactoryRepoProfileRecord;
-  readonly defaultValidationCommands: ReadonlyArray<string>;
-};
-
-export type FactoryBoardSection =
-  | "needs_attention"
-  | "active"
-  | "queued"
-  | "completed";
-
-export type FactoryBoardProjection = {
-  readonly objectives: ReadonlyArray<FactoryObjectiveCard & { readonly section: FactoryBoardSection }>;
-  readonly sections: Readonly<Record<FactoryBoardSection, ReadonlyArray<FactoryObjectiveCard & { readonly section: FactoryBoardSection }>>>;
-  readonly selectedObjectiveId?: string;
-};
-
-export type FactoryLiveProjection = {
-  readonly selectedObjectiveId?: string;
-  readonly objectiveTitle?: string;
-  readonly objectiveStatus?: FactoryObjectiveStatus;
-  readonly phase?: FactoryObjectivePhase;
-  readonly activeTasks: ReadonlyArray<FactoryTaskView>;
-  readonly recentJobs: ReadonlyArray<QueueJob>;
-};
-
-export type FactoryLiveOutputTargetKind = "task" | "job";
-
-export type FactoryLiveOutputSnapshot = {
-  readonly objectiveId: string;
-  readonly focusKind: FactoryLiveOutputTargetKind;
-  readonly focusId: string;
-  readonly title: string;
-  readonly status: string;
-  readonly active: boolean;
-  readonly summary?: string;
-  readonly taskId?: string;
-  readonly candidateId?: string;
-  readonly jobId?: string;
-  readonly lastMessage?: string;
-  readonly stdoutTail?: string;
-  readonly stderrTail?: string;
-};
-
-export type FactoryDebugProjection = {
-  readonly objectiveId: string;
-  readonly title: string;
-  readonly status: FactoryObjectiveStatus;
-  readonly phase: FactoryObjectivePhase;
-  readonly scheduler: {
-    readonly slotState: FactoryObjectiveSlotState;
-    readonly queuePosition?: number;
-  };
-  readonly repoProfile: FactoryRepoProfileRecord;
-  readonly latestDecision?: FactoryObjectiveCard["latestDecision"];
-  readonly nextAction?: string;
-  readonly profile: FactoryObjectiveProfileSnapshot;
-  readonly policy: FactoryNormalizedObjectivePolicy;
-  readonly contextSources: FactoryContextSources;
-  readonly budgetState: FactoryBudgetState;
-  readonly recentReceipts: ReadonlyArray<{
-    readonly type: string;
-    readonly hash: string;
-    readonly ts: number;
-    readonly summary: string;
-  }>;
-  readonly activeJobs: ReadonlyArray<QueueJob>;
-  readonly lastJobs: ReadonlyArray<QueueJob>;
-  readonly taskWorktrees: ReadonlyArray<{
-    readonly taskId: string;
-    readonly workspacePath?: string;
-    readonly exists: boolean;
-    readonly dirty: boolean;
-    readonly head?: string;
-    readonly branch?: string;
-  }>;
-  readonly integrationWorktree?: {
-    readonly workspacePath?: string;
-    readonly exists: boolean;
-    readonly dirty: boolean;
-    readonly head?: string;
-    readonly branch?: string;
-  };
-  readonly latestContextPacks: ReadonlyArray<{
-    readonly taskId: string;
-    readonly candidateId?: string;
-    readonly contextPackPath?: string;
-    readonly memoryScriptPath?: string;
-  }>;
-};
-
-export type FactoryTaskJobPayload = {
-  readonly kind: "factory.task.run";
-  readonly objectiveId: string;
-  readonly taskId: string;
-  readonly workerType: FactoryWorkerType;
-  readonly candidateId: string;
-  readonly baseCommit: string;
-  readonly workspaceId: string;
-  readonly workspacePath: string;
-  readonly promptPath: string;
-  readonly resultPath: string;
-  readonly stdoutPath: string;
-  readonly stderrPath: string;
-  readonly lastMessagePath: string;
-  readonly manifestPath: string;
-  readonly contextPackPath: string;
-  readonly memoryScriptPath: string;
-  readonly memoryConfigPath: string;
-  readonly repoSkillPaths: ReadonlyArray<string>;
-  readonly skillBundlePaths: ReadonlyArray<string>;
-  readonly profile: FactoryObjectiveProfileSnapshot;
-  readonly profilePromptHash: string;
-  readonly profileSkillRefs: ReadonlyArray<string>;
-  readonly sharedArtifactRefs: ReadonlyArray<GraphRef>;
-  readonly contextRefs: ReadonlyArray<GraphRef>;
-  readonly integrationRef?: GraphRef;
-  readonly problem: string;
-  readonly config: Readonly<Record<string, unknown>>;
-};
-
-export type FactoryIntegrationJobPayload = {
-  readonly kind: "factory.integration.validate";
-  readonly objectiveId: string;
-  readonly candidateId: string;
-  readonly workspacePath: string;
-  readonly stdoutPath: string;
-  readonly stderrPath: string;
-  readonly resultPath: string;
-  readonly checks: ReadonlyArray<string>;
-};
 
 type DecomposedTaskSpec = {
   readonly taskId: string;
@@ -524,43 +276,8 @@ type FactoryRepoProfileArtifact = {
   readonly summary: string;
 };
 
-export type FactoryRepoProfileProgress = {
-  readonly step:
-    | "bootstrap"
-    | "cache"
-    | "scan"
-    | "infer_checks"
-    | "llm"
-    | "write_skills"
-    | "persist"
-    | "complete";
-  readonly message: string;
-};
-
 type FactoryRepoProfilePrepareOptions = {
   readonly onProgress?: (progress: FactoryRepoProfileProgress) => void;
-};
-
-export type FactoryObjectiveControlJobPayload = {
-  readonly kind: "factory.objective.control";
-  readonly objectiveId: string;
-  readonly reason: "startup" | "admitted";
-};
-
-export type FactoryObjectiveReceiptSummary = {
-  readonly type: string;
-  readonly hash: string;
-  readonly ts: number;
-  readonly summary: string;
-  readonly taskId?: string;
-  readonly candidateId?: string;
-};
-
-export type FactoryObjectiveReceiptQuery = {
-  readonly limit?: number;
-  readonly taskId?: string;
-  readonly candidateId?: string;
-  readonly types?: ReadonlyArray<string>;
 };
 
 type FactoryMemoryScopeSpec = {
@@ -687,55 +404,6 @@ const taskOrdinalId = (index: number): string => `task_${String(index + 1).padSt
 
 const objectiveStream = (objectiveId: string): string => `${FACTORY_STREAM_PREFIX}/${objectiveId}`;
 
-type FactoryControlSession = {
-  dispatchesUsed: number;
-};
-
-type FactoryControlView = FactoryMergeView & {
-  readonly projection: FactoryProjection;
-  readonly elapsedBlockedReason?: string;
-  readonly reworkBlockedTaskIds: ReadonlyArray<string>;
-  readonly completionReady: boolean;
-  readonly emptyBlockedReady: boolean;
-};
-
-type FactoryRuntimeReceipts = {
-  readonly "merge.evidence.computed": ReceiptDeclaration<{
-    objectiveId: string;
-    frontierTaskIds: ReadonlyArray<string>;
-    actionIds: ReadonlyArray<string>;
-    summary: string;
-    basedOn?: string;
-    computedAt: number;
-  }>;
-  readonly "merge.candidate.scored": ReceiptDeclaration<{
-    objectiveId: string;
-    decisionId: string;
-    candidateId?: string;
-    taskId?: string;
-    actionType?: string;
-    score: number;
-    scoreVector: Readonly<Record<string, number>>;
-    reason: string;
-    scoredAt: number;
-  }>;
-  readonly "rebracket.applied": ReceiptDeclaration<{
-    objectiveId: string;
-    frontierTaskIds: ReadonlyArray<string>;
-    selectedActionId?: string;
-    reason: string;
-    confidence?: number;
-    source: "runtime";
-    basedOn?: string;
-    appliedAt: number;
-  }>;
-};
-
-const factoryRuntimeReceipts: FactoryRuntimeReceipts = {
-  "merge.evidence.computed": receipt(),
-  "merge.candidate.scored": receipt(),
-  "rebracket.applied": receipt(),
-};
 
 export class FactoryService {
   readonly dataDir: string;
@@ -1979,82 +1647,6 @@ export class FactoryService {
     await this.rebalanceObjectiveSlots();
   }
 
-  private materializeFactoryControlView(
-    chain: Chain<{ readonly type: string; readonly [key: string]: unknown }>,
-    session: FactoryControlSession,
-  ): FactoryControlView {
-    const state = chain.reduce(
-      (next, receipt) => reduceFactory(next, receipt.body as FactoryEvent, receipt.ts),
-      initialFactoryState,
-    );
-    const projection = buildFactoryProjection(state);
-    const elapsedBlockedReason = this.derivePolicyBlockedReason({
-      ...state,
-      taskRunsUsed: 0,
-    } as FactoryState);
-    const reworkBlockedTaskIds = factoryReadyTasks(state)
-      .map((task) => ({
-        taskId: task.taskId,
-        blockedReason: this.taskReworkPolicyBlockedReason(state, task),
-      }))
-      .filter((item) => Boolean(item.blockedReason))
-      .map((item) => item.taskId);
-    const completionReady = (
-      projection.tasks.length > 0
-      && projection.tasks.every((task) => ["integrated", "superseded"].includes(task.status))
-      && state.integration.status === "promoted"
-      && state.status !== "completed"
-    );
-    const activeCount = state.graph.activeNodeIds.length;
-    const capacity = Math.max(0, this.effectiveMaxParallelChildren(state) - activeCount);
-    const remainingDispatchBudget = Math.max(0, state.policy.throttles.maxDispatchesPerReact - session.dispatchesUsed);
-    const dispatchLimit = Math.min(capacity, remainingDispatchBudget);
-    const dispatchPolicyBlockedReason = state.taskRunsUsed >= state.policy.budgets.maxTaskRuns
-      ? `Policy blocked: objective exhausted maxTaskRuns (${state.taskRunsUsed}/${state.policy.budgets.maxTaskRuns}).`
-      : undefined;
-    const decisionSet: FactoryDecisionSet = (
-      state.scheduler.slotState !== "active"
-      || this.isTerminalObjectiveStatus(state.status)
-      || state.status === "blocked"
-      || completionReady
-      || Boolean(elapsedBlockedReason)
-      || reworkBlockedTaskIds.length > 0
-      || state.repoProfile.status !== "ready"
-      || !state.repoProfile.generatedAt
-      || state.taskOrder.length === 0
-    )
-      ? {
-          frontierTaskIds: [],
-          actions: [],
-          summary: "Factory runtime is settling prerequisites before frontier selection.",
-        }
-      : buildFactoryDecisionSet(state, {
-          now: Date.now(),
-          dispatchLimit,
-          policyBlockedReason: dispatchPolicyBlockedReason,
-        });
-    const emptyBlockedReady = (
-      projection.tasks.length > 0
-      && projection.readyTasks.length === 0
-      && projection.activeTasks.length === 0
-      && state.integration.status === "idle"
-      && projection.tasks.every((task) => ["blocked", "superseded"].includes(task.status))
-      && state.status !== "blocked"
-      && decisionSet.actions.length === 0
-    );
-
-    return {
-      state,
-      projection,
-      headHash: chain[chain.length - 1]?.hash,
-      decisionSet,
-      elapsedBlockedReason,
-      reworkBlockedTaskIds,
-      completionReady,
-      emptyBlockedReady,
-    };
-  }
-
   private async syncFailedActiveTasks(state: FactoryState): Promise<void> {
     for (const taskId of [...state.graph.activeNodeIds]) {
       const task = state.graph.nodes[taskId];
@@ -2075,178 +1667,160 @@ export class FactoryService {
 
   async reactObjective(objectiveId: string): Promise<void> {
     await this.rebalanceObjectiveSlots();
-    const initialState = await this.getObjectiveState(objectiveId);
+    const refreshState = () => this.getObjectiveState(objectiveId);
+    let state = await refreshState();
 
-    if (["completed", "failed", "canceled"].includes(initialState.status)) {
+    if (this.isTerminalObjectiveStatus(state.status)) {
       await this.rebalanceObjectiveSlots();
       return;
     }
-    if (initialState.scheduler.slotState === "queued") return;
+    if (state.status === "blocked" || state.scheduler.slotState === "queued") return;
 
-    await this.syncFailedActiveTasks(initialState);
-    const session: FactoryControlSession = { dispatchesUsed: 0 };
-    type FactoryRuntimeEmit = <K extends keyof FactoryRuntimeReceipts & string>(
-      type: K,
-      body: ReceiptBody<FactoryRuntimeReceipts[K]>,
-    ) => void | Promise<void>;
-    const runtimeAction = action<FactoryControlView, FactoryRuntimeEmit>;
-    const spec = defineAgent({
-      id: "factory.objective.runtime",
-      version: "2.0.0",
-      receipts: factoryRuntimeReceipts,
-      view: ({ chain }) => this.materializeFactoryControlView(
-        chain() as Chain<{ readonly type: string; readonly [key: string]: unknown }>,
-        session,
-      ),
-      actions: () => [
-        runtimeAction("block_elapsed_budget", {
-          when: ({ view }) =>
-            Boolean(view.elapsedBlockedReason)
-            && view.state.status !== "blocked",
-          run: async ({ view }) => {
-            await this.emitObjective(view.state.objectiveId, {
-              type: "objective.blocked",
-              objectiveId: view.state.objectiveId,
-              reason: view.elapsedBlockedReason!,
-              summary: view.elapsedBlockedReason!,
-              blockedAt: Date.now(),
-            });
-          },
-        }),
-        runtimeAction("prepare_repo_profile", {
-          when: ({ view }) => view.state.repoProfile.status !== "ready" || !view.state.repoProfile.generatedAt,
-          run: async ({ view }) => {
-            await this.ensureRepoProfileForObjective(view.state);
-          },
-        }),
-        runtimeAction("plan_objective", {
-          when: ({ view }) => view.state.taskOrder.length === 0,
-          run: async ({ view }) => {
-            await this.planObjective(view.state);
-          },
-        }),
-        runtimeAction("activate_tasks", {
-          when: ({ view }) => factoryActivatableTasks(view.state).length > 0,
-          run: async ({ view }) => {
-            for (const task of factoryActivatableTasks(view.state)) {
-              await this.emitObjective(view.state.objectiveId, {
-                type: "task.ready",
-                objectiveId: view.state.objectiveId,
-                taskId: task.taskId,
-                readyAt: Date.now(),
-              });
-            }
-          },
-        }),
-        runtimeAction("enforce_rework_limits", {
-          when: ({ view }) => view.reworkBlockedTaskIds.length > 0,
-          run: async ({ view }) => {
-            for (const taskId of view.reworkBlockedTaskIds) {
-              const task = view.state.graph.nodes[taskId];
-              if (!task) continue;
-              const blockedReason = this.taskReworkPolicyBlockedReason(view.state, task);
-              if (!blockedReason) continue;
-              await this.emitObjective(view.state.objectiveId, {
-                type: "task.blocked",
-                objectiveId: view.state.objectiveId,
-                taskId,
-                reason: blockedReason,
-                blockedAt: Date.now(),
-              });
-            }
-          },
-        }),
-        runtimeAction("finalize_objective", {
-          when: ({ view }) => view.completionReady || view.emptyBlockedReady,
-          run: async ({ view }) => {
-            if (view.completionReady) {
-              await this.emitObjective(view.state.objectiveId, {
-                type: "objective.completed",
-                objectiveId: view.state.objectiveId,
-                summary: view.state.integration.lastSummary ?? "Factory objective completed.",
-                completedAt: Date.now(),
-              });
-              return;
-            }
-            await this.emitObjective(view.state.objectiveId, {
-              type: "objective.blocked",
-              objectiveId: view.state.objectiveId,
-              reason: "No runnable tasks remained.",
-              summary: "Factory objective is blocked with no runnable tasks.",
-              blockedAt: Date.now(),
-            });
-          },
-        }),
-      ],
-      goal: ({ view }) =>
-        this.isTerminalObjectiveStatus(view.state.status)
-        || view.state.status === "blocked"
-        || view.state.scheduler.slotState === "queued",
-      mergePolicy: factoryMergePolicy,
-      onMergeResult: async ({ view, result }) => {
-        const selectedAction = view.decisionSet.actions
-          .find((action) => action.actionId === result.decision.candidateId);
-        if (!selectedAction) return;
-        const selectedScore = result.scored.find((entry) => entry.candidate.id === selectedAction.actionId)?.score ?? {};
-        const reason = describeFactoryDecision(selectedAction, selectedScore);
-        const confidence = factoryActionConfidence(result.scored, selectedAction.actionId);
-        const scoredAt = Date.now();
-        const prefixEvents: FactoryEvent[] = [
-          {
-            type: "merge.evidence.computed",
-            objectiveId: view.state.objectiveId,
-            frontierTaskIds: result.evidence.frontierTaskIds,
-            actionIds: result.evidence.actionIds,
-            summary: result.evidence.summary,
-            basedOn: view.headHash,
-            computedAt: scoredAt,
-          },
-          ...result.scored.map((entry, index) => {
-            const action = view.decisionSet.actions.find((candidate) => candidate.actionId === entry.candidate.id);
-            return {
-              type: "merge.candidate.scored" as const,
-              objectiveId: view.state.objectiveId,
-              decisionId: entry.candidate.id,
-              candidateId: action?.candidateId,
-              taskId: action?.taskId,
-              actionType: action?.type,
-              score: factoryActionScoreScalar(entry.score),
-              scoreVector: entry.score,
-              reason: action ? summarizeFactoryAction(action) : entry.candidate.id,
-              scoredAt: scoredAt + index + 1,
-            };
-          }),
-        ];
-        try {
-          await this.applyAction(view.state, selectedAction, reason, confidence, "runtime", {
-            basedOn: view.headHash,
-            prefixEvents,
-          });
-          if (selectedAction.type === "dispatch_child") {
-            session.dispatchesUsed += 1;
+    await this.syncFailedActiveTasks(state);
+    state = await refreshState();
+    if (this.isTerminalObjectiveStatus(state.status) || state.status === "blocked") {
+      await this.rebalanceObjectiveSlots();
+      return;
+    }
+
+    const elapsedBlockedReason = this.derivePolicyBlockedReason(state);
+    if (elapsedBlockedReason) {
+      await this.emitObjective(objectiveId, {
+        type: "objective.blocked",
+        objectiveId,
+        reason: elapsedBlockedReason,
+        summary: elapsedBlockedReason,
+        blockedAt: Date.now(),
+      });
+      await this.rebalanceObjectiveSlots();
+      return;
+    }
+
+    if (state.repoProfile.status !== "ready" || !state.repoProfile.generatedAt) {
+      await this.ensureRepoProfileForObjective(state);
+      state = await refreshState();
+    }
+
+    if (state.taskOrder.length === 0) {
+      await this.planObjective(state);
+      state = await refreshState();
+    }
+
+    const activatable = factoryActivatableTasks(state);
+    for (const task of activatable) {
+      await this.emitObjective(objectiveId, {
+        type: "task.ready",
+        objectiveId,
+        taskId: task.taskId,
+        readyAt: Date.now(),
+      });
+    }
+    if (activatable.length > 0) state = await refreshState();
+
+    for (const task of factoryReadyTasks(state)) {
+      const blockedReason = this.taskReworkPolicyBlockedReason(state, task);
+      if (blockedReason) {
+        await this.emitObjective(objectiveId, {
+          type: "task.blocked",
+          objectiveId,
+          taskId: task.taskId,
+          reason: blockedReason,
+          blockedAt: Date.now(),
+        });
+      }
+    }
+    state = await refreshState();
+
+    const activeCount = state.graph.activeNodeIds.length;
+    const capacity = Math.max(0, this.effectiveMaxParallelChildren(state) - activeCount);
+    const dispatchPolicyBlockedReason = state.taskRunsUsed >= state.policy.budgets.maxTaskRuns
+      ? `Policy blocked: objective exhausted maxTaskRuns (${state.taskRunsUsed}/${state.policy.budgets.maxTaskRuns}).`
+      : undefined;
+    const decisionSet = buildFactoryDecisionSet(state, {
+      now: Date.now(),
+      dispatchLimit: capacity,
+      policyBlockedReason: dispatchPolicyBlockedReason,
+    });
+
+    const basedOn = await this.currentHeadHash(objectiveId);
+    for (const selectedAction of decisionSet.actions) {
+      const reason = summarizeFactoryAction(selectedAction);
+      try {
+        await this.applyAction(state, selectedAction, reason, 1.0, "runtime", { basedOn });
+      } catch (err) {
+        if (err instanceof FactoryStaleObjectiveError) break;
+        throw err;
+      }
+      state = await refreshState();
+    }
+
+    state = await refreshState();
+    const postActionActivatable = factoryActivatableTasks(state);
+    for (const task of postActionActivatable) {
+      await this.emitObjective(objectiveId, {
+        type: "task.ready",
+        objectiveId,
+        taskId: task.taskId,
+        readyAt: Date.now(),
+      });
+    }
+    if (postActionActivatable.length > 0) {
+      state = await refreshState();
+      const postBasedOn = await this.currentHeadHash(objectiveId);
+      const postCapacity = Math.max(0, this.effectiveMaxParallelChildren(state) - state.graph.activeNodeIds.length);
+      if (postCapacity > 0) {
+        const postDecisionSet = buildFactoryDecisionSet(state, {
+          now: Date.now(),
+          dispatchLimit: postCapacity,
+        });
+        for (const selectedAction of postDecisionSet.actions) {
+          if (selectedAction.type !== "dispatch_child") continue;
+          const reason = summarizeFactoryAction(selectedAction);
+          try {
+            await this.applyAction(state, selectedAction, reason, 1.0, "runtime", { basedOn: postBasedOn });
+          } catch (err) {
+            if (err instanceof FactoryStaleObjectiveError) break;
+            throw err;
           }
-        } catch (err) {
-          if (err instanceof FactoryStaleObjectiveError) return;
-          throw err;
+          state = await refreshState();
         }
-      },
-      maxIterations: 32,
-      maxConcurrency: 1,
-    });
+      }
+    }
 
-    await runDefinedAgent({
-      spec,
-      runtime: this.runtime,
-      stream: objectiveStream(objectiveId),
-      runId: this.makeId("factory-react"),
-      deps: {},
-      wrap: (event, meta) => ({
-        type: "emit" as const,
-        event,
-        eventId: meta.eventId,
-        expectedPrev: meta.expectedPrev,
-      } satisfies FactoryCmd),
-    });
+    state = await refreshState();
+    const finalProjection = buildFactoryProjection(state);
+    const completionReady = (
+      finalProjection.tasks.length > 0
+      && finalProjection.tasks.every((task) => ["integrated", "superseded"].includes(task.status))
+      && state.integration.status === "promoted"
+      && state.status !== "completed"
+    );
+    const emptyBlockedReady = (
+      finalProjection.tasks.length > 0
+      && finalProjection.readyTasks.length === 0
+      && finalProjection.activeTasks.length === 0
+      && state.integration.status === "idle"
+      && finalProjection.tasks.every((task) => ["blocked", "superseded"].includes(task.status))
+      && state.status !== "blocked"
+    );
+
+    if (completionReady) {
+      await this.emitObjective(objectiveId, {
+        type: "objective.completed",
+        objectiveId,
+        summary: state.integration.lastSummary ?? "Factory objective completed.",
+        completedAt: Date.now(),
+      });
+    } else if (emptyBlockedReady) {
+      await this.emitObjective(objectiveId, {
+        type: "objective.blocked",
+        objectiveId,
+        reason: "No runnable tasks remained.",
+        summary: "Factory objective is blocked with no runnable tasks.",
+        blockedAt: Date.now(),
+      });
+    }
+
     await this.rebalanceObjectiveSlots();
   }
 
@@ -4482,7 +4056,15 @@ export class FactoryService {
     const artifactPaths = factoryChatCodexArtifactPaths(this.dataDir, input.jobId);
     await fs.mkdir(artifactPaths.root, { recursive: true });
     await fs.rm(artifactPaths.resultPath, { force: true });
-    const profile = await this.resolveObjectiveProfileSnapshot(input.profileId);
+    const profile = await this.resolveObjectiveProfileSnapshot(input.profileId).catch(() => ({
+      rootProfileId: input.profileId ?? "default",
+      rootProfileLabel: input.profileId ?? "default",
+      resolvedProfileHash: "",
+      promptHash: "",
+      promptPath: undefined as string | undefined,
+      selectedSkills: [] as ReadonlyArray<string>,
+      objectivePolicy: DEFAULT_FACTORY_OBJECTIVE_PROFILE.objectivePolicy,
+    }));
     const includeFactoryObjectiveSkills = Boolean(input.objectiveId);
     const repoSkillPaths = (await this.collectRepoSkillPaths()).filter((skillPath) =>
       includeFactoryObjectiveSkills

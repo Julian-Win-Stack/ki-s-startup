@@ -85,6 +85,7 @@ export type QueueSnapshot = {
 export type WaitForWorkOptions = {
   readonly sinceVersion?: number;
   readonly timeoutMs?: number;
+  readonly wakeOnQueued?: boolean;
 };
 
 export type JsonlQueue = {
@@ -125,7 +126,6 @@ type JsonlQueueOptions = {
   readonly now?: () => number;
   readonly onJobChange?: (jobs: ReadonlyArray<QueueJob>) => Promise<void> | void;
   readonly watchDir?: string;
-  readonly watchDebounceMs?: number;
 };
 
 const TERMINAL = new Set<JobStatus>(["completed", "failed", "canceled"]);
@@ -180,9 +180,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
   let knownJobIds: ReadonlyArray<string> | undefined;
   let writeLock = Promise.resolve();
   let manifestSyncAt = 0;
-  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-  let directoryWatcher: fs.FSWatcher | undefined;
-  let lastLocalMutationAt = 0;
   type QueueWaiter = {
     readonly ready: (snapshot: QueueSnapshot) => boolean;
     readonly resolve: (snapshot: QueueSnapshot) => void;
@@ -395,7 +392,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       knownJobIds = knownJobIds && knownJobIds.includes(event.jobId)
         ? knownJobIds
         : [...(knownJobIds ?? []), event.jobId];
-      lastLocalMutationAt = nowTs();
     }
   };
 
@@ -612,33 +608,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       createdAt: ts,
     }, changedJobs);
   };
-
-  const scheduleWatchRefresh = (): void => {
-    if (!opts.watchDir) return;
-    if (nowTs() - lastLocalMutationAt < 120) return;
-    if (refreshTimer) return;
-    refreshTimer = setTimeout(() => {
-      refreshTimer = undefined;
-      void refresh().catch(() => undefined);
-    }, Math.max(25, opts.watchDebounceMs ?? 60));
-  };
-
-  if (opts.watchDir) {
-    try {
-      directoryWatcher = fs.watch(opts.watchDir, (_eventType, filename) => {
-        if (typeof filename !== "string" || filename.length === 0) {
-          scheduleWatchRefresh();
-          return;
-        }
-        if (filename === "_streams.json" || filename.endsWith(".jsonl")) {
-          scheduleWatchRefresh();
-        }
-      });
-    } catch {
-      // Best-effort wake bridge only.
-      directoryWatcher = undefined;
-    }
-  }
 
   return {
     enqueue: async (input) => {
@@ -953,25 +922,18 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       const timeoutMs = typeof options?.timeoutMs === "number" && Number.isFinite(options.timeoutMs)
         ? Math.max(0, options.timeoutMs)
         : undefined;
-      const deadline = timeoutMs === undefined ? undefined : nowTs() + timeoutMs;
+      const wakeOnQueued = options?.wakeOnQueued ?? true;
       let current = snapshot();
-      if (current.queued > 0 || current.version > sinceVersion) return current;
+      if (current.version > sinceVersion || (wakeOnQueued && current.queued > 0)) return current;
+      const waitMs = timeoutMs ?? CROSS_PROCESS_POLL_MS;
+      if (waitMs === 0) return refresh();
 
-      while (true) {
-        const remaining = deadline === undefined ? CROSS_PROCESS_POLL_MS : Math.max(0, deadline - nowTs());
-        if (remaining === 0) {
-          return refresh();
-        }
-        const stepTimeout = Math.min(remaining, CROSS_PROCESS_POLL_MS);
-        current = await waitForSnapshot({
-          timeoutMs: stepTimeout,
-          ready: (next) => next.queued > 0 || next.version > sinceVersion,
-        });
-        if (current.queued > 0 || current.version > sinceVersion) return current;
-        current = await refresh();
-        if (current.queued > 0 || current.version > sinceVersion) return current;
-        if (deadline !== undefined && nowTs() >= deadline) return current;
-      }
+      current = await waitForSnapshot({
+        timeoutMs: waitMs,
+        ready: (next) => next.version > sinceVersion || (wakeOnQueued && next.queued > 0),
+      });
+      if (current.version > sinceVersion || (wakeOnQueued && current.queued > 0)) return current;
+      return refresh();
     },
 
     notifyWorkAvailable: () => {

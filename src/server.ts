@@ -20,77 +20,24 @@ import {
 } from "./adapters/memory-tools.js";
 import { createDelegationTools } from "./adapters/delegation.js";
 import { createHeartbeat, type HeartbeatSpec } from "./adapters/heartbeat.js";
-import { fold } from "./core/chain.js";
 import { createRuntime } from "./core/runtime.js";
-import type { TodoEvent } from "./modules/todo.js";
-import { decide, reduce, initial } from "./modules/todo.js";
 import type { JobCmd, JobEvent, JobState } from "./modules/job.js";
 import { decide as decideJob, reduce as reduceJob, initial as initialJob } from "./modules/job.js";
-import type { SelfImprovementCmd, SelfImprovementEvent, SelfImprovementState } from "./modules/self-improvement.js";
-import {
-  decide as decideSelfImprovement,
-  reduce as reduceSelfImprovement,
-  initial as initialSelfImprovement,
-} from "./modules/self-improvement.js";
-import type { InspectorEvent } from "./modules/inspector.js";
-import { decide as decideInspector, reduce as reduceInspector, initial as initialInspector } from "./modules/inspector.js";
-import type { TheoremEvent } from "./modules/theorem.js";
-import { decide as decideTheorem, reduce as reduceTheorem, initial as initialTheorem } from "./modules/theorem.js";
-import type { WriterEvent } from "./modules/writer.js";
-import { decide as decideWriter, reduce as reduceWriter, initial as initialWriter } from "./modules/writer.js";
 import type { AgentEvent } from "./modules/agent.js";
 import { decide as decideAgent, reduce as reduceAgent, initial as initialAgent } from "./modules/agent.js";
-import type {
-  AxiomSimpleCmd,
-  AxiomSimpleEvent,
-  AxiomSimpleState,
-  AxiomSimpleWorkerSnapshot,
-  AxiomSimpleWorkerStatus,
-  AxiomSimpleWorkerValidation,
-} from "./modules/axiom-simple.js";
-import {
-  decide as decideAxiomSimple,
-  reduce as reduceAxiomSimple,
-  initial as initialAxiomSimple,
-} from "./modules/axiom-simple.js";
 import { llmStructured, llmText, embed } from "./adapters/openai.js";
-import { loadTheoremPrompts, hashTheoremPrompts } from "./prompts/theorem.js";
-import { loadWriterPrompts, hashWriterPrompts } from "./prompts/writer.js";
-import { loadInspectorPrompts, hashInspectorPrompts } from "./prompts/inspector.js";
 import { loadAgentPrompts, hashAgentPrompts } from "./prompts/agent.js";
-import { loadInfraPrompts, hashInfraPrompts } from "./prompts/infra.js";
-import { loadAxiomPrompts, hashAxiomPrompts } from "./prompts/axiom.js";
-import { runTheoremGuild, normalizeTheoremConfig } from "./agents/theorem.js";
-import { runWriterGuild, normalizeWriterConfig } from "./agents/writer.js";
 import { normalizeAgentConfig } from "./agents/agent.js";
 import { createQueuedBudgetContinuation, parseContinuationDepth } from "./agents/agent-continuation.js";
-import { runCodexSupervisor } from "./agents/codex-supervisor.js";
-import { runInfra, normalizeInfraConfig } from "./agents/infra.js";
-import { runAxiom, normalizeAxiomConfig } from "./agents/axiom.js";
-import { runAxiomSimple, normalizeAxiomSimpleConfig, type AxiomSimpleWorkerLauncher } from "./agents/axiom-simple.js";
-import { runFactoryChat, normalizeFactoryChatConfig, runFactoryCodexJob } from "./agents/factory-chat.js";
-import { theoremRunStream } from "./agents/theorem.streams.js";
-import { writerRunStream } from "./agents/writer.streams.js";
+import { runOrchestrator, normalizeFactoryChatConfig, runFactoryCodexJob } from "./agents/orchestrator.js";
 import { agentRunStream } from "./agents/agent.streams.js";
-import { axiomSimpleRunStream } from "./agents/axiom-simple.streams.js";
-import { runReceiptInspector } from "./agents/inspector.js";
-import { maybeQueueAxiomGuildVerifyFailureFollowUp } from "./agents/axiom-guild-recovery.js";
 import { createFactoryServiceRuntime, createFactoryWorkerHandlers } from "./services/factory-runtime.js";
 import { FACTORY_CONTROL_AGENT_ID } from "./services/factory-service.js";
-import {
-  assertReceiptFileName,
-  listReceiptFiles,
-  readReceiptFile,
-  sliceReceiptRecords,
-  buildReceiptContext,
-  buildReceiptTimeline,
-} from "./adapters/receipt-tools.js";
 import { loadAgentRoutes } from "./framework/agent-loader.js";
 import { SseHub } from "./framework/sse-hub.js";
 import { makeEventId, text } from "./framework/http.js";
 import { JobWorker, type JobHandler } from "./engine/runtime/job-worker.js";
 import { deriveJobFailureDecision } from "./engine/runtime/job-failure-policy.js";
-import { evaluateImprovementProposal } from "./engine/runtime/improvement-harness.js";
 import { resolveFactoryRuntimeConfig } from "./factory-cli/config.js";
 
 // ============================================================================
@@ -108,36 +55,7 @@ const DATA_DIR = FACTORY_RUNTIME.dataDir;
 
 const makeStore = <E,>() => jsonlStore<E>(DATA_DIR);
 
-const store = makeStore<TodoEvent>();
 const branchStore = jsonBranchStore(DATA_DIR);
-const runtime = createRuntime(store, branchStore, decide, reduce, initial);
-
-const theoremStore = makeStore<TheoremEvent>();
-const theoremRuntime = createRuntime(
-  theoremStore,
-  branchStore,
-  decideTheorem,
-  reduceTheorem,
-  initialTheorem
-);
-
-const writerStore = makeStore<WriterEvent>();
-const writerRuntime = createRuntime(
-  writerStore,
-  branchStore,
-  decideWriter,
-  reduceWriter,
-  initialWriter
-);
-
-const axiomSimpleStore = makeStore<AxiomSimpleEvent>();
-const axiomSimpleRuntime = createRuntime<AxiomSimpleCmd, AxiomSimpleEvent, AxiomSimpleState>(
-  axiomSimpleStore,
-  branchStore,
-  decideAxiomSimple,
-  reduceAxiomSimple,
-  initialAxiomSimple
-);
 
 const agentStore = makeStore<AgentEvent>();
 const agentRuntime = createRuntime(
@@ -148,15 +66,6 @@ const agentRuntime = createRuntime(
   initialAgent
 );
 
-const inspectorStore = makeStore<InspectorEvent>();
-const inspectorRuntime = createRuntime(
-  inspectorStore,
-  branchStore,
-  decideInspector,
-  reduceInspector,
-  initialInspector
-);
-
 const jobStore = makeStore<JobEvent>();
 const jobRuntime = createRuntime<JobCmd, JobEvent, JobState>(
   jobStore,
@@ -164,15 +73,6 @@ const jobRuntime = createRuntime<JobCmd, JobEvent, JobState>(
   decideJob,
   reduceJob,
   initialJob
-);
-
-const selfImprovementStore = makeStore<SelfImprovementEvent>();
-const selfImprovementRuntime = createRuntime<SelfImprovementCmd, SelfImprovementEvent, SelfImprovementState>(
-  selfImprovementStore,
-  branchStore,
-  decideSelfImprovement,
-  reduceSelfImprovement,
-  initialSelfImprovement
 );
 
 const memoryStore = makeStore<MemoryEvent>();
@@ -188,44 +88,12 @@ const memoryRuntime = createRuntime<MemoryCmd, MemoryEvent, MemoryState>(
 // Prompts + Models
 // ============================================================================
 
-const THEOREM_PROMPTS = loadTheoremPrompts();
-const THEOREM_PROMPTS_HASH = hashTheoremPrompts(THEOREM_PROMPTS);
-const THEOREM_PROMPTS_PATH = "prompts/theorem.prompts.json";
-const THEOREM_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2";
-
-const AXIOM_GUILD_PROMPTS = loadTheoremPrompts({ name: "axiom-guild", tag: "axiom-guild" });
-const AXIOM_GUILD_PROMPTS_HASH = hashTheoremPrompts(AXIOM_GUILD_PROMPTS);
-const AXIOM_GUILD_PROMPTS_PATH = "prompts/axiom-guild.prompts.json";
-const AXIOM_GUILD_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2";
-
-const WRITER_PROMPTS = loadWriterPrompts();
-const WRITER_PROMPTS_HASH = hashWriterPrompts(WRITER_PROMPTS);
-const WRITER_PROMPTS_PATH = "prompts/writer.prompts.json";
-const WRITER_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2";
-
-const INSPECTOR_PROMPTS = loadInspectorPrompts();
-const INSPECTOR_PROMPTS_HASH = hashInspectorPrompts(INSPECTOR_PROMPTS);
-const INSPECTOR_PROMPTS_PATH = "prompts/inspector.prompts.json";
-const INSPECTOR_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2";
-
 const AGENT_PROMPTS = loadAgentPrompts();
 const AGENT_PROMPTS_HASH = hashAgentPrompts(AGENT_PROMPTS);
 const AGENT_PROMPTS_PATH = "prompts/agent.prompts.json";
 const AGENT_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2";
 
-const INFRA_PROMPTS = loadInfraPrompts();
-const INFRA_PROMPTS_HASH = hashInfraPrompts(INFRA_PROMPTS);
-const INFRA_PROMPTS_PATH = "prompts/infra.prompts.json";
-const INFRA_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2";
-
-const AXIOM_PROMPTS = loadAxiomPrompts();
-const AXIOM_PROMPTS_HASH = hashAxiomPrompts(AXIOM_PROMPTS);
-const AXIOM_PROMPTS_PATH = "prompts/axiom.prompts.json";
-const AXIOM_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2";
-
 const JOB_STREAM = "jobs";
-const IMPROVEMENT_STREAM = "improvement";
-const INSPECTOR_STREAM = "agents/inspector";
 const jobWorkerId = process.env.JOB_WORKER_ID ?? `worker_${process.pid}`;
 const parseWorkerConcurrency = (value: string | undefined, fallback: number): number => {
   const parsed = Number(value);
@@ -233,7 +101,6 @@ const parseWorkerConcurrency = (value: string | undefined, fallback: number): nu
 };
 const defaultJobConcurrency = parseWorkerConcurrency(process.env.JOB_CONCURRENCY, 2);
 const generalJobConcurrency = parseWorkerConcurrency(process.env.GENERAL_JOB_CONCURRENCY, defaultJobConcurrency);
-const factoryControlJobConcurrency = parseWorkerConcurrency(process.env.FACTORY_CONTROL_JOB_CONCURRENCY, 1);
 const codexJobConcurrency = parseWorkerConcurrency(process.env.CODEX_JOB_CONCURRENCY, defaultJobConcurrency);
 const jobIdleResyncMs = Number(process.env.JOB_IDLE_RESYNC_MS ?? process.env.JOB_POLL_MS ?? 5_000);
 const jobLeaseMs = Number(process.env.JOB_LEASE_MS ?? 300_000);
@@ -256,8 +123,6 @@ const memoryTools = createMemoryTools({
   runtime: memoryRuntime,
   embed: process.env.OPENAI_API_KEY ? embed : undefined,
 });
-const eventId = (stream: string): string => makeEventId(stream);
-
 const objectiveIdForJob = (job: { readonly payload: Record<string, unknown>; readonly result?: unknown } | undefined): string | undefined => {
   if (!job) return undefined;
   const payloadObjectiveId = typeof job.payload.objectiveId === "string" && job.payload.objectiveId.trim()
@@ -352,7 +217,7 @@ type AgentRunnerSpec = {
   readonly defaultAgentId: string;
   readonly defaultStream: string;
   readonly jobKind: string;
-  readonly sseTopic: "theorem" | "writer" | "agent";
+  readonly sseTopic: "agent";
   readonly sseTokenEvent: string;
   readonly normalizeConfig: (input: Record<string, unknown>) => unknown;
   readonly runtime: unknown;
@@ -413,20 +278,6 @@ const createAgentRunner = (spec: AgentRunnerSpec): AgentRunner =>
     };
   };
 
-let theoremRunner: AgentRunner;
-let axiomGuildRunner: AgentRunner;
-let axiomSimpleRunner: AgentRunner;
-
-const writerRunner = createAgentRunner({
-  defaultAgentId: "writer",
-  defaultStream: "agents/writer", sseTopic: "writer", sseTokenEvent: "writer-token",
-  jobKind: "writer.run",
-  normalizeConfig: normalizeWriterConfig, runtime: writerRuntime,
-  prompts: WRITER_PROMPTS, model: WRITER_MODEL,
-  promptHash: WRITER_PROMPTS_HASH, promptPath: WRITER_PROMPTS_PATH,
-  runFn: runWriterGuild as (input: Record<string, unknown>) => Promise<void>,
-});
-
 const delegationTools = createDelegationTools({
   enqueue: async (opts) => {
     const created = await queue.enqueue({
@@ -469,33 +320,9 @@ const agentRunner = createAgentRunner({
   normalizeConfig: normalizeAgentConfig, runtime: agentRuntime,
   prompts: AGENT_PROMPTS, model: AGENT_MODEL,
   promptHash: AGENT_PROMPTS_HASH, promptPath: AGENT_PROMPTS_PATH,
-  runFn: runCodexSupervisor as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  runFn: runOrchestrator as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
   autoContinueOnBudget: true,
   extras: { memoryTools, delegationTools, workspaceRoot: WORKSPACE_ROOT, llmStructured, queue, dataDir: DATA_DIR, factoryService },
-});
-
-const infraRunner = createAgentRunner({
-  defaultAgentId: "infra",
-  defaultStream: "agents/infra", sseTopic: "agent", sseTokenEvent: "agent-token",
-  jobKind: "infra.run",
-  normalizeConfig: normalizeInfraConfig, runtime: agentRuntime,
-  prompts: INFRA_PROMPTS, model: INFRA_MODEL,
-  promptHash: INFRA_PROMPTS_HASH, promptPath: INFRA_PROMPTS_PATH,
-  runFn: runInfra as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
-  autoContinueOnBudget: true,
-  extras: { memoryTools, delegationTools, workspaceRoot: WORKSPACE_ROOT, llmStructured },
-});
-
-const axiomRunner = createAgentRunner({
-  defaultAgentId: "axiom",
-  defaultStream: "agents/axiom", sseTopic: "agent", sseTokenEvent: "agent-token",
-  jobKind: "axiom.run",
-  normalizeConfig: normalizeAxiomConfig, runtime: agentRuntime,
-  prompts: AXIOM_PROMPTS, model: AXIOM_MODEL,
-  promptHash: AXIOM_PROMPTS_HASH, promptPath: AXIOM_PROMPTS_PATH,
-  runFn: runAxiom as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
-  autoContinueOnBudget: true,
-  extras: { memoryTools, delegationTools, workspaceRoot: WORKSPACE_ROOT, llmStructured },
 });
 
 const factoryRunner = createAgentRunner({
@@ -505,7 +332,7 @@ const factoryRunner = createAgentRunner({
   normalizeConfig: normalizeFactoryChatConfig, runtime: agentRuntime,
   prompts: AGENT_PROMPTS, model: AGENT_MODEL,
   promptHash: AGENT_PROMPTS_HASH, promptPath: AGENT_PROMPTS_PATH,
-  runFn: runFactoryChat as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  runFn: runOrchestrator as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
   extras: {
     memoryTools,
     delegationTools,
@@ -519,603 +346,6 @@ const factoryRunner = createAgentRunner({
   },
 });
 
-const clipText = (value: string | undefined, max = 280): string | undefined => {
-  if (!value) return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
-};
-
-const delay = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-
-const mapAxiomSimpleWorkerStatus = (status?: string): AxiomSimpleWorkerStatus => {
-  switch (status) {
-    case "queued":
-      return "queued";
-    case "leased":
-    case "running":
-      return "running";
-    case "completed":
-      return "completed";
-    case "failed":
-      return "failed";
-    case "canceled":
-      return "canceled";
-    default:
-      return "missing";
-  }
-};
-
-const latestToolPath = (input: Record<string, unknown>): string | undefined => {
-  const keys = [
-    "path",
-    "outputPath",
-    "output_path",
-    "formalStatementPath",
-    "formal_statement_path",
-    "outputDir",
-    "output_dir",
-  ] as const;
-  for (const key of keys) {
-    const value = input[key];
-    if (typeof value === "string" && value.trim().length > 0) return value.trim();
-  }
-  return undefined;
-};
-
-const reverseFind = <T,>(items: ReadonlyArray<T>, pred: (item: T) => boolean): T | undefined => {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    if (item !== undefined && pred(item)) return item;
-  }
-  return undefined;
-};
-
-const toAxiomSimpleWorkerValidation = (
-  receipt: { readonly body: Extract<AgentEvent, { readonly type: "validation.report" }> } | undefined,
-): AxiomSimpleWorkerValidation | undefined => {
-  if (!receipt) return undefined;
-  const evidence = receipt.body.evidence;
-  return {
-    gate: receipt.body.gate,
-    ok: receipt.body.ok,
-    summary: receipt.body.summary,
-    tool: evidence?.tool,
-    candidateHash: evidence?.candidateHash,
-    formalStatementHash: evidence?.formalStatementHash,
-    candidateContent: evidence?.candidateContent,
-    formalStatement: evidence?.formalStatement,
-    failedDeclarations: evidence?.failedDeclarations ?? [],
-  };
-};
-
-const extractAxiomSimpleWorkerData = (opts: {
-  readonly runChain: Awaited<ReturnType<typeof agentRuntime.chain>>;
-  readonly childRunId: string;
-  readonly childStream: string;
-  readonly jobId: string;
-  readonly queueStatus?: string;
-  readonly queueError?: string;
-}) => {
-  const runState = fold(opts.runChain, reduceAgent, initialAgent);
-  const validations = opts.runChain.filter((receipt): receipt is typeof receipt & {
-    readonly body: Extract<AgentEvent, { readonly type: "validation.report" }>;
-  } => receipt.body.type === "validation.report");
-  const toolCalls = opts.runChain.filter((receipt): receipt is typeof receipt & {
-    readonly body: Extract<AgentEvent, { readonly type: "tool.called" }>;
-  } => receipt.body.type === "tool.called");
-  const toolObservations = opts.runChain.filter((receipt): receipt is typeof receipt & {
-    readonly body: Extract<AgentEvent, { readonly type: "tool.observed" }>;
-  } => receipt.body.type === "tool.observed");
-  const failureReports = opts.runChain.filter((receipt): receipt is typeof receipt & {
-    readonly body: Extract<AgentEvent, { readonly type: "failure.report" }>;
-  } => receipt.body.type === "failure.report");
-  const finalResponse = reverseFind(opts.runChain, (receipt) => receipt.body.type === "response.finalized") as
-    | (typeof opts.runChain[number] & { readonly body: Extract<AgentEvent, { readonly type: "response.finalized" }> })
-    | undefined;
-  const finalStatus = reverseFind(opts.runChain, (receipt) => receipt.body.type === "run.status") as
-    | (typeof opts.runChain[number] & { readonly body: Extract<AgentEvent, { readonly type: "run.status" }> })
-    | undefined;
-  const latestValidation = validations[validations.length - 1];
-  const successfulVerifyReceipt = reverseFind(validations, (receipt) => {
-    const evidence = receipt.body.evidence;
-    if (!receipt.body.ok) return false;
-    if (!evidence?.candidateHash || !evidence.formalStatementHash) return false;
-    return evidence.tool === "lean.verify" || evidence.tool === "lean.verify_file";
-  });
-  const latestObservation = toolObservations[toolObservations.length - 1];
-  const latestTool = toolCalls[toolCalls.length - 1];
-  const touchedPaths = [...new Set(toolCalls
-    .map((receipt) => latestToolPath(receipt.body.input))
-    .filter((value): value is string => Boolean(value)))];
-
-  let status = mapAxiomSimpleWorkerStatus(opts.queueStatus);
-  if ((status === "queued" || status === "running" || status === "missing") && runState.status === "completed") status = "completed";
-  if ((status === "queued" || status === "running" || status === "missing") && runState.status === "failed") status = "failed";
-
-  const validation = toAxiomSimpleWorkerValidation(latestValidation);
-  const successfulVerify = toAxiomSimpleWorkerValidation(successfulVerifyReceipt);
-  const candidateHash = successfulVerify?.candidateHash ?? validation?.candidateHash;
-  const formalStatementHash = successfulVerify?.formalStatementHash ?? validation?.formalStatementHash;
-  const failedDeclarations = successfulVerify?.failedDeclarations ?? validation?.failedDeclarations ?? [];
-  const failureMessage = failureReports[failureReports.length - 1]?.body.failure.message
-    ?? finalStatus?.body.note
-    ?? opts.queueError;
-  const failureCount = toolCalls.filter((receipt) => Boolean(receipt.body.error)).length
-    + validations.filter((receipt) => !receipt.body.ok).length
-    + failureReports.length;
-  const outputExcerpt = clipText(
-    finalResponse?.body.content
-    ?? latestValidation?.body.summary
-    ?? finalStatus?.body.note
-    ?? failureMessage,
-  );
-  const summary = [
-    status === "missing" ? `status: ${opts.queueStatus ?? "missing"}` : `status: ${status}`,
-    latestValidation?.body.summary ? `validation: ${latestValidation.body.summary}` : "",
-    finalStatus?.body.note ? `note: ${finalStatus.body.note}` : "",
-    failureMessage && failureMessage !== finalStatus?.body.note ? `failure: ${failureMessage}` : "",
-    clipText(finalResponse?.body.content, 400) ?? "",
-  ].filter(Boolean).join("\n");
-
-  const snapshot: AxiomSimpleWorkerSnapshot = {
-    childRunId: opts.childRunId,
-    jobId: opts.jobId,
-    childStream: opts.childStream,
-    status,
-    iteration: runState.iteration,
-    lastTool: latestTool?.body.tool,
-    lastToolSummary: latestTool?.body.summary ?? latestTool?.body.error,
-    validationGate: latestValidation?.body.gate,
-    validationSummary: latestValidation?.body.summary,
-    validationOk: latestValidation?.body.ok,
-    verifyTool: successfulVerify?.tool,
-    verified: successfulVerify?.ok,
-    outputExcerpt,
-    observationExcerpt: clipText(latestObservation?.body.output),
-    touchedPath: touchedPaths[touchedPaths.length - 1],
-    candidateHash,
-    formalStatementHash,
-    failedDeclarations,
-    failureCount,
-  };
-
-  return {
-    status,
-    snapshot,
-    summary: summary || `Axiom worker ${opts.childRunId} produced no receipts yet.`,
-    finalResponse: finalResponse?.body.content,
-    validation,
-    successfulVerify,
-    candidateContent: successfulVerify?.candidateContent ?? validation?.candidateContent ?? finalResponse?.body.content,
-    formalStatement: successfulVerify?.formalStatement ?? validation?.formalStatement,
-    failureMessage,
-    touchedPaths,
-    signature: JSON.stringify({
-      status,
-      iteration: runState.iteration,
-      tool: latestTool?.body.tool,
-      validation: latestValidation?.body.summary,
-      response: finalResponse?.body.content,
-      failure: failureMessage,
-      candidateHash,
-      formalStatementHash,
-      touchedPath: touchedPaths[touchedPaths.length - 1],
-    }),
-  };
-};
-
-const launchAxiomSimpleWorker: AxiomSimpleWorkerLauncher = async (input) => {
-  const childRunId = `${input.parentRunId}_${input.workerId}_${Date.now().toString(36)}`;
-  const childStream = "agents/axiom";
-  const created = await queue.enqueue({
-    agentId: "axiom",
-    lane: "follow_up",
-    sessionKey: `axiom-simple:${input.parentRunId}:${input.workerId}`,
-    singletonMode: "allow",
-    maxAttempts: 2,
-    payload: {
-      kind: "axiom.run",
-      stream: childStream,
-      runId: childRunId,
-      problem: input.task,
-      config: {
-        maxIterations: 12,
-        maxToolOutputChars: 6_000,
-        memoryScope: "axiom",
-        workspace: ".",
-        leanEnvironment: process.env.AXIOM_LEAN_ENVIRONMENT ?? "lean-4.28.0",
-        leanTimeoutSeconds: 120,
-        autoRepair: true,
-        ...(input.config ?? {}),
-      },
-      isSubAgent: true,
-    },
-  });
-  sse.publish("jobs", created.id);
-
-  await input.onStarted?.({
-    jobId: created.id,
-    childRunId,
-    childStream,
-    status: "queued",
-  });
-
-  const timeoutMs = input.timeoutMs ?? subJobJoinWaitMs;
-  const deadline = Date.now() + timeoutMs;
-  let lastSignature = "";
-
-  while (Date.now() <= deadline) {
-    const job = await queue.getJob(created.id);
-    const runChain = await agentRuntime.chain(agentRunStream(childStream, childRunId));
-    const data = extractAxiomSimpleWorkerData({
-      runChain,
-      childRunId,
-      childStream,
-      jobId: created.id,
-      queueStatus: job?.status,
-      queueError: job?.lastError,
-    });
-
-    if (data.signature !== lastSignature) {
-      lastSignature = data.signature;
-      await input.onProgress?.(data.snapshot);
-    }
-
-    if (job && (job.status === "completed" || job.status === "failed" || job.status === "canceled")) {
-      return {
-        workerId: input.workerId,
-        label: input.label,
-        strategy: input.strategy,
-        phase: input.phase,
-        sourceWorkerId: input.sourceWorkerId,
-        status: data.status,
-        jobId: created.id,
-        childRunId,
-        childStream,
-        snapshot: data.snapshot,
-        summary: data.summary,
-        finalResponse: data.finalResponse,
-        validation: data.validation,
-        successfulVerify: data.successfulVerify,
-        candidateContent: data.candidateContent,
-        formalStatement: data.formalStatement,
-        failureMessage: data.failureMessage,
-        touchedPaths: data.touchedPaths,
-      };
-    }
-
-    await delay(subJobPollMs);
-  }
-
-  const timedJob = await queue.getJob(created.id);
-  const timedRunChain = await agentRuntime.chain(agentRunStream(childStream, childRunId));
-  const timedData = extractAxiomSimpleWorkerData({
-    runChain: timedRunChain,
-    childRunId,
-    childStream,
-    jobId: created.id,
-    queueStatus: timedJob?.status,
-    queueError: timedJob?.lastError,
-  });
-  const timeoutNote = `timed out after ${timeoutMs}ms`;
-  const timeoutSummary = [
-    timeoutNote,
-    timedData.validation?.summary ? `validation: ${timedData.validation.summary}` : "",
-    timedData.failureMessage ? `failure: ${timedData.failureMessage}` : "",
-    clipText(timedData.finalResponse, 400) ?? "",
-  ].filter(Boolean).join("\n");
-
-  return {
-    workerId: input.workerId,
-    label: input.label,
-    strategy: input.strategy,
-    phase: input.phase,
-    sourceWorkerId: input.sourceWorkerId,
-    status: "failed",
-    jobId: created.id,
-    childRunId,
-    childStream,
-    snapshot: timedData.snapshot,
-    summary: timeoutSummary || timeoutNote,
-    finalResponse: timedData.finalResponse,
-    validation: timedData.validation,
-    successfulVerify: timedData.successfulVerify,
-    candidateContent: timedData.candidateContent,
-    formalStatement: timedData.formalStatement,
-    failureMessage: [timeoutNote, timedData.failureMessage].filter(Boolean).join("; "),
-    touchedPaths: timedData.touchedPaths,
-  };
-};
-
-const delegateAxiomForTheorem = async (input: {
-  readonly task: string;
-  readonly config?: Readonly<Record<string, unknown>>;
-  readonly timeoutMs?: number;
-}) => {
-  const runId = `theorem_axiom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-  const stream = "agents/axiom";
-  const created = await queue.enqueue({
-    agentId: "axiom",
-    lane: "follow_up",
-    sessionKey: `theorem:axiom:${runId}`,
-    singletonMode: "allow",
-    maxAttempts: 2,
-    payload: {
-      kind: "axiom.run",
-      stream,
-      runId,
-      problem: input.task,
-      config: {
-        maxIterations: 12,
-        maxToolOutputChars: 6_000,
-        memoryScope: "axiom",
-        workspace: ".",
-        leanEnvironment: process.env.AXIOM_LEAN_ENVIRONMENT ?? "lean-4.28.0",
-        leanTimeoutSeconds: 120,
-        autoRepair: true,
-        ...(input.config ?? {}),
-      },
-      isSubAgent: true,
-    },
-  });
-  sse.publish("jobs", created.id);
-
-  const settled = await queue.waitForJob(created.id, input.timeoutMs ?? 180_000, subJobPollMs);
-  if (!settled) {
-    return {
-      jobId: created.id,
-      runId,
-      stream,
-      status: "missing",
-      summary: `Axiom subjob missing (${created.id}).`,
-    };
-  }
-
-  const runChain = await agentRuntime.chain(agentRunStream(stream, runId));
-  const finalResponse = [...runChain].reverse().find((receipt) => receipt.body.type === "response.finalized") as
-    | { body: Extract<AgentEvent, { type: "response.finalized" }> }
-    | undefined;
-  const finalStatus = [...runChain].reverse().find((receipt) => receipt.body.type === "run.status") as
-    | { body: Extract<AgentEvent, { type: "run.status" }> }
-    | undefined;
-  const validations = runChain.filter((receipt): receipt is typeof receipt & { body: Extract<AgentEvent, { type: "validation.report" }> } =>
-    receipt.body.type === "validation.report"
-  );
-  const toolCalls = runChain.filter((receipt): receipt is typeof receipt & { body: Extract<AgentEvent, { type: "tool.called" }> } =>
-    receipt.body.type === "tool.called"
-  );
-  const leanTools = [...new Set(toolCalls
-    .map((receipt) => receipt.body.tool)
-    .filter((tool) => tool.startsWith("lean.")))];
-  const axleValidations = validations.filter((receipt) =>
-    receipt.body.gate.startsWith("axle")
-    && receipt.body.evidence
-  );
-  const verifyValidations = axleValidations.filter((receipt) => {
-    const tool = receipt.body.evidence?.tool;
-    return tool === "lean.verify" || tool === "lean.verify_file";
-  });
-  const successfulFinalVerify = [...verifyValidations].reverse().find((receipt) =>
-    receipt.body.ok
-    && receipt.body.evidence?.candidateHash
-    && receipt.body.evidence?.formalStatementHash
-  );
-  const theoremToSorryFailure = [...toolCalls].reverse().find((receipt) =>
-    (receipt.body.tool === "lean.theorem2sorry" || receipt.body.tool === "lean.theorem2sorry_file")
-    && Boolean(receipt.body.error)
-  );
-  const latestValidation = validations[validations.length - 1];
-
-  const validationEvidence = axleValidations
-    .map((receipt) => {
-      const evidence = receipt.body.evidence;
-      if (!evidence?.tool) return undefined;
-      return {
-        tool: evidence.tool,
-        environment: evidence.environment,
-        candidateHash: evidence.candidateHash,
-        formalStatementHash: evidence.formalStatementHash,
-        candidateContent: evidence.candidateContent,
-        formalStatement: evidence.formalStatement,
-        ok: receipt.body.ok,
-        failedDeclarations: evidence.failedDeclarations ?? [],
-        timings: evidence.timings,
-      };
-    })
-    .filter((item): item is NonNullable<typeof item> => Boolean(item));
-
-  const outcome = (() => {
-    if (finalStatus?.body.status === "failed") return "delegate_failed";
-    if (theoremToSorryFailure) return "theorem2sorry_failed";
-    if (verifyValidations.length === 0 && axleValidations.length === 0) return "no_axle_validation";
-    if (verifyValidations.length === 0) return "no_final_verify";
-    if (!successfulFinalVerify) return "axle_verify_failed";
-    return "verified";
-  })();
-
-  const summary = [
-    `status: ${settled.status}`,
-    `outcome: ${outcome}`,
-    leanTools.length > 0 ? `AXLE tools: ${leanTools.join(", ")}` : "",
-    finalStatus?.body.note ? `note: ${finalStatus.body.note}` : "",
-    latestValidation?.body.summary ? `validation: ${latestValidation.body.summary}` : "",
-    finalResponse?.body.content ?? "",
-  ].filter(Boolean).join("\n");
-
-  return {
-    jobId: created.id,
-    runId,
-    stream,
-    status: settled.status,
-    outcome,
-    evidence: validationEvidence,
-    verifiedCandidateContent: successfulFinalVerify?.body.evidence?.candidateContent,
-    verifiedCandidateHash: successfulFinalVerify?.body.evidence?.candidateHash,
-    verifiedFormalStatementHash: successfulFinalVerify?.body.evidence?.formalStatementHash,
-    summary: summary || JSON.stringify(settled.result ?? { status: settled.status }),
-  };
-};
-
-theoremRunner = createAgentRunner({
-  defaultAgentId: "theorem",
-  defaultStream: "agents/theorem", sseTopic: "theorem", sseTokenEvent: "theorem-token",
-  jobKind: "theorem.run",
-  normalizeConfig: normalizeTheoremConfig, runtime: theoremRuntime,
-  prompts: THEOREM_PROMPTS, model: THEOREM_MODEL,
-  promptHash: THEOREM_PROMPTS_HASH, promptPath: THEOREM_PROMPTS_PATH,
-  runFn: runTheoremGuild as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
-  extras: { axiomDelegate: delegateAxiomForTheorem },
-});
-
-axiomGuildRunner = async (payload, control) => {
-  const { stream, runId, runStream, problem } = extractRunPayload(payload, "agents/axiom-guild");
-  const configInput = typeof payload.config === "object" && payload.config
-    ? payload.config as Record<string, unknown>
-    : {};
-  const config = normalizeTheoremConfig(configInput);
-  const { apiReady, apiNote } = apiStatus();
-  const result = await runTheoremGuild({
-    stream,
-    runId,
-    runStream,
-    problem,
-    config,
-    runtime: theoremRuntime,
-    prompts: AXIOM_GUILD_PROMPTS,
-    llmText: (opts) => llmText({
-      ...opts,
-      onDelta: async (delta) => {
-        if (!delta) return;
-        sse.publishData("theorem", stream, "theorem-token", JSON.stringify({ runId, delta }));
-      },
-    }),
-    model: AXIOM_GUILD_MODEL,
-    promptHash: AXIOM_GUILD_PROMPTS_HASH,
-    promptPath: AXIOM_GUILD_PROMPTS_PATH,
-    apiReady,
-    apiNote,
-    control,
-    broadcast: () => { sse.publish("theorem", stream); sse.publish("receipt"); },
-    axiomDelegate: delegateAxiomForTheorem,
-    axiomPolicy: "required",
-    axiomConfig: {
-      maxIterations: 12,
-      leanEnvironment: process.env.AXIOM_LEAN_ENVIRONMENT ?? "lean-4.28.0",
-      autoRepair: true,
-    },
-  });
-  const recovery = control?.jobId
-    ? await maybeQueueAxiomGuildVerifyFailureFollowUp({
-        queue,
-        theoremRuntime,
-        payload,
-        result,
-        jobId: control.jobId,
-        onJobQueued: (jobId) => sse.publish("jobs", jobId),
-        onReceipt: () => {
-          sse.publish("theorem", stream);
-          sse.publish("receipt");
-        },
-  })
-    : {};
-  return { ...result, ...recovery };
-};
-
-axiomSimpleRunner = async (payload, control) => {
-  const { stream, runId, runStream, problem } = extractRunPayload(payload, "agents/axiom-simple");
-  const configInput = typeof payload.config === "object" && payload.config
-    ? payload.config as Record<string, unknown>
-    : {};
-  const config = normalizeAxiomSimpleConfig(configInput);
-  const result = await runAxiomSimple({
-    stream,
-    runId,
-    runStream,
-    problem,
-    config,
-    runtime: axiomSimpleRuntime,
-    control,
-    launchWorker: launchAxiomSimpleWorker,
-    broadcast: () => {
-      sse.publish("theorem", stream);
-      sse.publish("receipt");
-    },
-  });
-  return result as unknown as Record<string, unknown>;
-};
-
-const inspectorRunner = async (payload: Record<string, unknown>): Promise<void> => {
-  const runId = typeof payload.runId === "string" && payload.runId.trim()
-    ? payload.runId
-    : `inspect_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  const groupId = typeof payload.groupId === "string" ? payload.groupId : undefined;
-  const agentId = typeof payload.agentId === "string" ? payload.agentId : undefined;
-  const agentName = typeof payload.agentName === "string" ? payload.agentName : undefined;
-  const sourceName = typeof payload.source === "object" && payload.source && typeof (payload.source as Record<string, unknown>).name === "string"
-    ? String((payload.source as Record<string, unknown>).name)
-    : "";
-  const mode = typeof payload.mode === "string"
-    && ["analyze", "improve", "timeline", "qa"].includes(payload.mode)
-    ? payload.mode as "analyze" | "improve" | "timeline" | "qa"
-    : "analyze";
-  const order = payload.order === "asc" ? "asc" : "desc";
-  const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit)
-    ? Math.max(10, Math.min(Math.floor(payload.limit), 5000))
-    : 200;
-  const depth = typeof payload.depth === "number" && Number.isFinite(payload.depth)
-    ? Math.max(1, Math.min(Math.floor(payload.depth), 3))
-    : 2;
-  const question = typeof payload.question === "string" && payload.question.trim() ? payload.question : "Analyze this run.";
-  const apiReady = typeof payload.apiReady === "boolean" ? payload.apiReady : Boolean(process.env.OPENAI_API_KEY);
-  const apiNote = typeof payload.apiNote === "string" ? payload.apiNote : (apiReady ? undefined : "OPENAI_API_KEY not set");
-  if (!sourceName) throw new Error("inspector source file required");
-  const safeSourceName = await ensureInspectorSourceExists(sourceName);
-
-  await runReceiptInspector({
-    stream: INSPECTOR_STREAM,
-    runId,
-    groupId,
-    agentId,
-    agentName,
-    source: { kind: "file", name: safeSourceName },
-    dataDir: DATA_DIR,
-    order,
-    limit,
-    question,
-    mode,
-    depth,
-    runtime: inspectorRuntime,
-    prompts: INSPECTOR_PROMPTS,
-    llmText: (opts) => llmText({
-      ...opts,
-      onDelta: async (delta) => {
-        if (!delta) return;
-        sse.publishData(
-          "receipt",
-          undefined,
-          "receipt-token",
-          JSON.stringify({ groupId, runId, agentId, file: safeSourceName, delta })
-        );
-      },
-    }),
-    model: INSPECTOR_MODEL,
-    promptHash: INSPECTOR_PROMPTS_HASH,
-    promptPath: INSPECTOR_PROMPTS_PATH,
-    apiReady,
-    apiNote,
-    tools: {
-      readFile: readReceiptFile,
-      sliceRecords: sliceReceiptRecords,
-      buildContext: buildReceiptContext,
-      buildTimeline: buildReceiptTimeline,
-    },
-    broadcast: () => sse.publish("receipt"),
-  });
-};
 
 const parseDelegateTask = (payload: Record<string, unknown> | undefined): { task: string; agentId?: string } | undefined => {
   if (!payload || typeof payload !== "object") return undefined;
@@ -1327,49 +557,10 @@ const createWorkerHandler = (spec: WorkerHandlerSpec): JobHandler =>
   };
 
 const jobHandlers = {
-  theorem: createWorkerHandler({
-    defaultStream: "agents/theorem", defaultAgentId: "theorem", kind: "theorem.run",
-    defaultSubConfig: { rounds: 1, maxDepth: 1, memoryWindow: 40, branchThreshold: 2 },
-    runtime: theoremRuntime, runStreamFn: theoremRunStream, runner: theoremRunner,
-  }),
-  "axiom-guild": createWorkerHandler({
-    defaultStream: "agents/axiom-guild", defaultAgentId: "axiom-guild", kind: "axiom-guild.run",
-    defaultSubConfig: { rounds: 2, maxDepth: 2, memoryWindow: 60, branchThreshold: 2 },
-    runtime: theoremRuntime, runStreamFn: theoremRunStream, runner: axiomGuildRunner,
-  }),
-  "axiom-simple": createWorkerHandler({
-    defaultStream: "agents/axiom-simple", defaultAgentId: "axiom-simple", kind: "axiom-simple.run",
-    defaultSubConfig: { workerCount: 3, repairMode: "auto" },
-    runtime: axiomSimpleRuntime, runStreamFn: axiomSimpleRunStream, runner: axiomSimpleRunner,
-  }),
-  writer: createWorkerHandler({
-    defaultStream: "agents/writer", defaultAgentId: "writer", kind: "writer.run",
-    defaultSubConfig: { maxParallel: 1 },
-    runtime: writerRuntime, runStreamFn: writerRunStream, runner: writerRunner,
-    mergeEventExtras: { stepId: "delegate_task" },
-  }),
   agent: createWorkerHandler({
     defaultStream: "agents/agent", defaultAgentId: "agent", kind: "agent.run",
     defaultSubConfig: { maxIterations: 3, maxToolOutputChars: 2500, memoryScope: "agent", workspace: "." },
     runtime: agentRuntime, runStreamFn: agentRunStream, runner: agentRunner,
-  }),
-  infra: createWorkerHandler({
-    defaultStream: "agents/infra", defaultAgentId: "infra", kind: "infra.run",
-    defaultSubConfig: { maxIterations: 4, maxToolOutputChars: 2500, memoryScope: "infra", workspace: "." },
-    runtime: agentRuntime, runStreamFn: agentRunStream, runner: infraRunner,
-  }),
-  axiom: createWorkerHandler({
-    defaultStream: "agents/axiom", defaultAgentId: "axiom", kind: "axiom.run",
-    defaultSubConfig: {
-      maxIterations: 12,
-      maxToolOutputChars: 6000,
-      memoryScope: "axiom",
-      workspace: ".",
-      leanEnvironment: process.env.AXIOM_LEAN_ENVIRONMENT ?? "lean-4.28.0",
-      leanTimeoutSeconds: 120,
-      autoRepair: true,
-    },
-    runtime: agentRuntime, runStreamFn: agentRunStream, runner: axiomRunner,
   }),
   factory: createWorkerHandler({
     defaultStream: "agents/factory", defaultAgentId: "factory", kind: "factory.run",
@@ -1456,23 +647,12 @@ const jobHandlers = {
       };
     }
   },
-  inspector: async (job, ctx) => {
-    await ctx.pullCommands(["steer", "follow_up"]);
-    await inspectorRunner(job.payload);
-    return { ok: true, result: { runId: job.payload.runId as string | undefined, stream: INSPECTOR_STREAM } };
-  },
 } satisfies Record<string, JobHandler>;
 
 const generalWorkerAgentIds = [
-  "theorem",
-  "axiom-guild",
-  "axiom-simple",
-  "writer",
   "agent",
-  "infra",
-  "axiom",
   "factory",
-  "inspector",
+  FACTORY_CONTROL_AGENT_ID,
 ] as const;
 
 const workers = [
@@ -1491,18 +671,6 @@ const workers = [
   new JobWorker({
     queue,
     handlers: jobHandlers,
-    workerId: `${jobWorkerId}:factory-control`,
-    leaseAgentIds: [FACTORY_CONTROL_AGENT_ID],
-    idleResyncMs: jobIdleResyncMs,
-    leaseMs: jobLeaseMs,
-    concurrency: factoryControlJobConcurrency,
-    onError: (error) => {
-      console.error(`[job-worker ${jobWorkerId}:factory-control]`, error);
-    },
-  }),
-  new JobWorker({
-    queue,
-    handlers: jobHandlers,
     workerId: `${jobWorkerId}:codex`,
     leaseAgentIds: ["codex"],
     idleResyncMs: jobIdleResyncMs,
@@ -1514,6 +682,9 @@ const workers = [
   }),
 ];
 for (const worker of workers) worker.start();
+factoryService.resumeObjectives().catch((err) => {
+  console.error("[factory] resumeObjectives failed on startup", err);
+});
 
 // ============================================================================
 // Heartbeat
@@ -1571,48 +742,20 @@ const routes = await loadAgentRoutes({
   queue,
   jobRuntime,
   runtimes: {
-    todo: runtime,
-    theorem: theoremRuntime,
-    "axiom-simple": axiomSimpleRuntime,
-    writer: writerRuntime,
     agent: agentRuntime,
-    infra: agentRuntime,
-    axiom: agentRuntime,
-    inspector: inspectorRuntime,
-    selfImprovement: selfImprovementRuntime,
     memory: memoryRuntime,
   },
   prompts: {
-    theorem: THEOREM_PROMPTS,
-    writer: WRITER_PROMPTS,
-    inspector: INSPECTOR_PROMPTS,
     agent: AGENT_PROMPTS,
-    infra: INFRA_PROMPTS,
-    axiom: AXIOM_PROMPTS,
   },
   promptHashes: {
-    theorem: THEOREM_PROMPTS_HASH,
-    writer: WRITER_PROMPTS_HASH,
-    inspector: INSPECTOR_PROMPTS_HASH,
     agent: AGENT_PROMPTS_HASH,
-    infra: INFRA_PROMPTS_HASH,
-    axiom: AXIOM_PROMPTS_HASH,
   },
   promptPaths: {
-    theorem: THEOREM_PROMPTS_PATH,
-    writer: WRITER_PROMPTS_PATH,
-    inspector: INSPECTOR_PROMPTS_PATH,
     agent: AGENT_PROMPTS_PATH,
-    infra: INFRA_PROMPTS_PATH,
-    axiom: AXIOM_PROMPTS_PATH,
   },
   models: {
-    theorem: THEOREM_MODEL,
-    writer: WRITER_MODEL,
-    inspector: INSPECTOR_MODEL,
     agent: AGENT_MODEL,
-    infra: INFRA_MODEL,
-    axiom: AXIOM_MODEL,
   },
   helpers: {
     memoryTools,
@@ -1650,26 +793,10 @@ const readJsonBody = async (req: Request): Promise<Record<string, unknown>> => {
   return parsed as Record<string, unknown>;
 };
 
-const extractInspectorSourceName = (payload: Record<string, unknown>): string => {
-  const source = payload.source;
-  if (!source || typeof source !== "object") return "";
-  const name = (source as Record<string, unknown>).name;
-  return typeof name === "string" ? name : "";
-};
-
-const ensureInspectorSourceExists = async (rawSourceName: string): Promise<string> => {
-  const sourceName = assertReceiptFileName(rawSourceName);
-  const files = await listReceiptFiles(DATA_DIR);
-  if (!files.some((file) => file.name === sourceName)) {
-    throw new Error("inspector source file not found");
-  }
-  return sourceName;
-};
-
 app.post("/agents/:id/jobs", async (c) => {
   const agentId = c.req.param("id");
   const body = await readJsonBody(c.req.raw);
-  let payload = (typeof body.payload === "object" && body.payload)
+  const payload = (typeof body.payload === "object" && body.payload)
     ? body.payload as Record<string, unknown>
     : body;
   const lane = body.lane === "steer" || body.lane === "follow_up" || body.lane === "collect"
@@ -1690,26 +817,6 @@ app.post("/agents/:id/jobs", async (c) => {
     : (singleton?.mode === "allow" || singleton?.mode === "cancel" || singleton?.mode === "steer"
       ? singleton.mode
       : "allow");
-
-  const payloadKind = typeof payload.kind === "string" ? payload.kind : "";
-  const isInspector = agentId === "inspector" || payloadKind === "inspector.run";
-  if (isInspector) {
-    const sourceName = extractInspectorSourceName(payload);
-    if (!sourceName) return text(400, "inspector source file required");
-    let safeSourceName: string;
-    try {
-      safeSourceName = await ensureInspectorSourceExists(sourceName);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("not found")) return text(404, "inspector source file not found");
-      return text(400, message);
-    }
-    payload = {
-      ...payload,
-      stream: INSPECTOR_STREAM,
-      source: { kind: "file", name: safeSourceName },
-    };
-  }
 
   const job = await queue.enqueue({
     jobId,
@@ -1858,155 +965,6 @@ app.post("/memory/:scope/diff", async (c) => {
   const toTs = typeof body.toTs === "number" ? body.toTs : undefined;
   const entries = await memoryTools.diff({ scope, fromTs, toTs });
   return jsonResponse(200, { entries });
-});
-
-const proposalState = async () => selfImprovementRuntime.state(IMPROVEMENT_STREAM);
-
-app.post("/improvement/proposals", async (c) => {
-  const body = await readJsonBody(c.req.raw);
-  const artifactType = body.artifactType === "prompt_patch"
-    || body.artifactType === "policy_patch"
-    || body.artifactType === "harness_patch"
-    ? body.artifactType
-    : null;
-  if (!artifactType) return text(400, "artifactType required");
-  const target = typeof body.target === "string" ? body.target.trim() : "";
-  const patch = typeof body.patch === "string" ? body.patch : "";
-  if (!target) return text(400, "target required");
-  if (!patch.trim()) return text(400, "patch required");
-  const proposalId = typeof body.proposalId === "string" && body.proposalId.trim()
-    ? body.proposalId
-    : `proposal_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-
-  await selfImprovementRuntime.execute(IMPROVEMENT_STREAM, {
-    type: "emit",
-    eventId: eventId(IMPROVEMENT_STREAM),
-    event: {
-      type: "proposal.created",
-      proposalId,
-      artifactType,
-      target,
-      patch,
-      createdBy: typeof body.createdBy === "string" ? body.createdBy : undefined,
-    },
-  });
-  sse.publish("receipt");
-  return jsonResponse(201, { ok: true, proposalId });
-});
-
-app.post("/improvement/:id/validate", async (c) => {
-  const proposalId = c.req.param("id");
-  const body = await readJsonBody(c.req.raw);
-  const state = await proposalState();
-  const proposal = state.proposals[proposalId];
-  if (!proposal) return text(404, "proposal not found");
-  const harness = await evaluateImprovementProposal({
-    artifactType: proposal.artifactType,
-    target: proposal.target,
-    patch: proposal.patch,
-    cwd: process.cwd(),
-  });
-  const status = harness.status;
-  const report = harness.report;
-  await selfImprovementRuntime.execute(IMPROVEMENT_STREAM, {
-    type: "emit",
-    eventId: eventId(IMPROVEMENT_STREAM),
-    event: {
-      type: "proposal.validated",
-      proposalId,
-      status,
-      report,
-      validatedBy: typeof body.validatedBy === "string" ? body.validatedBy : undefined,
-    },
-  });
-  sse.publish("receipt");
-  return jsonResponse(200, {
-    ok: true,
-    proposalId,
-    status,
-    report,
-    checks: harness.checks,
-    requestedBy: typeof body.validatedBy === "string" ? body.validatedBy : undefined,
-  });
-});
-
-app.post("/improvement/:id/approve", async (c) => {
-  const proposalId = c.req.param("id");
-  const body = await readJsonBody(c.req.raw);
-  const state = await proposalState();
-  const proposal = state.proposals[proposalId];
-  if (!proposal) return text(404, "proposal not found");
-  if (proposal.status !== "validated" || proposal.validation?.status !== "passed") {
-    return text(409, "proposal must be validated and passed before approval");
-  }
-  await selfImprovementRuntime.execute(IMPROVEMENT_STREAM, {
-    type: "emit",
-    eventId: eventId(IMPROVEMENT_STREAM),
-    event: {
-      type: "proposal.approved",
-      proposalId,
-      approvedBy: typeof body.approvedBy === "string" ? body.approvedBy : undefined,
-      note: typeof body.note === "string" ? body.note : undefined,
-    },
-  });
-  sse.publish("receipt");
-  return jsonResponse(200, { ok: true, proposalId, status: "approved" });
-});
-
-app.post("/improvement/:id/apply", async (c) => {
-  const proposalId = c.req.param("id");
-  const body = await readJsonBody(c.req.raw);
-  const state = await proposalState();
-  const proposal = state.proposals[proposalId];
-  if (!proposal) return text(404, "proposal not found");
-  if (proposal.status !== "approved") return text(409, "proposal must be approved before apply");
-  await selfImprovementRuntime.execute(IMPROVEMENT_STREAM, {
-    type: "emit",
-    eventId: eventId(IMPROVEMENT_STREAM),
-    event: {
-      type: "proposal.applied",
-      proposalId,
-      appliedBy: typeof body.appliedBy === "string" ? body.appliedBy : undefined,
-      note: typeof body.note === "string" ? body.note : undefined,
-    },
-  });
-  sse.publish("receipt");
-  return jsonResponse(200, { ok: true, proposalId, status: "applied" });
-});
-
-app.post("/improvement/:id/revert", async (c) => {
-  const proposalId = c.req.param("id");
-  const body = await readJsonBody(c.req.raw);
-  const state = await proposalState();
-  const proposal = state.proposals[proposalId];
-  if (!proposal) return text(404, "proposal not found");
-  if (proposal.status !== "applied") return text(409, "proposal must be applied before revert");
-  await selfImprovementRuntime.execute(IMPROVEMENT_STREAM, {
-    type: "emit",
-    eventId: eventId(IMPROVEMENT_STREAM),
-    event: {
-      type: "proposal.reverted",
-      proposalId,
-      revertedBy: typeof body.revertedBy === "string" ? body.revertedBy : undefined,
-      reason: typeof body.reason === "string" ? body.reason : undefined,
-    },
-  });
-  sse.publish("receipt");
-  return jsonResponse(200, { ok: true, proposalId, status: "reverted" });
-});
-
-app.get("/improvement/:id", async (c) => {
-  const proposalId = c.req.param("id");
-  const state = await proposalState();
-  const proposal = state.proposals[proposalId];
-  if (!proposal) return text(404, "proposal not found");
-  return jsonResponse(200, proposal);
-});
-
-app.get("/improvement", async () => {
-  const state = await proposalState();
-  const proposals = Object.values(state.proposals).sort((a, b) => b.updatedAt - a.updatedAt);
-  return jsonResponse(200, { proposals });
 });
 
 app.notFound(() => text(404, "Not found"));

@@ -34,7 +34,7 @@ export const CODEX_SUPERVISOR_TOOL_ALLOWLIST = [
   "skill.read",
 ] as const;
 
-type CodexSupervisorRunInput = AgentRunInput & {
+export type CodexSupervisorRunInput = AgentRunInput & {
   readonly queue: JsonlQueue;
   readonly supervisorSessionId?: string;
   readonly dataDir?: string;

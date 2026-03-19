@@ -1,23 +1,11 @@
 export const MONITOR_AGENT_IDS = [
   "agent",
-  "infra",
-  "theorem",
-  "axiom-guild",
-  "axiom-simple",
-  "axiom",
-  "writer",
-  "inspector",
+  "factory",
 ] as const;
 
 const AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
-  theorem: "Theorem Guild",
-  "axiom-guild": "Proof Guild",
-  "axiom-simple": "Axiom Simple",
-  axiom: "Lean Worker",
-  agent: "General Agent",
-  infra: "Infrastructure Agent",
-  writer: "Writer",
-  inspector: "Receipt Inspector",
+  agent: "Orchestrator",
+  factory: "Orchestrator (Factory)",
 };
 
 const titleCaseWord = (value: string): string =>

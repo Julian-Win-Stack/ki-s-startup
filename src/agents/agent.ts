@@ -151,6 +151,17 @@ export type AgentFinalizer = (input: {
   readonly now: () => number;
 }) => Promise<AgentFinalizerResult>;
 
+export type AgentRunProgress = {
+  readonly iterationsUsed: number;
+  readonly toolCallsSucceeded: number;
+  readonly toolCallsFailed: number;
+  readonly distinctToolsUsed: number;
+};
+
+export const isStuckProgress = (progress: AgentRunProgress): boolean =>
+  progress.toolCallsSucceeded === 0
+  || (progress.toolCallsFailed > 0 && progress.toolCallsFailed >= progress.toolCallsSucceeded * 3);
+
 export type AgentIterationBudgetHandler = (input: {
   readonly runId: string;
   readonly runStream: string;
@@ -158,6 +169,7 @@ export type AgentIterationBudgetHandler = (input: {
   readonly config: AgentRunConfig;
   readonly runtime: Runtime<AgentCmd, AgentEvent, AgentState>;
   readonly now: () => number;
+  readonly progress: AgentRunProgress;
 }) => Promise<AgentIterationBudgetContinuation | undefined>;
 
 const truncateText = (input: string, limit: number): { readonly text: string; readonly truncated: boolean } => {
@@ -954,6 +966,10 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
       }
     };
 
+    let toolCallsSucceeded = 0;
+    let toolCallsFailed = 0;
+    const toolsUsed = new Set<string>();
+
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       await applyControlCommands();
       if (await checkAbort(`iteration-${iteration}.start`)) return finalizeResult();
@@ -1127,6 +1143,7 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
       const knownTool = parsed.name as AgentToolName;
       const executor = tools[knownTool];
       if (!executor) {
+        toolCallsFailed += 1;
         const message = `unknown tool '${parsed.name}'`;
         await emit({
           type: "tool.called",
@@ -1144,6 +1161,8 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
       const started = now();
       try {
         const result = await executor(parsed.input);
+        toolCallsSucceeded += 1;
+        toolsUsed.add(parsed.name);
         await emit({
           type: "tool.called",
           runId: input.runId,
@@ -1180,6 +1199,7 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
           maxIterations += 1;
         }
       } catch (err) {
+        toolCallsFailed += 1;
         const message = err instanceof Error ? err.message : String(err);
         await emit({
           type: "tool.called",
@@ -1196,6 +1216,12 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
     }
 
     if (!finalized) {
+      const runProgress: AgentRunProgress = {
+        iterationsUsed: maxIterations,
+        toolCallsSucceeded,
+        toolCallsFailed,
+        distinctToolsUsed: toolsUsed.size,
+      };
       const continuation = await input.onIterationBudgetExhausted?.({
         runId: input.runId,
         runStream,
@@ -1208,6 +1234,7 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
         },
         runtime: input.runtime,
         now,
+        progress: runProgress,
       });
       if (continuation) {
         for (const event of continuation.events ?? []) {

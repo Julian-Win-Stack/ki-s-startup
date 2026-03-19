@@ -676,7 +676,7 @@ test("factory shell: renders chat surface on /factory with thread-aware links", 
   });
 
   expect(markup).toMatch(/New chat/);
-  expect(markup).toMatch(/Skill Generalist/);
+  expect(markup).toMatch(/Generalist/);
   expect(markup).toMatch(/Generalist/);
   expect(markup).toMatch(/href="\/assets\/factory\.css"/);
   expect(markup).toMatch(/id="factory-chat"/);
@@ -1297,7 +1297,7 @@ test("factory sidebar island: renders left rail navigation", () => {
     },
   });
 
-  expect(markup).toMatch(/>Skill</);
+  expect(markup).toMatch(/>Skills</);
   expect(markup).toMatch(/Operating style/);
   expect(markup).toMatch(/Inspect receipts before guessing/);
   expect(markup).toMatch(/Reviewer/);

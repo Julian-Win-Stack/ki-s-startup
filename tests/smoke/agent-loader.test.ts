@@ -42,43 +42,20 @@ const ctx: AgentLoaderContext = {
   queue: dummyQueue as AgentLoaderContext["queue"],
   jobRuntime: dummyRuntime as AgentLoaderContext["jobRuntime"],
   runtimes: {
-    todo: dummyRuntime,
-    theorem: dummyRuntime,
-    "axiom-simple": dummyRuntime,
-    writer: dummyRuntime,
     agent: dummyRuntime,
-    axiom: dummyRuntime,
-    inspector: dummyRuntime,
-    selfImprovement: dummyRuntime,
     memory: dummyRuntime,
   },
   prompts: {
-    theorem: {},
-    writer: {},
-    inspector: {},
     agent: {},
-    axiom: {},
   },
   promptHashes: {
-    theorem: "",
-    writer: "",
-    inspector: "",
     agent: "",
-    axiom: "",
   },
   promptPaths: {
-    theorem: "",
-    writer: "",
-    inspector: "",
     agent: "",
-    axiom: "",
   },
   models: {
-    theorem: "",
-    writer: "",
-    inspector: "",
     agent: "",
-    axiom: "",
   },
   helpers: {},
 };
@@ -86,11 +63,5 @@ const ctx: AgentLoaderContext = {
 test("agent loader auto-discovers route modules", async () => {
   const routes = await loadAgentRoutes(ctx);
   const ids = routes.map((route) => route.id).sort();
-  expect(ids.includes("todo")).toBe(true);
-  expect(ids.includes("axiom")).toBe(true);
-  expect(ids.includes("axiom-simple")).toBe(true);
-  expect(ids.includes("theorem")).toBe(true);
-  expect(ids.includes("writer")).toBe(true);
-  expect(ids.includes("agent")).toBe(true);
-  expect(ids.includes("receipt-inspector")).toBe(true);
+  expect(ids).toContain("factory");
 });

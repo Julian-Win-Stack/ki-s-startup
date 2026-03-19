@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import { createQueuedBudgetContinuation, nextIterationBudget, parseContinuationDepth } from "../../src/agents/agent-continuation.ts";
 import { buildAgentRunResult } from "../../src/agents/agent.result.ts";
-import { AGENT_DEFAULT_CONFIG } from "../../src/agents/agent.ts";
+import { AGENT_DEFAULT_CONFIG, isStuckProgress, type AgentRunProgress } from "../../src/agents/agent.ts";
 import { initial as initialAgent, reduce as reduceAgent, type AgentEvent } from "../../src/modules/agent.ts";
 
 test("queued budget continuation enqueues a follow-up run with a larger budget", async () => {
@@ -26,6 +26,12 @@ test("queued budget continuation enqueues a follow-up run with a larger budget",
     continuationDepth: 0,
   });
 
+  const healthyProgress: AgentRunProgress = {
+    iterationsUsed: 10,
+    toolCallsSucceeded: 6,
+    toolCallsFailed: 1,
+    distinctToolsUsed: 3,
+  };
   const continuation = await handler({
     runId: "run_start",
     runStream: "agents/agent/runs/run_start",
@@ -33,6 +39,7 @@ test("queued budget continuation enqueues a follow-up run with a larger budget",
     config: AGENT_DEFAULT_CONFIG,
     runtime: undefined as never,
     now: () => 0,
+    progress: healthyProgress,
   });
 
   expect(enqueued).toMatchObject({
@@ -56,6 +63,44 @@ test("queued budget continuation enqueues a follow-up run with a larger budget",
     nextMaxIterations: 20,
     continuationDepth: 1,
   });
+});
+
+test("stuck agent does not escalate", async () => {
+  const handler = createQueuedBudgetContinuation({
+    queue: { enqueue: async () => ({ id: "job_should_not_exist" }) },
+    agentId: "agent",
+    jobKind: "agent.run",
+    stream: "agents/agent",
+    payload: { kind: "agent.run", stream: "agents/agent", runId: "run_stuck", config: AGENT_DEFAULT_CONFIG },
+    continuationDepth: 0,
+  });
+  const stuckProgress: AgentRunProgress = {
+    iterationsUsed: 10,
+    toolCallsSucceeded: 0,
+    toolCallsFailed: 8,
+    distinctToolsUsed: 0,
+  };
+  const result = await handler({
+    runId: "run_stuck",
+    runStream: "agents/agent/runs/run_stuck",
+    problem: "Fix something.",
+    config: AGENT_DEFAULT_CONFIG,
+    runtime: undefined as never,
+    now: () => 0,
+    progress: stuckProgress,
+  });
+  expect(result).toBeUndefined();
+});
+
+test("isStuckProgress detects zero successes", () => {
+  expect(isStuckProgress({ iterationsUsed: 8, toolCallsSucceeded: 0, toolCallsFailed: 0, distinctToolsUsed: 0 })).toBe(true);
+  expect(isStuckProgress({ iterationsUsed: 8, toolCallsSucceeded: 0, toolCallsFailed: 5, distinctToolsUsed: 0 })).toBe(true);
+});
+
+test("isStuckProgress detects failure-dominated runs", () => {
+  expect(isStuckProgress({ iterationsUsed: 10, toolCallsSucceeded: 1, toolCallsFailed: 3, distinctToolsUsed: 1 })).toBe(true);
+  expect(isStuckProgress({ iterationsUsed: 10, toolCallsSucceeded: 1, toolCallsFailed: 2, distinctToolsUsed: 1 })).toBe(false);
+  expect(isStuckProgress({ iterationsUsed: 10, toolCallsSucceeded: 5, toolCallsFailed: 2, distinctToolsUsed: 3 })).toBe(false);
 });
 
 test("next iteration budget stops after the configured ladder", () => {

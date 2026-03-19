@@ -329,7 +329,7 @@ export const FACTORY_TASK_GRAPH_BUCKETS = {
   planned: ["pending"],
   ready: ["ready"],
   active: ["running", "reviewing"],
-  completed: ["approved", "integrated"],
+  completed: ["approved", "integrated", "superseded"],
   blocked: ["blocked"],
   terminal: ["approved", "integrated", "blocked", "superseded"],
 } as const satisfies GraphBuckets<FactoryTaskStatus>;
@@ -1285,15 +1285,17 @@ export const reduceFactory: Reducer<FactoryState, FactoryEvent> = (state, event)
         }), event.readyAt),
         lastMutationAt: event.readyAt,
       };
-    case "task.superseded":
+    case "task.superseded": {
+      const active = state.graph.activeNodeIds.filter((taskId) => taskId !== event.taskId);
       return {
-        ...setGraphStatus(updateTask(state, event.taskId, {
+        ...setActiveTaskIds(updateTask(state, event.taskId, {
           status: "superseded",
           latestSummary: event.reason,
           completedAt: event.supersededAt,
-        }), event.supersededAt),
+        }), active, event.supersededAt),
         lastMutationAt: event.supersededAt,
       };
+    }
     case "candidate.created":
       return {
         ...upsertCandidate(state, event.candidate),

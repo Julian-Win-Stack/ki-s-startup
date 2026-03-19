@@ -10,6 +10,7 @@ import {
   AGENT_DEFAULT_CONFIG,
   normalizeAgentConfig,
   runAgent,
+  isStuckProgress,
   type AgentRunConfig,
   type AgentRunInput,
   type AgentRunResult,
@@ -1279,7 +1280,8 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
     }),
     ...(input.extraTools ?? {}),
   });
-  const onIterationBudgetExhausted: NonNullable<AgentRunInput["onIterationBudgetExhausted"]> = async ({ runId, problem, config }) => {
+  const onIterationBudgetExhausted: NonNullable<AgentRunInput["onIterationBudgetExhausted"]> = async ({ runId, problem, config, progress }) => {
+    if (isStuckProgress(progress)) return undefined;
     const nextMaxIterations = nextIterationBudget(config.maxIterations);
     if (nextMaxIterations === undefined) return undefined;
     const nextRunId = nextId("run");

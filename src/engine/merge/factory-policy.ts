@@ -280,6 +280,7 @@ const buildMutationActions = (
         });
         continue;
       }
+      if (task.blockedReason?.startsWith("Policy blocked:")) continue;
       actions.push({
         actionId: `action_unblock_${task.taskId}`,
         type: "unblock_task",
