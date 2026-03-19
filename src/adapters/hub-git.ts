@@ -95,6 +95,22 @@ const FIELD_SEP = "\x1f";
 
 const clean = (value: string): string => value.trim();
 
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const looksLikeRemoteUrl = (value: string): boolean =>
+  /^[a-z][a-z0-9+.-]*:\/\//i.test(value)
+  || /^[^/\\]+@[^:]+:/.test(value);
+
+const canonicalizeRepoPath = async (value: string): Promise<string> => {
+  const trimmed = clean(value);
+  if (!trimmed || looksLikeRemoteUrl(trimmed)) return trimmed;
+  const resolved = path.resolve(trimmed);
+  return clean(await fs.promises.realpath(resolved).catch(() => resolved));
+};
+
 const safeBranchPart = (value: string): string =>
   value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "agent";
 
@@ -488,15 +504,53 @@ export class HubGit {
   async promoteCommit(commitHash: string): Promise<HubSourcePromotion> {
     await this.ensureReady();
     const source = await this.sourceStatus();
-    if (source.dirty) {
-      throw new HubGitError(409, "source repository has uncommitted changes");
-    }
     const previousHead = source.head;
     if (!previousHead) {
       throw new HubGitError(503, "source repository has no HEAD commit");
     }
     const targetBranch = source.branch || await this.defaultBranch();
     const resolved = await this.resolveCommit(commitHash);
+    const commitMessage = await this.commitSubject(resolved);
+    if (resolved === previousHead) {
+      return {
+        targetBranch,
+        previousHead,
+        mergedHead: previousHead,
+      };
+    }
+    if (source.dirty) {
+      await this.execGit(["fetch", "--no-tags", this.bareDir, resolved], { cwd: this.repoRoot });
+      const touchedFiles = await this.diffTouchedFiles(previousHead, resolved);
+      const overlappingFiles = touchedFiles.filter((file) => source.changedFiles.includes(file));
+      if (overlappingFiles.length > 0) {
+        if (!await this.workingTreeMatchesFetchedCommit(touchedFiles)) {
+          throw new HubGitError(
+            409,
+            `source repository has uncommitted changes overlapping promoted files: ${overlappingFiles.slice(0, 8).join(", ")}`
+          );
+        }
+        const mergedHead = await this.commitSelectedPaths(commitMessage, touchedFiles);
+        await this.syncFromSource();
+        return {
+          targetBranch,
+          previousHead,
+          mergedHead,
+        };
+      }
+      if (!await this.isAncestor(previousHead, resolved)) {
+        throw new HubGitError(
+          409,
+          `source repository has uncommitted changes and ${shortCommit(resolved)} is not a descendant of ${shortCommit(previousHead)}`
+        );
+      }
+      return this.promoteDirtyDisjointCommit({
+        targetBranch,
+        previousHead,
+        resolved,
+        touchedFiles,
+        commitMessage,
+      });
+    }
     try {
       await this.execGit(["fetch", "--no-tags", this.bareDir, resolved], { cwd: this.repoRoot });
       await this.execGit(["merge", "--ff-only", "FETCH_HEAD"], { cwd: this.repoRoot });
@@ -517,6 +571,48 @@ export class HubGit {
       previousHead,
       mergedHead,
     };
+  }
+
+  private async promoteDirtyDisjointCommit(input: {
+    readonly targetBranch: string;
+    readonly previousHead: string;
+    readonly resolved: string;
+    readonly touchedFiles: ReadonlyArray<string>;
+    readonly commitMessage: string;
+  }): Promise<HubSourcePromotion> {
+    const touchedFiles = [...new Set(input.touchedFiles)].sort();
+    const patchPath = path.join(this.bareDir, `.receipt-promote-${process.pid}-${Date.now()}.patch`);
+    try {
+      const patch = await this.execGit(["diff", "--binary", `${input.previousHead}..${input.resolved}`], { gitDir: this.bareDir });
+      if (patch.trim()) {
+        await fs.promises.writeFile(patchPath, patch, "utf-8");
+        await this.execGit(["apply", "--index", "--3way", "--whitespace=nowarn", patchPath], { cwd: this.repoRoot });
+        await this.commitSelectedPaths(input.commitMessage, touchedFiles);
+      }
+      const mergedHead = clean(await this.execGit(["rev-parse", "HEAD"], { cwd: this.repoRoot }).catch(() => ""));
+      if (!mergedHead) {
+        throw new HubGitError(500, "unable to resolve source HEAD after patch promotion");
+      }
+      await this.syncFromSource();
+      return {
+        targetBranch: input.targetBranch,
+        previousHead: input.previousHead,
+        mergedHead,
+      };
+    } catch (err) {
+      if (touchedFiles.length > 0) {
+        await this.execGit(["restore", "--source=HEAD", "--staged", "--worktree", "--", ...touchedFiles], { cwd: this.repoRoot })
+          .catch(() => undefined);
+      }
+      const message = err instanceof HubGitError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : String(err);
+      throw new HubGitError(409, `unable to promote ${shortCommit(input.resolved)} into dirty source workspace: ${message}`);
+    } finally {
+      await fs.promises.unlink(patchPath).catch(() => undefined);
+    }
   }
 
   private async prepare(): Promise<void> {
@@ -542,13 +638,43 @@ export class HubGit {
   }
 
   private async ensureRemote(): Promise<void> {
-    const current = clean(await this.execGit(["remote", "get-url", this.remoteName], { gitDir: this.bareDir }).catch(() => ""));
-    if (!current) {
-      await this.execGit(["remote", "add", this.remoteName, this.repoRoot], { gitDir: this.bareDir });
-      return;
-    }
-    if (path.resolve(current) !== this.repoRoot) {
-      await this.execGit(["remote", "set-url", this.remoteName, this.repoRoot], { gitDir: this.bareDir });
+    await this.withRemoteConfigLock(async () => {
+      const desired = await canonicalizeRepoPath(this.repoRoot);
+      const current = clean(await this.execGit(["remote", "get-url", this.remoteName], { gitDir: this.bareDir }).catch(() => ""));
+      const currentCanonical = current ? await canonicalizeRepoPath(current) : "";
+      if (!current) {
+        await this.execGit(["remote", "add", this.remoteName, desired], { gitDir: this.bareDir }).catch(async (err) => {
+          const refreshed = clean(await this.execGit(["remote", "get-url", this.remoteName], { gitDir: this.bareDir }).catch(() => ""));
+          if (refreshed) return;
+          throw err;
+        });
+        return;
+      }
+      if (current === desired || currentCanonical === desired) return;
+      await this.execGit(["remote", "set-url", this.remoteName, desired], { gitDir: this.bareDir });
+    });
+  }
+
+  private async withRemoteConfigLock<T>(op: () => Promise<T>): Promise<T> {
+    const lockPath = path.join(this.bareDir, ".receipt-remote.lock");
+    for (;;) {
+      let handle: fs.promises.FileHandle | undefined;
+      try {
+        await fs.promises.mkdir(this.bareDir, { recursive: true });
+        handle = await fs.promises.open(lockPath, "wx");
+        const result = await op();
+        await handle.close();
+        await fs.promises.unlink(lockPath).catch(() => undefined);
+        return result;
+      } catch (err) {
+        await handle?.close().catch(() => undefined);
+        if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
+          await delay(10);
+          continue;
+        }
+        await fs.promises.unlink(lockPath).catch(() => undefined);
+        throw err;
+      }
     }
   }
 
@@ -572,6 +698,49 @@ export class HubGit {
       { gitDir: this.bareDir }
     );
     return parseTouchedFiles(raw);
+  }
+
+  private async diffTouchedFiles(hashA: string, hashB: string): Promise<ReadonlyArray<string>> {
+    const raw = await this.execGit(
+      ["diff", "--name-only", hashA, hashB],
+      { gitDir: this.bareDir }
+    );
+    return parseTouchedFiles(raw);
+  }
+
+  private async workingTreeMatchesFetchedCommit(paths: ReadonlyArray<string>): Promise<boolean> {
+    if (paths.length === 0) return true;
+    const raw = await this.execGit(
+      ["diff", "--name-only", "FETCH_HEAD", "--", ...paths],
+      { cwd: this.repoRoot }
+    );
+    return parseTouchedFiles(raw).length === 0;
+  }
+
+  private async commitSubject(hash: string): Promise<string> {
+    const subject = clean(await this.execGit(["show", "-s", "--format=%s", hash], { gitDir: this.bareDir }).catch(() => ""));
+    return subject || `Factory promote ${shortCommit(hash)}`;
+  }
+
+  private async isAncestor(baseHash: string, headHash: string): Promise<boolean> {
+    try {
+      await this.execGit(["merge-base", "--is-ancestor", baseHash, headHash], { gitDir: this.bareDir });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async commitSelectedPaths(message: string, paths: ReadonlyArray<string>): Promise<string> {
+    if (paths.length > 0) {
+      await this.execGit(["add", "--", ...paths], { cwd: this.repoRoot });
+      await this.execGit(["commit", "-m", message, "--", ...paths], { cwd: this.repoRoot });
+    }
+    const mergedHead = clean(await this.execGit(["rev-parse", "HEAD"], { cwd: this.repoRoot }).catch(() => ""));
+    if (!mergedHead) {
+      throw new HubGitError(500, "unable to resolve source HEAD after path-limited commit");
+    }
+    return mergedHead;
   }
 
   private async configureWorktreeIdentity(workspacePath: string): Promise<void> {

@@ -105,9 +105,7 @@ const createFactoryService = async (opts?: {
         await fs.writeFile(input.stdoutPath, "", "utf-8");
         await fs.writeFile(input.stderrPath, "", "utf-8");
         await fs.writeFile(path.join(input.workspacePath, "POLICY_TEST.txt"), `${codexOutcome}:${input.candidateId ?? "candidate"}\n`, "utf-8");
-        const resultPath = input.prompt.match(/Write JSON to (.+?) with:/)?.[1]?.trim();
-        expect(resultPath).toBeTruthy();
-        await fs.writeFile(resultPath, JSON.stringify({
+        const structured = {
           outcome: codexOutcome,
           summary: codexOutcome === "approved"
             ? "Approved output ready."
@@ -119,9 +117,10 @@ const createFactoryService = async (opts?: {
             : codexOutcome === "changes_requested"
               ? "Run another pass."
               : "Blocked.",
-        }, null, 2), "utf-8");
-        await fs.writeFile(input.lastMessagePath, codexOutcome, "utf-8");
-        return { exitCode: 0, signal: null, stdout: "", stderr: "", lastMessage: codexOutcome };
+        };
+        const raw = JSON.stringify(structured);
+        await fs.writeFile(input.lastMessagePath, raw, "utf-8");
+        return { exitCode: 0, signal: null, stdout: raw, stderr: "", lastMessage: raw };
       },
     },
     llmStructured: opts?.llmStructured,
@@ -135,6 +134,108 @@ const buildState = (events: ReadonlyArray<FactoryEvent>): FactoryState =>
 
 const inheritedFailureCommand =
   "printf 'ENOENT: no such file or directory, open %s/InfinitelyManyPrimes.lean\\n' \"$PWD\" >&2; exit 1";
+
+test("factory policy: direct codex probes without an objective stay repo-scoped and avoid Factory worker bootstrap", async () => {
+  const { service } = await createFactoryService();
+
+  const packet = await service.prepareDirectCodexProbePacket({
+    jobId: "job_repo_probe",
+    prompt: "Inspect the current sidebar naming and summarize what needs to change.",
+    profileId: "software",
+    readOnly: true,
+    parentRunId: "run_parent",
+    parentStream: "agents/agent",
+    stream: "agents/factory/demo",
+    supervisorSessionId: "session_repo_probe",
+  });
+
+  const manifest = await fs.readFile(packet.artifactPaths.manifestPath, "utf-8");
+  const contextPack = await fs.readFile(packet.artifactPaths.contextPackPath, "utf-8");
+  const parsedManifest = JSON.parse(manifest) as {
+    readonly repoSkillPaths?: ReadonlyArray<string>;
+    readonly profile?: {
+      readonly selectedSkills?: ReadonlyArray<string>;
+    };
+  };
+
+  expect(packet.readOnly).toBe(true);
+  expect(contextPack).toContain("\"mode\": \"read_only_repo_probe\"");
+  expect(contextPack).toContain("\"probeId\": \"job_repo_probe\"");
+  expect(contextPack).not.toContain("\"objectiveId\"");
+  expect(manifest).toContain("\"objectiveBacked\": false");
+  expect(parsedManifest.repoSkillPaths ?? []).not.toContain("skills/factory-receipt-worker/SKILL.md");
+  expect(parsedManifest.repoSkillPaths ?? []).not.toContain("skills/factory-run-orchestrator/SKILL.md");
+  expect(parsedManifest.profile?.selectedSkills ?? []).toContain("skills/factory-run-orchestrator/SKILL.md");
+  expect(packet.renderedPrompt).toContain("This direct probe is not a Factory task worktree");
+  expect(packet.renderedPrompt).toContain("should not call receipt factory inspect");
+  expect(packet.renderedPrompt).toContain("Do not assume skills/factory-receipt-worker/SKILL.md applies unless a real objectiveId is present.");
+});
+
+test("factory policy: task packets tell workers to inspect objective receipts sequentially", async () => {
+  const { service, queue } = await createFactoryService({
+    llmStructured: async <Schema extends ZodTypeAny>(input: {
+      readonly schema: Schema;
+    }) => ({
+      parsed: input.schema.parse({
+        tasks: [
+          { title: "Rename labels", prompt: "Rename Skill to Profile.", workerType: "codex", dependsOn: [] },
+          { title: "Run validation suite", prompt: "Run the full repo validation suite after the rename lands.", workerType: "codex", dependsOn: ["task_01"] },
+        ],
+      }),
+      raw: "",
+    }),
+  });
+
+  const created = await service.createObjective({
+    title: "Sequential inspect prompt",
+    prompt: "Rename the sidebar label and keep receipt bootstrap reliable.",
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const taskJob = await latestFactoryJob(queue, created.objectiveId, "factory.task.run");
+  await service.runTask(taskJob.payload as Record<string, unknown>);
+  const promptPath = String(taskJob.payload.promptPath);
+  const prompt = await fs.readFile(promptPath, "utf-8");
+
+  expect(prompt).toContain("run these sequentially, not in parallel");
+  expect(prompt).toContain(`receipt factory inspect ${created.objectiveId} --json --panel receipts`);
+  expect(prompt).toContain(`receipt factory inspect ${created.objectiveId} --json --panel debug`);
+  expect(prompt).toContain("Do not absorb downstream work");
+  expect(prompt).toContain("Do not write this file yourself.");
+  expect(prompt).toContain("A later task in this objective owns the broad repo validation suite.");
+  expect(prompt).not.toContain("## Checks");
+});
+
+test("factory policy: validation-owned task packets include the full repo checks", async () => {
+  const { service, queue } = await createFactoryService({
+    llmStructured: async <Schema extends ZodTypeAny>(input: {
+      readonly schema: Schema;
+    }) => ({
+      parsed: input.schema.parse({
+        tasks: [
+          { title: "Run validation suite", prompt: "Run lint, build, and the full validation suite.", workerType: "codex", dependsOn: [] },
+        ],
+      }),
+      raw: "",
+    }),
+  });
+
+  const created = await service.createObjective({
+    title: "Validation prompt owner",
+    prompt: "Run the final validation suite.",
+    checks: ["git status --short", "bun test"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const taskJob = await latestFactoryJob(queue, created.objectiveId, "factory.task.run");
+  await service.runTask(taskJob.payload as FactoryTaskJobPayload);
+  const prompt = await fs.readFile(String(taskJob.payload.promptPath), "utf-8");
+
+  expect(prompt).toContain("## Checks");
+  expect(prompt).toContain("- git status --short");
+  expect(prompt).toContain("- bun test");
+  expect(prompt).toContain("Run the relevant repo validation for this task");
+});
 
 test("factory policy: dispatch burst is capped and defaults are normalized per objective", async () => {
   const { service } = await createFactoryService({
@@ -212,7 +313,7 @@ test("factory policy: maxCandidatePassesPerTask blocks rework after the configur
   expect(detail.tasks[0]?.blockedReason ?? "").toMatch(/maxCandidatePassesPerTask/);
 });
 
-test("factory policy: repeated identical check failures are treated as inherited instead of endless rework", async () => {
+test("factory policy: base-commit check failures are treated as inherited on the first candidate pass", async () => {
   const { service, queue } = await createFactoryService({ codexOutcome: "approved" });
 
   const created = await service.createObjective({
@@ -225,15 +326,8 @@ test("factory policy: repeated identical check failures are treated as inherited
   const firstJob = await latestFactoryJob(queue, created.objectiveId, "factory.task.run");
   await service.runTask(firstJob.payload as FactoryTaskJobPayload);
 
-  let detail = await service.getObjective(created.objectiveId);
-  expect(detail.candidates.find((candidate) => candidate.candidateId === "task_01_candidate_01")?.status).toBe("changes_requested");
-
-  const secondJob = await latestFactoryJob(queue, created.objectiveId, "factory.task.run");
-  expect(secondJob.payload.candidateId).toBe("task_01_candidate_02");
-  await service.runTask(secondJob.payload as FactoryTaskJobPayload);
-
-  detail = await service.getObjective(created.objectiveId);
-  const approved = detail.candidates.find((candidate) => candidate.candidateId === "task_01_candidate_02");
+  const detail = await service.getObjective(created.objectiveId);
+  const approved = detail.candidates.find((candidate) => candidate.candidateId === "task_01_candidate_01");
   expect(["approved", "integrated"]).toContain(approved?.status);
   expect(approved?.summary ?? "").toMatch(/inherited failure/i);
 });

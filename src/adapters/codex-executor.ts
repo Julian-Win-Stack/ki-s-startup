@@ -10,6 +10,11 @@ export type CodexRunInput = {
   readonly lastMessagePath: string;
   readonly stdoutPath: string;
   readonly stderrPath: string;
+  readonly model?: string;
+  readonly outputSchemaPath?: string;
+  readonly completionSignalPath?: string;
+  readonly completionQuietMs?: number;
+  readonly reasoningEffort?: "low" | "medium" | "high" | "xhigh";
   readonly sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
   readonly mutationPolicy?: "read_only_probe" | "workspace_edit";
   readonly objectiveId?: string;
@@ -69,6 +74,15 @@ const delay = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
+const fileExists = async (targetPath: string): Promise<boolean> => {
+  try {
+    await fsp.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const closeStream = (stream: fs.WriteStream): Promise<void> =>
   new Promise((resolve, reject) => {
     stream.on("error", reject);
@@ -110,6 +124,9 @@ export class LocalCodexExecutor implements CodexExecutor {
       "-a",
       "never",
       "exec",
+      ...(input.model ? ["-m", input.model] : []),
+      "-c",
+      `model_reasoning_effort=${JSON.stringify(input.reasoningEffort ?? "medium")}`,
       "--cd",
       input.workspacePath,
       "--sandbox",
@@ -119,8 +136,12 @@ export class LocalCodexExecutor implements CodexExecutor {
       "never",
       "--output-last-message",
       input.lastMessagePath,
-      "-",
     ];
+    if (input.outputSchemaPath) {
+      await fsp.mkdir(path.dirname(input.outputSchemaPath), { recursive: true });
+      args.push("--output-schema", input.outputSchemaPath);
+    }
+    args.push("-");
 
     const child = spawn(this.bin, args, {
       cwd: input.workspacePath,
@@ -130,6 +151,8 @@ export class LocalCodexExecutor implements CodexExecutor {
 
     let stdout = "";
     let stderr = "";
+    let lastOutputAt = Date.now();
+    let completionTriggered = false;
     const stdoutFile = fs.createWriteStream(input.stdoutPath, { flags: "a", encoding: "utf-8" });
     const stderrFile = fs.createWriteStream(input.stderrPath, { flags: "a", encoding: "utf-8" });
 
@@ -137,10 +160,12 @@ export class LocalCodexExecutor implements CodexExecutor {
     child.stderr.setEncoding("utf-8");
     child.stdout.on("data", (chunk: string) => {
       stdout += chunk;
+      lastOutputAt = Date.now();
       stdoutFile.write(chunk);
     });
     child.stderr.on("data", (chunk: string) => {
       stderr += chunk;
+      lastOutputAt = Date.now();
       stderrFile.write(chunk);
     });
 
@@ -153,6 +178,28 @@ export class LocalCodexExecutor implements CodexExecutor {
       timedOut = true;
       child.kill("SIGKILL");
     }, Math.max(30_000, input.timeoutMs ?? this.timeoutMs));
+
+    const completionSignalPath = input.completionSignalPath?.trim();
+    const completionQuietMs = Math.max(250, input.completionQuietMs ?? 1_000);
+    let completionKillTimer: NodeJS.Timeout | undefined;
+    const completionLoop = completionSignalPath
+      ? (async () => {
+        while (child.exitCode === null && !child.killed && !completionTriggered) {
+          if (
+            await fileExists(completionSignalPath)
+            && Date.now() - lastOutputAt >= completionQuietMs
+          ) {
+            completionTriggered = true;
+            child.kill("SIGTERM");
+            completionKillTimer = setTimeout(() => {
+              if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
+            }, Math.min(2_000, completionQuietMs));
+            return;
+          }
+          await delay(Math.min(250, completionQuietMs));
+        }
+      })()
+      : undefined;
 
     const shouldAbort = control?.shouldAbort;
     const abortLoop = shouldAbort
@@ -171,12 +218,13 @@ export class LocalCodexExecutor implements CodexExecutor {
       child.on("error", reject);
       child.on("close", async (code, signal) => {
         clearTimeout(timer);
+        if (completionKillTimer) clearTimeout(completionKillTimer);
         try {
           await Promise.all([closeStream(stdoutFile), closeStream(stderrFile)]);
           const lastMessage = await fsp.readFile(input.lastMessagePath, "utf-8").catch(() => "");
           resolve({
-            exitCode: timedOut ? 124 : code,
-            signal,
+            exitCode: completionTriggered ? 0 : timedOut ? 124 : code,
+            signal: completionTriggered ? null : signal,
             stdout,
             stderr,
             lastMessage: lastMessage.trim() || undefined,
@@ -187,6 +235,7 @@ export class LocalCodexExecutor implements CodexExecutor {
       });
     });
 
+    await completionLoop;
     await abortLoop;
     if (timedOut) {
       const elapsed = Date.now() - startedAt;

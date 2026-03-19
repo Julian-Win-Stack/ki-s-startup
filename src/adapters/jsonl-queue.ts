@@ -60,6 +60,7 @@ export type LeaseOptions = {
   readonly workerId: string;
   readonly leaseMs: number;
   readonly agentId?: string;
+  readonly agentIds?: ReadonlyArray<string>;
 };
 
 export type QueueCommandInput = {
@@ -169,6 +170,10 @@ const compareQueuedJobs = (left: QueueJob, right: QueueJob): number =>
   || left.createdAt - right.createdAt
   || left.id.localeCompare(right.id);
 
+const CROSS_PROCESS_POLL_MS = 250;
+const sameJob = (left: QueueJob | undefined, right: QueueJob | undefined): boolean =>
+  JSON.stringify(left) === JSON.stringify(right);
+
 export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
   const nowTs = opts.now ?? Date.now;
   const jobStateCache = new Map<string, JobState>();
@@ -176,6 +181,7 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
   let writeLock = Promise.resolve();
   let manifestSyncAt = 0;
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let directoryWatcher: fs.FSWatcher | undefined;
   let lastLocalMutationAt = 0;
   type QueueWaiter = {
     readonly ready: (snapshot: QueueSnapshot) => boolean;
@@ -503,9 +509,9 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
   const getIndexedJob = async (jobId: string): Promise<QueueJob | undefined> => {
     await ensureIndexLoaded();
     const indexed = index.jobsById.get(jobId);
-    if (indexed) return cloneJob(indexed);
     const loaded = await loadQueueJob(jobId);
-    if (!loaded) return undefined;
+    if (!loaded) return indexed ? cloneJob(indexed) : undefined;
+    if (indexed && sameJob(indexed, loaded)) return cloneJob(indexed);
     const changed = new Map<string, QueueJob>();
     await withWriteLock(async () => {
       upsertIndexedJob(loaded);
@@ -550,6 +556,17 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       .map((jobId) => index.jobsById.get(jobId))
       .filter((job): job is QueueJob => Boolean(job))
       .filter((job) => !TERMINAL.has(job.status) && job.id !== excludeId);
+  };
+
+  const matchingAgentIds = (lease: LeaseOptions): ReadonlySet<string> => {
+    const agentIds = new Set<string>();
+    const single = typeof lease.agentId === "string" ? lease.agentId.trim() : "";
+    if (single) agentIds.add(single);
+    for (const candidate of lease.agentIds ?? []) {
+      const normalized = typeof candidate === "string" ? candidate.trim() : "";
+      if (normalized) agentIds.add(normalized);
+    }
+    return agentIds;
   };
 
   const requestAbort = async (
@@ -608,7 +625,7 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
 
   if (opts.watchDir) {
     try {
-      fs.watch(opts.watchDir, (_eventType, filename) => {
+      directoryWatcher = fs.watch(opts.watchDir, (_eventType, filename) => {
         if (typeof filename !== "string" || filename.length === 0) {
           scheduleWatchRefresh();
           return;
@@ -619,6 +636,7 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       });
     } catch {
       // Best-effort wake bridge only.
+      directoryWatcher = undefined;
     }
   }
 
@@ -695,10 +713,11 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       const leased = await withWriteLock(async () => {
         const ts = nowTs();
         await handleExpiredLeases(ts, changed);
+        const agentIds = matchingAgentIds(lease);
         const next = index.queuedJobIds
           .map((jobId) => index.jobsById.get(jobId))
           .find((job) => job
-            && (!lease.agentId || job.agentId === lease.agentId));
+            && (agentIds.size === 0 || agentIds.has(job.agentId)));
         if (!next) return undefined;
         const attempt = next.attempt + 1;
         await emitEvent({
@@ -920,7 +939,7 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
         if (current && TERMINAL.has(current.status)) return cloneJob(current);
         const remaining = Math.max(0, end - nowTs());
         const next = await waitForSnapshot({
-          timeoutMs: remaining,
+          timeoutMs: Math.min(remaining, CROSS_PROCESS_POLL_MS),
           ready: (currentSnapshot) => currentSnapshot.version > sinceVersion,
         });
         sinceVersion = next.version;
@@ -931,10 +950,28 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
 
     waitForWork: async (options) => {
       const sinceVersion = options?.sinceVersion ?? snapshot().version;
-      return waitForSnapshot({
-        timeoutMs: options?.timeoutMs,
-        ready: (current) => current.queued > 0 || current.version > sinceVersion,
-      });
+      const timeoutMs = typeof options?.timeoutMs === "number" && Number.isFinite(options.timeoutMs)
+        ? Math.max(0, options.timeoutMs)
+        : undefined;
+      const deadline = timeoutMs === undefined ? undefined : nowTs() + timeoutMs;
+      let current = snapshot();
+      if (current.queued > 0 || current.version > sinceVersion) return current;
+
+      while (true) {
+        const remaining = deadline === undefined ? CROSS_PROCESS_POLL_MS : Math.max(0, deadline - nowTs());
+        if (remaining === 0) {
+          return refresh();
+        }
+        const stepTimeout = Math.min(remaining, CROSS_PROCESS_POLL_MS);
+        current = await waitForSnapshot({
+          timeoutMs: stepTimeout,
+          ready: (next) => next.queued > 0 || next.version > sinceVersion,
+        });
+        if (current.queued > 0 || current.version > sinceVersion) return current;
+        current = await refresh();
+        if (current.queued > 0 || current.version > sinceVersion) return current;
+        if (deadline !== undefined && nowTs() >= deadline) return current;
+      }
     },
 
     notifyWorkAvailable: () => {

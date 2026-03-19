@@ -24,9 +24,10 @@ Then use the generated memory script:
 
 Use the objective id from the manifest:
 
-- `receipt factory inspect <objectiveId> --json --panel debug`
 - `receipt factory inspect <objectiveId> --json --panel receipts`
+- `receipt factory inspect <objectiveId> --json --panel debug`
 - `receipt factory inspect <objectiveId> --json`
+Run the panel-specific commands one at a time. Start with `--panel receipts`; only fetch `--panel debug` if the packet or receipt slice is not enough.
 
 Use the JSON output to inspect:
 

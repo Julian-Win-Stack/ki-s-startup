@@ -76,6 +76,7 @@ import { axiomSimpleRunStream } from "./agents/axiom-simple.streams.js";
 import { runReceiptInspector } from "./agents/inspector.js";
 import { maybeQueueAxiomGuildVerifyFailureFollowUp } from "./agents/axiom-guild-recovery.js";
 import { createFactoryServiceRuntime, createFactoryWorkerHandlers } from "./services/factory-runtime.js";
+import { FACTORY_CONTROL_AGENT_ID } from "./services/factory-service.js";
 import {
   assertReceiptFileName,
   listReceiptFiles,
@@ -226,8 +227,16 @@ const JOB_STREAM = "jobs";
 const IMPROVEMENT_STREAM = "improvement";
 const INSPECTOR_STREAM = "agents/inspector";
 const jobWorkerId = process.env.JOB_WORKER_ID ?? `worker_${process.pid}`;
+const parseWorkerConcurrency = (value: string | undefined, fallback: number): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : fallback;
+};
+const defaultJobConcurrency = parseWorkerConcurrency(process.env.JOB_CONCURRENCY, 2);
+const generalJobConcurrency = parseWorkerConcurrency(process.env.GENERAL_JOB_CONCURRENCY, defaultJobConcurrency);
+const factoryControlJobConcurrency = parseWorkerConcurrency(process.env.FACTORY_CONTROL_JOB_CONCURRENCY, 1);
+const codexJobConcurrency = parseWorkerConcurrency(process.env.CODEX_JOB_CONCURRENCY, defaultJobConcurrency);
 const jobIdleResyncMs = Number(process.env.JOB_IDLE_RESYNC_MS ?? process.env.JOB_POLL_MS ?? 5_000);
-const jobLeaseMs = Number(process.env.JOB_LEASE_MS ?? 30_000);
+const jobLeaseMs = Number(process.env.JOB_LEASE_MS ?? 300_000);
 const subJobWaitMsRaw = Number(process.env.SUBJOB_WAIT_MS ?? 1_500);
 const subJobWaitMs = Number.isFinite(subJobWaitMsRaw)
   ? Math.max(0, Math.min(Math.floor(subJobWaitMsRaw), 30_000))
@@ -1317,153 +1326,194 @@ const createWorkerHandler = (spec: WorkerHandlerSpec): JobHandler =>
     return { ok: true, result: normalizedResult };
   };
 
-const worker = new JobWorker({
-  queue,
-  workerId: jobWorkerId,
-  idleResyncMs: jobIdleResyncMs,
-  leaseMs: jobLeaseMs,
-  concurrency: Math.max(1, Number(process.env.JOB_CONCURRENCY ?? 2)),
-  onError: (error) => {
-    console.error(`[job-worker ${jobWorkerId}]`, error);
-  },
-  handlers: {
-    theorem: createWorkerHandler({
-      defaultStream: "agents/theorem", defaultAgentId: "theorem", kind: "theorem.run",
-      defaultSubConfig: { rounds: 1, maxDepth: 1, memoryWindow: 40, branchThreshold: 2 },
-      runtime: theoremRuntime, runStreamFn: theoremRunStream, runner: theoremRunner,
-    }),
-    "axiom-guild": createWorkerHandler({
-      defaultStream: "agents/axiom-guild", defaultAgentId: "axiom-guild", kind: "axiom-guild.run",
-      defaultSubConfig: { rounds: 2, maxDepth: 2, memoryWindow: 60, branchThreshold: 2 },
-      runtime: theoremRuntime, runStreamFn: theoremRunStream, runner: axiomGuildRunner,
-    }),
-    "axiom-simple": createWorkerHandler({
-      defaultStream: "agents/axiom-simple", defaultAgentId: "axiom-simple", kind: "axiom-simple.run",
-      defaultSubConfig: { workerCount: 3, repairMode: "auto" },
-      runtime: axiomSimpleRuntime, runStreamFn: axiomSimpleRunStream, runner: axiomSimpleRunner,
-    }),
-    writer: createWorkerHandler({
-      defaultStream: "agents/writer", defaultAgentId: "writer", kind: "writer.run",
-      defaultSubConfig: { maxParallel: 1 },
-      runtime: writerRuntime, runStreamFn: writerRunStream, runner: writerRunner,
-      mergeEventExtras: { stepId: "delegate_task" },
-    }),
-    agent: createWorkerHandler({
-      defaultStream: "agents/agent", defaultAgentId: "agent", kind: "agent.run",
-      defaultSubConfig: { maxIterations: 3, maxToolOutputChars: 2500, memoryScope: "agent", workspace: "." },
-      runtime: agentRuntime, runStreamFn: agentRunStream, runner: agentRunner,
-    }),
-    infra: createWorkerHandler({
-      defaultStream: "agents/infra", defaultAgentId: "infra", kind: "infra.run",
-      defaultSubConfig: { maxIterations: 4, maxToolOutputChars: 2500, memoryScope: "infra", workspace: "." },
-      runtime: agentRuntime, runStreamFn: agentRunStream, runner: infraRunner,
-    }),
-    axiom: createWorkerHandler({
-      defaultStream: "agents/axiom", defaultAgentId: "axiom", kind: "axiom.run",
-      defaultSubConfig: {
-        maxIterations: 12,
-        maxToolOutputChars: 6000,
-        memoryScope: "axiom",
-        workspace: ".",
-        leanEnvironment: process.env.AXIOM_LEAN_ENVIRONMENT ?? "lean-4.28.0",
-        leanTimeoutSeconds: 120,
-        autoRepair: true,
-      },
-      runtime: agentRuntime, runStreamFn: agentRunStream, runner: axiomRunner,
-    }),
-    factory: createWorkerHandler({
-      defaultStream: "agents/factory", defaultAgentId: "factory", kind: "factory.run",
-      defaultSubConfig: {
-        maxIterations: 8,
-        maxToolOutputChars: 6000,
-        memoryScope: "repos/factory/profiles/generalist",
-        workspace: ".",
-      },
-      runtime: agentRuntime, runStreamFn: agentRunStream, runner: factoryRunner,
-    }),
-    ...factoryWorkerHandlers,
-    codex: async (job, ctx) => {
-      if (job.payload.kind !== "factory.codex.run") {
-        return factoryWorkerHandlers.codex(job, ctx);
-      }
-      await ctx.pullCommands(["steer", "follow_up"]);
-      const payload = job.payload as Record<string, unknown>;
-      const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
-      if (!prompt) {
-        return {
-          ok: false,
-          error: "factory codex prompt required",
-          noRetry: true,
-          result: { status: "failed", summary: "factory codex prompt required" },
-        };
-      }
-      const timeoutMs = typeof payload.timeoutMs === "number" && Number.isFinite(payload.timeoutMs)
-        ? Math.max(30_000, Math.min(Math.floor(payload.timeoutMs), 900_000))
-        : 180_000;
-      const shouldAbort = async (): Promise<boolean> => {
-        const latest = await queue.getJob(job.id);
-        return latest?.abortRequested === true;
-      };
-      const parentRunId = typeof payload.parentRunId === "string" ? payload.parentRunId.trim() : "";
-      const parentStream = typeof payload.parentStream === "string" ? payload.parentStream.trim() : "";
-      const task = typeof payload.task === "string" && payload.task.trim()
-        ? payload.task.trim()
-        : prompt;
-      let lastMergedSummary = "";
-      const emitCodexMerged = async (summary: string): Promise<void> => {
-        const next = summary.trim();
-        if (!next || next === lastMergedSummary) return;
-        lastMergedSummary = next;
-        await emitMergedSummary({
-          parentRunId,
-          parentStream,
-          subJobId: job.id,
-          subRunId: job.id,
-          task,
-          summary: next,
-        });
-      };
-      try {
-        const result = await runFactoryCodexJob({
-          dataDir: DATA_DIR,
-          repoRoot: factoryService.git.repoRoot,
-          jobId: job.id,
-          prompt,
-          timeoutMs,
-          executor: factoryService.codexExecutor,
-          factoryService,
-          payload,
-          onProgress: async (update) => {
-            await queue.progress(job.id, ctx.workerId, update);
-            const summary = typeof update.summary === "string" ? update.summary : "";
-            await emitCodexMerged(summary);
-          },
-        }, { shouldAbort });
-        await emitCodexMerged(typeof result.summary === "string" ? result.summary : "Codex completed.");
-        return { ok: true, result };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        await emitCodexMerged(message);
-        const aborted = await shouldAbort();
-        return {
-          ok: !aborted,
-          error: aborted ? undefined : message,
-          noRetry: true,
-          result: {
-            status: aborted ? "canceled" : "failed",
-            summary: message,
-          },
-        };
-      }
+const jobHandlers = {
+  theorem: createWorkerHandler({
+    defaultStream: "agents/theorem", defaultAgentId: "theorem", kind: "theorem.run",
+    defaultSubConfig: { rounds: 1, maxDepth: 1, memoryWindow: 40, branchThreshold: 2 },
+    runtime: theoremRuntime, runStreamFn: theoremRunStream, runner: theoremRunner,
+  }),
+  "axiom-guild": createWorkerHandler({
+    defaultStream: "agents/axiom-guild", defaultAgentId: "axiom-guild", kind: "axiom-guild.run",
+    defaultSubConfig: { rounds: 2, maxDepth: 2, memoryWindow: 60, branchThreshold: 2 },
+    runtime: theoremRuntime, runStreamFn: theoremRunStream, runner: axiomGuildRunner,
+  }),
+  "axiom-simple": createWorkerHandler({
+    defaultStream: "agents/axiom-simple", defaultAgentId: "axiom-simple", kind: "axiom-simple.run",
+    defaultSubConfig: { workerCount: 3, repairMode: "auto" },
+    runtime: axiomSimpleRuntime, runStreamFn: axiomSimpleRunStream, runner: axiomSimpleRunner,
+  }),
+  writer: createWorkerHandler({
+    defaultStream: "agents/writer", defaultAgentId: "writer", kind: "writer.run",
+    defaultSubConfig: { maxParallel: 1 },
+    runtime: writerRuntime, runStreamFn: writerRunStream, runner: writerRunner,
+    mergeEventExtras: { stepId: "delegate_task" },
+  }),
+  agent: createWorkerHandler({
+    defaultStream: "agents/agent", defaultAgentId: "agent", kind: "agent.run",
+    defaultSubConfig: { maxIterations: 3, maxToolOutputChars: 2500, memoryScope: "agent", workspace: "." },
+    runtime: agentRuntime, runStreamFn: agentRunStream, runner: agentRunner,
+  }),
+  infra: createWorkerHandler({
+    defaultStream: "agents/infra", defaultAgentId: "infra", kind: "infra.run",
+    defaultSubConfig: { maxIterations: 4, maxToolOutputChars: 2500, memoryScope: "infra", workspace: "." },
+    runtime: agentRuntime, runStreamFn: agentRunStream, runner: infraRunner,
+  }),
+  axiom: createWorkerHandler({
+    defaultStream: "agents/axiom", defaultAgentId: "axiom", kind: "axiom.run",
+    defaultSubConfig: {
+      maxIterations: 12,
+      maxToolOutputChars: 6000,
+      memoryScope: "axiom",
+      workspace: ".",
+      leanEnvironment: process.env.AXIOM_LEAN_ENVIRONMENT ?? "lean-4.28.0",
+      leanTimeoutSeconds: 120,
+      autoRepair: true,
     },
-    inspector: async (job, ctx) => {
-      await ctx.pullCommands(["steer", "follow_up"]);
-      await inspectorRunner(job.payload);
-      return { ok: true, result: { runId: job.payload.runId as string | undefined, stream: INSPECTOR_STREAM } };
+    runtime: agentRuntime, runStreamFn: agentRunStream, runner: axiomRunner,
+  }),
+  factory: createWorkerHandler({
+    defaultStream: "agents/factory", defaultAgentId: "factory", kind: "factory.run",
+    defaultSubConfig: {
+      maxIterations: 8,
+      maxToolOutputChars: 6000,
+      memoryScope: "repos/factory/profiles/generalist",
+      workspace: ".",
     },
+    runtime: agentRuntime, runStreamFn: agentRunStream, runner: factoryRunner,
+  }),
+  ...factoryWorkerHandlers,
+  codex: async (job, ctx) => {
+    if (job.payload.kind !== "factory.codex.run") {
+      return factoryWorkerHandlers.codex(job, ctx);
+    }
+    await ctx.pullCommands(["steer", "follow_up"]);
+    const payload = job.payload as Record<string, unknown>;
+    const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
+    if (!prompt) {
+      return {
+        ok: false,
+        error: "factory codex prompt required",
+        noRetry: true,
+        result: { status: "failed", summary: "factory codex prompt required" },
+      };
+    }
+    const timeoutMs = typeof payload.timeoutMs === "number" && Number.isFinite(payload.timeoutMs)
+      ? Math.max(30_000, Math.min(Math.floor(payload.timeoutMs), 900_000))
+      : 180_000;
+    const shouldAbort = async (): Promise<boolean> => {
+      const latest = await queue.getJob(job.id);
+      return latest?.abortRequested === true;
+    };
+    const parentRunId = typeof payload.parentRunId === "string" ? payload.parentRunId.trim() : "";
+    const parentStream = typeof payload.parentStream === "string" ? payload.parentStream.trim() : "";
+    const task = typeof payload.task === "string" && payload.task.trim()
+      ? payload.task.trim()
+      : prompt;
+    let lastMergedSummary = "";
+    const emitCodexMerged = async (summary: string): Promise<void> => {
+      const next = summary.trim();
+      if (!next || next === lastMergedSummary) return;
+      lastMergedSummary = next;
+      await emitMergedSummary({
+        parentRunId,
+        parentStream,
+        subJobId: job.id,
+        subRunId: job.id,
+        task,
+        summary: next,
+      });
+    };
+    try {
+      const result = await runFactoryCodexJob({
+        dataDir: DATA_DIR,
+        repoRoot: factoryService.git.repoRoot,
+        jobId: job.id,
+        prompt,
+        timeoutMs,
+        executor: factoryService.codexExecutor,
+        factoryService,
+        payload,
+        onProgress: async (update) => {
+          await queue.progress(job.id, ctx.workerId, update);
+          const summary = typeof update.summary === "string" ? update.summary : "";
+          await emitCodexMerged(summary);
+        },
+      }, { shouldAbort });
+      await emitCodexMerged(typeof result.summary === "string" ? result.summary : "Codex completed.");
+      return { ok: true, result };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await emitCodexMerged(message);
+      const aborted = await shouldAbort();
+      return {
+        ok: !aborted,
+        error: aborted ? undefined : message,
+        noRetry: true,
+        result: {
+          status: aborted ? "canceled" : "failed",
+          summary: message,
+        },
+      };
+    }
   },
-});
-worker.start();
+  inspector: async (job, ctx) => {
+    await ctx.pullCommands(["steer", "follow_up"]);
+    await inspectorRunner(job.payload);
+    return { ok: true, result: { runId: job.payload.runId as string | undefined, stream: INSPECTOR_STREAM } };
+  },
+} satisfies Record<string, JobHandler>;
+
+const generalWorkerAgentIds = [
+  "theorem",
+  "axiom-guild",
+  "axiom-simple",
+  "writer",
+  "agent",
+  "infra",
+  "axiom",
+  "factory",
+  "inspector",
+] as const;
+
+const workers = [
+  new JobWorker({
+    queue,
+    handlers: jobHandlers,
+    workerId: `${jobWorkerId}:general`,
+    leaseAgentIds: generalWorkerAgentIds,
+    idleResyncMs: jobIdleResyncMs,
+    leaseMs: jobLeaseMs,
+    concurrency: generalJobConcurrency,
+    onError: (error) => {
+      console.error(`[job-worker ${jobWorkerId}:general]`, error);
+    },
+  }),
+  new JobWorker({
+    queue,
+    handlers: jobHandlers,
+    workerId: `${jobWorkerId}:factory-control`,
+    leaseAgentIds: [FACTORY_CONTROL_AGENT_ID],
+    idleResyncMs: jobIdleResyncMs,
+    leaseMs: jobLeaseMs,
+    concurrency: factoryControlJobConcurrency,
+    onError: (error) => {
+      console.error(`[job-worker ${jobWorkerId}:factory-control]`, error);
+    },
+  }),
+  new JobWorker({
+    queue,
+    handlers: jobHandlers,
+    workerId: `${jobWorkerId}:codex`,
+    leaseAgentIds: ["codex"],
+    idleResyncMs: jobIdleResyncMs,
+    leaseMs: jobLeaseMs,
+    concurrency: codexJobConcurrency,
+    onError: (error) => {
+      console.error(`[job-worker ${jobWorkerId}:codex]`, error);
+    },
+  }),
+];
+for (const worker of workers) worker.start();
 
 // ============================================================================
 // Heartbeat
@@ -1991,7 +2041,7 @@ const shutdown = (signal: string): void => {
   shuttingDown = true;
   console.log(`Receipt server shutting down (${signal})`);
   receiptWatcher?.close();
-  worker.stop();
+  for (const worker of workers) worker.stop();
   for (const hb of heartbeats) hb.stop();
   const forceExit = setTimeout(() => {
     process.exit(0);

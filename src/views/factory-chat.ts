@@ -614,7 +614,7 @@ const shellHeaderTitle = (model: FactoryChatShellModel): string =>
     ?? (model.chatId ? "New chat" : model.activeProfileLabel);
 
 const renderShellStatusPills = (model: FactoryChatShellModel): string => {
-  const pills: string[] = [shellPill(`Skill ${model.activeProfileLabel}`, "neutral")];
+  const pills: string[] = [shellPill(`Profile ${model.activeProfileLabel}`, "neutral")];
   const objective = model.sidebar.selectedObjective;
   if (objective) {
     pills.push(shellPill(`Project ${displayLabel(objective.status) || "active"}`, toneForValue(objective.status)));
@@ -725,7 +725,7 @@ const renderChatItem = (
         <div class="flex h-10 w-10 items-center justify-center rounded-2xl border border-emerald-300/20 bg-emerald-300/10 text-sm font-semibold text-emerald-100">AI</div>
         <div class="min-w-0">
           <div class="text-sm font-medium text-zinc-100">${esc(activeProfileLabel)}</div>
-          <div class="text-xs text-zinc-500">Skill ${esc(activeProfileId)}</div>
+          <div class="text-xs text-zinc-500">Profile ${esc(activeProfileId)}</div>
         </div>
       </div>
         ${item.meta ? `<div class="text-xs text-zinc-500">${esc(item.meta)}</div>` : ""}
@@ -878,9 +878,9 @@ const renderSkillCard = (model: FactorySidebarModel): string => {
   return `<section class="${railCardClass}">
     <div class="flex items-start justify-between gap-3">
       <div class="min-w-0">
-        <div class="${sectionLabelClass}">Skill</div>
+        <div class="${sectionLabelClass}">Profile</div>
         <div class="mt-3 text-lg font-semibold text-white">${esc(model.activeProfileLabel)}</div>
-        <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(model.activeProfileSummary ?? "Factory uses the active skill to decide how to inspect, queue, and steer projects.")}</div>
+        <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(model.activeProfileSummary ?? "Factory uses the active profile to decide how to inspect, queue, and steer projects.")}</div>
       </div>
       <div class="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.05] text-xs font-semibold uppercase tracking-[0.2em] text-zinc-200">${esc(skillInitials || "SK")}</div>
     </div>
@@ -946,7 +946,7 @@ export const factoryRailIsland = (model: FactorySidebarModel): string => {
           ${profile.summary ? `<div class="mt-1 text-xs leading-5 text-zinc-400">${esc(profile.summary)}</div>` : ""}
         </a>`;
       }).join("")
-    : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No skills found.</div>`;
+    : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No profiles found.</div>`;
   const objectiveCards = model.objectives.length > 0
     ? model.objectives.map((objective) => renderObjectiveLink(model, objective)).join("")
     : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">${blankChat
@@ -1131,7 +1131,7 @@ const renderOpsSummary = (model: FactorySidebarModel): string => {
       ${statPill("Codex active", `${codexActive}`)}
       ${model.selectedObjective
         ? statPill("Tasks", `${model.selectedObjective.activeTaskCount ?? 0} active / ${model.selectedObjective.readyTaskCount ?? 0} ready`)
-        : statPill("Scope", model.chatId ? "New chat" : "Skill chat")}
+        : statPill("Scope", model.chatId ? "New chat" : "Profile chat")}
     </div>
   </section>`;
 };

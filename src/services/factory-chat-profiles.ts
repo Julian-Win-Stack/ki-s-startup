@@ -149,7 +149,7 @@ const PROFILE_CAPABILITY_TOOLS = {
   "memory.read": ["memory.read", "memory.search", "memory.summarize"],
   "memory.write": ["memory.commit", "memory.diff"],
   "skill.read": ["skill.read"],
-  "status.read": ["agent.status", "jobs.list", "codex.status", "codex.logs", "factory.status", "factory.output", "factory.receipts"],
+  "status.read": ["agent.status", "jobs.list", "repo.status", "codex.status", "codex.logs", "factory.status", "factory.output", "factory.receipts"],
   "async.dispatch": ["codex.run", "agent.delegate"],
   "async.control": ["job.control"],
   "objective.control": ["factory.dispatch"],

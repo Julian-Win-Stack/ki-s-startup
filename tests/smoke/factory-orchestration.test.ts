@@ -174,6 +174,38 @@ test("factory scheduling: queued objectives preserve FIFO order without invoking
   expect(third.nextAction).toBe("Waiting for the repo execution slot (2 in queue).");
 }, 120_000);
 
+test("factory scheduling: startImmediately boots an admitted objective inline and queues codex work directly", async () => {
+  const dataDir = await createTempDir("receipt-factory-start-immediate");
+  const repoRoot = await createSourceRepo();
+  const queue = jsonlQueue({ runtime: createJobRuntime(dataDir), stream: "jobs" });
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime: createJobRuntime(dataDir),
+    sse: new SseHub(),
+    codexExecutor: {
+      run: async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "" }),
+    },
+    repoRoot,
+  });
+
+  const created = await service.createObjective({
+    title: "Start immediately",
+    prompt: "Rename Skill to Profile in the sidebar and update related profile copy.",
+    checks: ["git status --short"],
+    startImmediately: true,
+  });
+
+  const taskJob = await findLatestObjectiveJob(queue, created.objectiveId, "factory.task.run");
+  expect(taskJob).toBeTruthy();
+  expect(taskJob?.status).toBe("queued");
+  expect(await countObjectiveControlJobs(queue, created.objectiveId)).toBe(0);
+
+  const refreshed = await service.getObjective(created.objectiveId);
+  expect(refreshed.recentReceipts.some((receipt) => receipt.type === "task.dispatched")).toBe(true);
+  expect(refreshed.nextAction).toBe("Wait for the active task pass to finish.");
+}, 120_000);
+
 test("factory scheduling: archiving an active objective cancels queued task jobs and admits the next objective immediately", async () => {
   const dataDir = await createTempDir("receipt-factory-archive-rebalance");
   const repoRoot = await createSourceRepo();
@@ -280,15 +312,14 @@ test("factory runtime: blocked tasks emit split/supersede mutation receipts at r
       await fs.writeFile(input.promptPath, input.prompt, "utf-8");
       await fs.writeFile(input.stdoutPath, "", "utf-8");
       await fs.writeFile(input.stderrPath, "", "utf-8");
-      const resultPath = input.prompt.match(/Write JSON to (.+?) with:/)?.[1]?.trim();
-      expect(resultPath).toBeTruthy();
-      await fs.writeFile(resultPath, JSON.stringify({
+      const structured = {
         outcome: "blocked",
         summary: "Blocked by missing dependency details.",
         handoff: "Need a smaller unblock task before implementation can continue.",
-      }, null, 2), "utf-8");
-      await fs.writeFile(input.lastMessagePath, "Blocked by missing dependency details.", "utf-8");
-      return { exitCode: 0, signal: null, stdout: "", stderr: "", lastMessage: "blocked" };
+      };
+      const raw = JSON.stringify(structured);
+      await fs.writeFile(input.lastMessagePath, raw, "utf-8");
+      return { exitCode: 0, signal: null, stdout: raw, stderr: "", lastMessage: raw };
     },
   };
   const llmStructured = async <Schema extends ZodTypeAny>(opts: {
@@ -348,15 +379,14 @@ test("factory candidate lineage: rework dispatch mints a fresh candidate id", as
       await fs.writeFile(input.stdoutPath, "", "utf-8");
       await fs.writeFile(input.stderrPath, "", "utf-8");
       await fs.writeFile(path.join(input.workspacePath, "LINEAGE_TEST.txt"), `run ${runs}\n`, "utf-8");
-      const resultPath = input.prompt.match(/Write JSON to (.+?) with:/)?.[1]?.trim();
-      expect(resultPath).toBeTruthy();
-      await fs.writeFile(resultPath, JSON.stringify({
+      const structured = {
         outcome: runs === 1 ? "changes_requested" : "approved",
         summary: runs === 1 ? "Need another pass before review can approve." : "Second pass is ready.",
         handoff: runs === 1 ? "Run another implementation pass with the latest diff." : "Ready for integration.",
-      }, null, 2), "utf-8");
-      await fs.writeFile(input.lastMessagePath, `run ${runs}`, "utf-8");
-      return { exitCode: 0, signal: null, stdout: "", stderr: "", lastMessage: `run ${runs}` };
+      };
+      const raw = JSON.stringify(structured);
+      await fs.writeFile(input.lastMessagePath, raw, "utf-8");
+      return { exitCode: 0, signal: null, stdout: raw, stderr: "", lastMessage: raw };
     },
   };
   const service = new FactoryService({
@@ -387,7 +417,7 @@ test("factory candidate lineage: rework dispatch mints a fresh candidate id", as
   expect(detail.candidates.some((candidate) => candidate.candidateId === "task_01_candidate_02")).toBeTruthy();
 }, 120_000);
 
-test("factory profile policy: workers marked non-worktree are rejected from task dispatch", async () => {
+test("factory profile policy: non-worktree specialist workers are normalized to codex task execution", async () => {
   const dataDir = await createTempDir("receipt-factory-profile-policy");
   const repoRoot = await createSourceRepo();
   const queue = jsonlQueue({ runtime: createJobRuntime(dataDir), stream: "jobs" });
@@ -428,10 +458,14 @@ test("factory profile policy: workers marked non-worktree are rejected from task
     profileId: "generalist",
   });
 
-  await expect(runObjectiveStartup(service, created.objectiveId)).rejects.toThrow(/configured without a task worktree/i);
+  await runObjectiveStartup(service, created.objectiveId);
   const detail = await service.getObjective(created.objectiveId);
   expect(detail.profile.rootProfileId).toBe("generalist");
-  expect(detail.tasks[0]?.workerType).toBe("writer");
+  expect(detail.tasks[0]?.workerType).toBe("codex");
+  const taskJob = await findLatestFactoryJob(queue, created.objectiveId);
+  expect(taskJob.workerType).toBe("codex");
+  const queuedJob = await findLatestObjectiveJob(queue, created.objectiveId, "factory.task.run");
+  expect(queuedJob?.agentId).toBe("codex");
 }, 120_000);
 
 test("factory no-diff discovery tasks are bypassed so downstream implementation can continue", async () => {
@@ -445,12 +479,10 @@ test("factory no-diff discovery tasks are bypassed so downstream implementation 
       await fs.writeFile(input.promptPath, input.prompt, "utf-8");
       await fs.writeFile(input.stdoutPath, "", "utf-8");
       await fs.writeFile(input.stderrPath, "", "utf-8");
-      const resultPath = input.prompt.match(/Write JSON to (.+?) with:/)?.[1]?.trim();
-      expect(resultPath).toBeTruthy();
       if (runs >= 2) {
         await fs.writeFile(path.join(input.workspacePath, "IMPLEMENTED.txt"), `run ${runs}\n`, "utf-8");
       }
-      await fs.writeFile(resultPath, JSON.stringify({
+      const structured = {
         outcome: "approved",
         summary: runs === 1
           ? "Located the Factory header link source but intentionally made no repository changes."
@@ -458,9 +490,10 @@ test("factory no-diff discovery tasks are bypassed so downstream implementation 
         handoff: runs === 1
           ? "Proceed to the implementation task now that the link source is known."
           : "Ready for review.",
-      }, null, 2), "utf-8");
-      await fs.writeFile(input.lastMessagePath, `run ${runs}`, "utf-8");
-      return { exitCode: 0, signal: null, stdout: "", stderr: "", lastMessage: `run ${runs}` };
+      };
+      const raw = JSON.stringify(structured);
+      await fs.writeFile(input.lastMessagePath, raw, "utf-8");
+      return { exitCode: 0, signal: null, stdout: raw, stderr: "", lastMessage: raw };
     },
   };
   const service = new FactoryService({

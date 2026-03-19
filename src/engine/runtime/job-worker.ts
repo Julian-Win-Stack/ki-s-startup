@@ -22,6 +22,7 @@ export type JobWorkerOptions = {
   readonly queue: JsonlQueue;
   readonly handlers: Readonly<Record<string, JobHandler>>;
   readonly workerId: string;
+  readonly leaseAgentIds?: ReadonlyArray<string>;
   readonly idleResyncMs?: number;
   readonly pollMs?: number;
   readonly leaseMs?: number;
@@ -34,6 +35,7 @@ export class JobWorker {
   private readonly queue: JsonlQueue;
   private readonly handlers: Readonly<Record<string, JobHandler>>;
   private readonly workerId: string;
+  private readonly leaseAgentIds?: ReadonlyArray<string>;
   private readonly idleResyncMs: number;
   private readonly leaseMs: number;
   private readonly concurrency: number;
@@ -46,6 +48,7 @@ export class JobWorker {
     this.queue = opts.queue;
     this.handlers = opts.handlers;
     this.workerId = opts.workerId;
+    this.leaseAgentIds = opts.leaseAgentIds?.map((agentId) => agentId.trim()).filter(Boolean);
     this.idleResyncMs = Math.max(1_000, opts.idleResyncMs ?? opts.pollMs ?? 5_000);
     this.leaseMs = Math.max(5_000, opts.leaseMs ?? 30_000);
     this.concurrency = Math.max(1, opts.concurrency ?? 2);
@@ -75,6 +78,17 @@ export class JobWorker {
     this.running = false;
   }
 
+  private async waitForQueueAdvance(sinceVersion: number): Promise<ReturnType<JsonlQueue["snapshot"]>> {
+    const waited = await this.queue.waitForWork({
+      sinceVersion,
+      timeoutMs: this.idleResyncMs,
+    });
+    if (waited.queued > 0 || waited.version > sinceVersion) {
+      return waited;
+    }
+    return this.queue.refresh();
+  }
+
   private async loop(): Promise<void> {
     let seenVersion = this.queue.snapshot().version;
     while (this.running) {
@@ -86,16 +100,21 @@ export class JobWorker {
           continue;
         }
         if (this.active.size > 0) {
-          if (this.active.size >= this.concurrency || current.queued === 0) {
-            await Promise.race(this.active.values());
-            seenVersion = this.queue.snapshot().version;
-            continue;
-          }
+          const next = await Promise.race([
+            Promise.race(this.active.values()).then(() => ({
+              kind: "active" as const,
+            })),
+            this.waitForQueueAdvance(seenVersion).then((snapshot) => ({
+              kind: "queue" as const,
+              snapshot,
+            })),
+          ]);
+          seenVersion = next.kind === "queue"
+            ? next.snapshot.version
+            : this.queue.snapshot().version;
+          continue;
         }
-        const next = await this.queue.waitForWork({
-          sinceVersion: seenVersion,
-          timeoutMs: this.idleResyncMs,
-        });
+        const next = await this.waitForQueueAdvance(seenVersion);
         seenVersion = next.version;
       } catch (err) {
         this.reportError(err);
@@ -115,6 +134,7 @@ export class JobWorker {
       const leased = await this.queue.leaseNext({
         workerId: this.workerId,
         leaseMs: this.leaseMs,
+        ...(this.leaseAgentIds?.length ? { agentIds: this.leaseAgentIds } : {}),
       });
       if (!leased) break;
       const runPromise = this.runLeased(leased)

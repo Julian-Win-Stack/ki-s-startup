@@ -35,6 +35,7 @@ import {
   factoryChatCodexArtifactPaths,
   readTextTail,
 } from "../services/factory-codex-artifacts.js";
+import { readRepoStatus } from "../lib/repo-status.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -97,6 +98,7 @@ const FACTORY_CHAT_LOOP_TEMPLATE = [
   "- Use `codex.run` only for read-only inspection or evidence-gathering in the current repo.",
   "- Use `factory.dispatch` for any code-changing delivery work or when the next step should run in an objective worktree.",
   "- Before `react`, `promote`, `cancel`, or duplicate dispatch, ground the decision in the current situation, receipts, or live output.",
+  "- When child work is already active, prefer `codex.status`, `factory.status`, or `factory.output` with `waitForChangeMs` so you wait for real progress instead of tight polling.",
   "",
   "For final answers to the user:",
   "- write plain language, not raw JSON",
@@ -131,6 +133,44 @@ const asStringList = (value: unknown): ReadonlyArray<string> =>
 
 const clip = (value: string, max = 160): string =>
   value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const clampWaitMs = (value: unknown, max = 20_000): number =>
+  typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.min(Math.floor(value), max))
+    : 0;
+
+const waitForSnapshotChange = async <T>(
+  initial: T,
+  waitMs: number,
+  snapshot: () => Promise<T>,
+): Promise<{ readonly value: T; readonly waitedMs: number; readonly changed: boolean }> => {
+  if (waitMs <= 0) return { value: initial, waitedMs: 0, changed: false };
+  const startedAt = Date.now();
+  const initialFingerprint = JSON.stringify(initial);
+  let current = initial;
+  while (Date.now() - startedAt < waitMs) {
+    const remaining = waitMs - (Date.now() - startedAt);
+    await delay(Math.min(1_000, Math.max(50, remaining)));
+    current = await snapshot();
+    if (JSON.stringify(current) !== initialFingerprint) {
+      return {
+        value: current,
+        waitedMs: Date.now() - startedAt,
+        changed: true,
+      };
+    }
+  }
+  return {
+    value: current,
+    waitedMs: Date.now() - startedAt,
+    changed: false,
+  };
+};
 
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === "object" && !Array.isArray(value)
@@ -581,55 +621,67 @@ const createCodexStatusTool = (input: {
   readonly dataDir?: string;
 }): AgentToolExecutor =>
   async (toolInput) => {
-    const jobId = asString(toolInput.jobId);
-    if (jobId) {
-      const job = await input.queue.getJob(jobId);
-      if (!job) throw new Error(`job ${jobId} not found`);
-      if (job.agentId !== "codex") throw new Error(`job ${jobId} is not a codex job`);
-      const snapshot = await codexJobSnapshot(job, input.dataDir);
-      return {
-        output: JSON.stringify({
+    const waitForChangeMs = clampWaitMs(toolInput.waitForChangeMs);
+    const buildStatus = async (): Promise<Record<string, unknown>> => {
+      const jobId = asString(toolInput.jobId);
+      if (jobId) {
+        const job = await input.queue.getJob(jobId);
+        if (!job) throw new Error(`job ${jobId} not found`);
+        if (job.agentId !== "codex") throw new Error(`job ${jobId} is not a codex job`);
+        const snapshot = await codexJobSnapshot(job, input.dataDir);
+        return {
           worker: "codex",
           activeCount: isActiveJobStatus(job.status) ? 1 : 0,
           latest: snapshot,
           jobs: [snapshot],
-        }, null, 2),
-        summary: `codex ${jobId}: ${String(snapshot.status)}`,
+        };
+      }
+      const limit = typeof toolInput.limit === "number" && Number.isFinite(toolInput.limit)
+        ? Math.max(1, Math.min(Math.floor(toolInput.limit), 10))
+        : 5;
+      const includeCompleted = toolInput.includeCompleted === true;
+      const jobs = (await input.queue.listJobs({ limit: 200 }))
+        .filter((job) => job.agentId === "codex")
+        .filter((job) => jobMatchesProfileContext(job, {
+          runId: input.runId,
+          stream: input.stream,
+          profileId: input.profile.root.id,
+          objectiveId: input.objectiveId,
+        }))
+        .filter((job) => includeCompleted || isActiveJobStatus(job.status))
+        .sort((left, right) =>
+          codexJobPriority(right, { runId: input.runId, objectiveId: input.objectiveId })
+          - codexJobPriority(left, { runId: input.runId, objectiveId: input.objectiveId })
+          || right.updatedAt - left.updatedAt);
+      const snapshots = await Promise.all(jobs.slice(0, limit).map((job) => codexJobSnapshot(job, input.dataDir)));
+      return {
+        worker: "codex",
+        activeCount: jobs.filter((job) => isActiveJobStatus(job.status)).length,
+        latest: snapshots[0] ?? null,
+        jobs: snapshots,
       };
-    }
-    const limit = typeof toolInput.limit === "number" && Number.isFinite(toolInput.limit)
-      ? Math.max(1, Math.min(Math.floor(toolInput.limit), 10))
-      : 5;
-    const includeCompleted = toolInput.includeCompleted === true;
-    const jobs = (await input.queue.listJobs({ limit: 200 }))
-      .filter((job) => job.agentId === "codex")
-      .filter((job) => jobMatchesProfileContext(job, {
-        runId: input.runId,
-        stream: input.stream,
-        profileId: input.profile.root.id,
-        objectiveId: input.objectiveId,
-      }))
-      .filter((job) => includeCompleted || isActiveJobStatus(job.status))
-      .sort((left, right) =>
-        codexJobPriority(right, { runId: input.runId, objectiveId: input.objectiveId })
-        - codexJobPriority(left, { runId: input.runId, objectiveId: input.objectiveId })
-        || right.updatedAt - left.updatedAt);
-    const snapshots = await Promise.all(jobs.slice(0, limit).map((job) => codexJobSnapshot(job, input.dataDir)));
+    };
+    const initial = await buildStatus();
+    const waited = waitForChangeMs > 0 && Number(initial.activeCount ?? 0) > 0
+      ? await waitForSnapshotChange(initial, waitForChangeMs, buildStatus)
+      : { value: initial, waitedMs: 0, changed: false };
+    const payload = waited.waitedMs > 0
+      ? { ...waited.value, waitedMs: waited.waitedMs, changed: waited.changed }
+      : waited.value;
+    const snapshots = Array.isArray(payload.jobs)
+      ? payload.jobs as ReadonlyArray<Record<string, unknown>>
+      : [];
     const latest = snapshots[0];
-    const activeCount = jobs.filter((job) => isActiveJobStatus(job.status)).length;
+    const activeCount = Number(payload.activeCount ?? 0);
     const summary = latest
       ? activeCount > 0
         ? `codex active: ${String(latest.jobId)} (${String(latest.status)})`
         : `latest codex job ${String(latest.jobId)} is ${String(latest.status)}`
       : "no codex jobs found for this context";
     return {
-      output: JSON.stringify({
-        worker: "codex",
-        activeCount,
-        latest: latest ?? null,
-        jobs: snapshots,
-      }, null, 2),
-      summary,
+      output: JSON.stringify(payload, null, 2),
+      summary: `${summary}${waited.waitedMs > 0 ? ` after waiting ${waited.waitedMs}ms` : ""}`,
+      pauseBudget: waited.waitedMs > 0 && waited.changed === false,
     };
   };
 
@@ -714,6 +766,23 @@ const createJobControlTool = (input: {
     };
   };
 
+const createRepoStatusTool = (input: {
+  readonly repoRoot: string;
+}): AgentToolExecutor =>
+  async () => {
+    const status = await readRepoStatus(path.resolve(input.repoRoot));
+    return {
+      output: JSON.stringify({
+        worker: "repo",
+        action: "status",
+        ...status,
+      }, null, 2),
+      summary: `${status.branch}@${status.baseHash.slice(0, 8)} ${status.dirty ? `dirty (${status.changedCount})` : "clean"}`,
+    };
+  };
+
+const latestObjectiveByRun = new Map<string, string>();
+
 const createFactoryDispatchTool = (input: {
   readonly factoryService: FactoryService;
   readonly repoKey: string;
@@ -725,18 +794,29 @@ const createFactoryDispatchTool = (input: {
     const objectiveId = asString(toolInput.objectiveId);
     const action = asString(toolInput.action) ?? (objectiveId ? "react" : "create");
     let detail: Awaited<ReturnType<FactoryService["getObjective"]>>;
+    let reused = false;
     if (action === "create") {
       const prompt = asString(toolInput.prompt);
       if (!prompt) throw new Error("factory.dispatch create requires prompt");
-      const payload: FactoryObjectiveInput = {
-        title: asString(toolInput.title) ?? deriveObjectiveTitle(prompt),
-        prompt,
-        baseHash: asString(toolInput.baseHash),
-        checks: asStringList(toolInput.checks),
-        channel: asString(toolInput.channel),
-        profileId: input.profileId,
-      };
-      detail = await input.factoryService.createObjective(payload);
+      const existingObjectiveId = latestObjectiveByRun.get(input.runId);
+      const existing = existingObjectiveId
+        ? await input.factoryService.getObjective(existingObjectiveId).catch(() => undefined)
+        : undefined;
+      if (existing && !existing.archivedAt && existing.status !== "completed") {
+        detail = existing;
+        reused = true;
+      } else {
+        const payload: FactoryObjectiveInput = {
+          title: asString(toolInput.title) ?? deriveObjectiveTitle(prompt),
+          prompt,
+          baseHash: asString(toolInput.baseHash),
+          checks: asStringList(toolInput.checks),
+          channel: asString(toolInput.channel),
+          profileId: input.profileId,
+          startImmediately: true,
+        };
+        detail = await input.factoryService.createObjective(payload);
+      }
     } else if (action === "react") {
       if (!objectiveId) throw new Error("factory.dispatch react requires objectiveId");
       await input.factoryService.reactObjective(objectiveId);
@@ -757,6 +837,11 @@ const createFactoryDispatchTool = (input: {
       throw new Error(`unsupported factory.dispatch action '${action}'`);
     }
     const summary = summarizeObjective(detail);
+    if (detail.archivedAt || detail.status === "completed") {
+      latestObjectiveByRun.delete(input.runId);
+    } else {
+      latestObjectiveByRun.set(input.runId, detail.objectiveId);
+    }
     await commitWorkerSummary(
       input.memoryTools,
       workerMemoryScope(input.repoKey, "factory"),
@@ -764,7 +849,7 @@ const createFactoryDispatchTool = (input: {
       { runId: input.runId, objectiveId: summary.objectiveId, action },
     );
     return {
-      output: JSON.stringify({ worker: "factory", action, ...summary }, null, 2),
+      output: JSON.stringify({ worker: "factory", action, reused, ...summary }, null, 2),
       summary: summary.summary,
     };
   };
@@ -776,27 +861,44 @@ const createFactoryStatusTool = (input: {
   async (toolInput) => {
     const objectiveId = asString(toolInput.objectiveId) ?? input.objectiveId;
     if (!objectiveId) throw new Error("factory.status requires objectiveId");
-    const [detail, debug, receipts] = await Promise.all([
-      input.factoryService.getObjective(objectiveId),
-      input.factoryService.getObjectiveDebug(objectiveId),
-      input.factoryService.listObjectiveReceipts(objectiveId, { limit: 20 }),
-    ]);
-    const summary = summarizeObjective(detail);
-    return {
-      output: JSON.stringify({
+    const waitForChangeMs = clampWaitMs(toolInput.waitForChangeMs);
+    const buildStatus = async (): Promise<Record<string, unknown>> => {
+      const [detail, debug, receipts] = await Promise.all([
+        input.factoryService.getObjective(objectiveId),
+        input.factoryService.getObjectiveDebug(objectiveId),
+        input.factoryService.listObjectiveReceipts(objectiveId, { limit: 20 }),
+      ]);
+      const summary = summarizeObjective(detail);
+      return {
         worker: "factory",
         action: "status",
         ...summary,
         latestDecision: detail.latestDecision,
         blockedExplanation: detail.blockedExplanation,
-        evidenceCards: detail.evidenceCards.slice(-8),
+        evidenceCards: Array.isArray(detail.evidenceCards) ? detail.evidenceCards.slice(-8) : [],
         recentReceipts: receipts,
         activeJobs: debug.activeJobs,
         taskWorktrees: debug.taskWorktrees,
         integrationWorktree: debug.integrationWorktree,
         latestContextPacks: debug.latestContextPacks,
-      }, null, 2),
-      summary: summary.summary,
+      };
+    };
+    const initial = await buildStatus();
+    const waited = waitForChangeMs > 0 && (
+      asString(initial.status) === "queued"
+      || asString(initial.status) === "active"
+      || asString(initial.status) === "executing"
+      || (Array.isArray(initial.activeJobs) && initial.activeJobs.length > 0)
+    )
+      ? await waitForSnapshotChange(initial, waitForChangeMs, buildStatus)
+      : { value: initial, waitedMs: 0, changed: false };
+    const payload = waited.waitedMs > 0
+      ? { ...waited.value, waitedMs: waited.waitedMs, changed: waited.changed }
+      : waited.value;
+    return {
+      output: JSON.stringify(payload, null, 2),
+      summary: `${String(payload.summary ?? payload.title ?? objectiveId)}${waited.waitedMs > 0 ? ` after waiting ${waited.waitedMs}ms` : ""}`,
+      pauseBudget: waited.waitedMs > 0 && waited.changed === false,
     };
   };
 
@@ -813,14 +915,23 @@ const createFactoryOutputTool = (input: {
       throw new Error("factory.output requires focusKind of 'task' or 'job'");
     }
     if (!focusId) throw new Error("factory.output requires focusId");
-    const liveOutput = await input.factoryService.getObjectiveLiveOutput(objectiveId, focusKind, focusId);
+    const waitForChangeMs = clampWaitMs(toolInput.waitForChangeMs);
+    const buildOutput = async (): Promise<Record<string, unknown>> => ({
+      worker: "factory",
+      action: "output",
+      ...await input.factoryService.getObjectiveLiveOutput(objectiveId, focusKind, focusId),
+    });
+    const initial = await buildOutput();
+    const waited = waitForChangeMs > 0 && initial.active === true
+      ? await waitForSnapshotChange(initial, waitForChangeMs, buildOutput)
+      : { value: initial, waitedMs: 0, changed: false };
+    const payload = waited.waitedMs > 0
+      ? { ...waited.value, waitedMs: waited.waitedMs, changed: waited.changed }
+      : waited.value;
     return {
-      output: JSON.stringify({
-        worker: "factory",
-        action: "output",
-        ...liveOutput,
-      }, null, 2),
-      summary: liveOutput.summary ?? `${focusKind} ${focusId}: ${liveOutput.status}`,
+      output: JSON.stringify(payload, null, 2),
+      summary: `${String(payload.summary ?? `${focusKind} ${focusId}: ${String(payload.status ?? "unknown")}`)}${waited.waitedMs > 0 ? ` after waiting ${waited.waitedMs}ms` : ""}`,
+      pauseBudget: waited.waitedMs > 0 && waited.changed === false,
     };
   };
 
@@ -861,6 +972,7 @@ const discoveryTools = new Set([
   "memory.summarize",
   "codex.run",
   "agent.status",
+  "repo.status",
   "codex.status",
   "codex.logs",
   "jobs.list",
@@ -877,6 +989,7 @@ const deliveryTools = new Set([
 
 const monitorWhileChildRunningTools = new Set([
   "agent.status",
+  "repo.status",
   "codex.status",
   "codex.logs",
   "jobs.list",
@@ -1098,6 +1211,9 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
       profile: resolvedProfile,
       objectiveId: input.objectiveId,
     }),
+    "repo.status": createRepoStatusTool({
+      repoRoot,
+    }),
     "codex.status": createCodexStatusTool({
       queue: input.queue,
       runId: input.runId,
@@ -1271,15 +1387,16 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
       "agent.delegate": "{\"agentId\": string, \"task\": string, \"config\"?: object} — Queue a Receipt-native subagent and return its live job handle immediately.",
       "agent.status": "{\"jobId\": string} — Inspect a queued or running child job and return its latest normalized state. Do not pass the current factory job id.",
       "jobs.list": "{\"limit\"?: number, \"status\"?: string, \"includeCompleted\"?: boolean} — List recent jobs related to the current Factory skill chat.",
-      "codex.status": "{\"jobId\"?: string, \"limit\"?: number, \"includeCompleted\"?: boolean} — Inspect live Codex activity for the current run, project, or skill chat. With jobId, inspect that Codex child directly.",
+      "repo.status": "{} — Read control-plane git state for the current repo: HEAD baseHash, branch, dirty/clean state, and a bounded git status --porcelain summary. Use this when Factory needs baseHash for a dirty source tree.",
+      "codex.status": "{\"jobId\"?: string, \"limit\"?: number, \"includeCompleted\"?: boolean, \"waitForChangeMs\"?: number} — Inspect live Codex activity for the current run, project, or skill chat. With waitForChangeMs, block briefly until the child changes.",
       ...(input.dataDir ? {
         "codex.logs": "{\"jobId\"?: string} — Inspect Codex child logs, packet files, and artifact paths for this Factory chat context. Without jobId, use the latest Codex child.",
       } : {}),
       "job.control": "{\"jobId\": string, \"command\": \"steer\"|\"follow_up\"|\"abort\", \"problem\"?: string, \"config\"?: object, \"note\"?: string, \"reason\"?: string} — Queue a steer, follow-up, or abort command for a running child job. Do not pass the current factory job id.",
       "codex.run": "{\"prompt\": string, \"timeoutMs\"?: number} — Queue a read-only Codex probe against the repo and return its live child job handle immediately. Use it for inspection and evidence-gathering only; use factory.dispatch for code changes.",
       "factory.dispatch": "{\"action\"?: \"create\"|\"react\"|\"promote\"|\"cancel\"|\"cleanup\"|\"archive\", \"objectiveId\"?: string, \"prompt\"?: string, \"title\"?: string, \"baseHash\"?: string, \"checks\"?: string[], \"channel\"?: string, \"reason\"?: string} — Create or operate on a tracked Factory project. 'react' means re-evaluate the project and dispatch the next eligible step.",
-      "factory.status": "{\"objectiveId\"?: string} — Inspect a tracked Factory project and return objective state, decisions, evidence cards, recent receipts, jobs, worktrees, and latest context packs.",
-      "factory.output": "{\"objectiveId\"?: string, \"focusKind\": \"task\"|\"job\", \"focusId\": string} — Inspect live output and log tails for an objective task or job.",
+      "factory.status": "{\"objectiveId\"?: string, \"waitForChangeMs\"?: number} — Inspect a tracked Factory project and return objective state, decisions, evidence cards, recent receipts, jobs, worktrees, and latest context packs. With waitForChangeMs, block briefly until the objective changes.",
+      "factory.output": "{\"objectiveId\"?: string, \"focusKind\": \"task\"|\"job\", \"focusId\": string, \"waitForChangeMs\"?: number} — Inspect live output and log tails for an objective task or job. With waitForChangeMs, block briefly until the output changes.",
       "factory.receipts": "{\"objectiveId\"?: string, \"taskId\"?: string, \"candidateId\"?: string, \"types\"?: string[], \"limit\"?: number} — Inspect a bounded objective-scoped receipt slice for the current project.",
       "profile.handoff": "{\"profileId\": string, \"reason\"?: string} — Hand off the conversation to another Factory skill chat.",
       ...(input.extraToolSpecs ?? {}),

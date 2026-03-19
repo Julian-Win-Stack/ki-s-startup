@@ -224,6 +224,91 @@ test("agent emits structured failure receipts when native structured output is i
   }
 });
 
+test("agent does not exhaust its iteration budget while only waiting on delegated work", async () => {
+  const dir = await mkTmp("receipt-agent-wait-budget");
+  const dataDir = path.join(dir, "data");
+  const workspaceRoot = path.join(dir, "workspace");
+
+  await fs.mkdir(dataDir, { recursive: true });
+  await fs.mkdir(workspaceRoot, { recursive: true });
+
+  const runtime = mkRuntime(dataDir);
+  const memoryTools = mkMemoryTools();
+  const delegationTools = mkDelegationTools();
+
+  let llmCalls = 0;
+  const llmText: AgentRunInput["llmText"] = async () => {
+    llmCalls += 1;
+    if (llmCalls === 1) {
+      return JSON.stringify({
+        thought: "wait for the delegated worker",
+        action: {
+          type: "tool",
+          name: "test.wait",
+          input: {},
+        },
+      });
+    }
+    return JSON.stringify({
+      thought: "done",
+      action: {
+        type: "final",
+        text: "delegated work settled",
+      },
+    });
+  };
+
+  const result = await runAgent({
+    stream: "agents/agent",
+    runId: "wait_budget",
+    problem: "Wait for delegated work to finish.",
+    config: {
+      maxIterations: 1,
+      maxToolOutputChars: 2000,
+      memoryScope: "agent",
+      workspace: ".",
+    },
+    runtime,
+    prompts: {
+      system: "",
+      user: {
+        loop: "{{problem}}\\n{{transcript}}\\n{{memory}}\\n{{workspace}}",
+      },
+    },
+    llmText,
+    llmStructured: structuredFromText(llmText),
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools,
+    workspaceRoot,
+    extraToolSpecs: {
+      "test.wait": "{} - Wait for delegated work to change.",
+    },
+    extraTools: {
+      "test.wait": async () => ({
+        output: JSON.stringify({ waitedMs: 20_000, changed: false }),
+        summary: "delegated work still running",
+        pauseBudget: true,
+      }),
+    },
+  });
+
+  try {
+    const runChain = await runtime.chain("agents/agent/runs/wait_budget");
+    const finalStatus = runChain.findLast((receipt): receipt is typeof receipt & { body: Extract<AgentEvent, { type: "run.status" }> } =>
+      receipt.body.type === "run.status"
+    );
+
+    expect(result.status).toBe("completed");
+    expect(result.finalResponse).toBe("delegated work settled");
+    expect(finalStatus?.body.status).toBe("completed");
+    expect(runChain.some((receipt) => receipt.body.type === "failure.report")).toBe(false);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("agent uses native structured actions when available", async () => {
   const dir = await mkTmp("receipt-agent-structured");
   const dataDir = path.join(dir, "data");

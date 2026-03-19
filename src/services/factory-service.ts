@@ -91,6 +91,20 @@ const resolveRepoRoot = (repoRoot?: string): string =>
   || process.cwd();
 const DISCOVERY_ONLY_RE = /\b(search|locate|identify|inspect|find|trace|look\s+for|determine|record)\b/i;
 const DIFF_PRODUCING_RE = /\b(edit|change|update|remove|add|implement|write|modify|refactor|fix|test|verify|run|create)\b/i;
+const FACTORY_TASK_RESULT_SCHEMA = {
+  type: "object",
+  properties: {
+    outcome: { type: "string", enum: ["approved", "changes_requested", "blocked"] },
+    summary: { type: "string" },
+    handoff: { type: "string" },
+  },
+  required: ["outcome", "summary", "handoff"],
+  additionalProperties: false,
+} as const;
+const FACTORY_TASK_CODEX_MODEL =
+  process.env.RECEIPT_FACTORY_TASK_MODEL?.trim()
+  || process.env.HUB_FACTORY_TASK_MODEL?.trim()
+  || "gpt-5.4-mini";
 
 const shortHash = (value: string | undefined): string => value ? value.slice(0, 8) : "none";
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -130,6 +144,8 @@ const clipText = (value: string | undefined, max = 280): string | undefined => {
   if (!trimmed) return undefined;
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
 };
+const safeWorkspacePart = (value: string): string =>
+  value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
 const tailText = (value: string, maxChars: number): string =>
   value.length <= maxChars ? value.trimEnd() : `…${value.slice(value.length - maxChars).trimEnd()}`;
 const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
@@ -230,6 +246,7 @@ export type FactoryObjectiveInput = {
   readonly channel?: string;
   readonly policy?: FactoryObjectivePolicy;
   readonly profileId?: string;
+  readonly startImmediately?: boolean;
 };
 
 export type FactoryObjectiveComposeInput = {
@@ -241,6 +258,7 @@ export type FactoryObjectiveComposeInput = {
   readonly channel?: string;
   readonly policy?: FactoryObjectivePolicy;
   readonly profileId?: string;
+  readonly startImmediately?: boolean;
 };
 
 export type FactoryQueuedJobCommand = {
@@ -728,6 +746,10 @@ export class FactoryService {
   readonly memoryTools?: MemoryTools;
   readonly git: HubGit;
   readonly profileRoot: string;
+  private readonly baselineCheckCache = new Map<string, Promise<{
+    readonly digest: string;
+    readonly excerpt: string;
+  } | undefined>>();
 
   private readonly runtime: Runtime<FactoryCmd, FactoryEvent, FactoryState>;
   private readonly llmStructured?: FactoryServiceOptions["llmStructured"];
@@ -798,9 +820,23 @@ export class FactoryService {
     requestedWorkerType: string | undefined,
   ): FactoryWorkerType {
     const requested = normalizeWorkerType(requestedWorkerType);
-    if (profile.objectivePolicy.allowedWorkerTypes.includes(requested)) return requested;
+    const requestedMode = profile.objectivePolicy.worktreeModeByWorker[requested] ?? "required";
+    if (
+      profile.objectivePolicy.allowedWorkerTypes.includes(requested)
+      && requestedMode !== "forbidden"
+    ) {
+      return requested;
+    }
     const fallback = normalizeWorkerType(String(profile.objectivePolicy.defaultWorkerType));
-    if (profile.objectivePolicy.allowedWorkerTypes.includes(fallback)) return fallback;
+    const fallbackMode = profile.objectivePolicy.worktreeModeByWorker[fallback] ?? "required";
+    if (
+      profile.objectivePolicy.allowedWorkerTypes.includes(fallback)
+      && fallbackMode !== "forbidden"
+    ) {
+      return fallback;
+    }
+    const codex = normalizeWorkerType("codex");
+    if (profile.objectivePolicy.allowedWorkerTypes.includes(codex)) return codex;
     return normalizeWorkerType(String(DEFAULT_FACTORY_OBJECTIVE_PROFILE.objectivePolicy.defaultWorkerType));
   }
 
@@ -985,7 +1021,11 @@ export class FactoryService {
             admittedAt: createdAt + 1,
           },
     ]);
-    await this.enqueueObjectiveControl(objectiveId, "startup");
+    if (input.startImmediately && !hasActiveSlot) {
+      await this.processObjectiveStartup(objectiveId, "startup");
+    } else {
+      await this.enqueueObjectiveControl(objectiveId, "startup");
+    }
     return this.getObjective(objectiveId);
   }
 
@@ -1210,6 +1250,7 @@ export class FactoryService {
       channel: input.channel,
       policy: input.policy,
       profileId: input.profileId,
+      startImmediately: input.startImmediately,
     });
   }
 
@@ -2232,13 +2273,19 @@ export class FactoryService {
     }
     const renderedPrompt = await this.renderTaskPrompt(state, task, parsed);
     const receiptBinDir = await this.ensureWorkspaceReceiptCli(parsed.workspacePath);
-    await this.codexExecutor.run({
+    const resultSchemaPath = this.taskResultSchemaPath(parsed.resultPath);
+    await fs.mkdir(path.dirname(resultSchemaPath), { recursive: true });
+    await fs.writeFile(resultSchemaPath, JSON.stringify(FACTORY_TASK_RESULT_SCHEMA, null, 2), "utf-8");
+    const execution = await this.codexExecutor.run({
       prompt: renderedPrompt,
       workspacePath: parsed.workspacePath,
       promptPath: parsed.promptPath,
       lastMessagePath: parsed.lastMessagePath,
       stdoutPath: parsed.stdoutPath,
       stderrPath: parsed.stderrPath,
+      model: FACTORY_TASK_CODEX_MODEL,
+      outputSchemaPath: resultSchemaPath,
+      reasoningEffort: "low",
       objectiveId: parsed.objectiveId,
       taskId: parsed.taskId,
       candidateId: parsed.candidateId,
@@ -2251,8 +2298,9 @@ export class FactoryService {
         PATH: prependPath(receiptBinDir, process.env.PATH),
       },
     }, control);
-    const rawResult = await fs.readFile(parsed.resultPath, "utf-8").catch(() => "");
-    await this.applyTaskWorkerResult(parsed, this.parseTaskResult(rawResult));
+    const taskResult = await this.resolveTaskWorkerResult(parsed.resultPath, execution);
+    await fs.writeFile(parsed.resultPath, JSON.stringify(taskResult, null, 2), "utf-8");
+    await this.applyTaskWorkerResult(parsed, taskResult);
     await this.reactObjective(parsed.objectiveId);
     return {
       objectiveId: parsed.objectiveId,
@@ -2335,7 +2383,7 @@ export class FactoryService {
     });
 
     if (failedCheck) {
-      const classification = this.classifyFailedCheck(state, failedCheck);
+      const classification = await this.classifyFailedCheck(state, failedCheck, payload.baseCommit);
       const inheritedOnly = classification.inherited;
       const reviewStatus: Extract<FactoryCandidateStatus, "approved" | "changes_requested" | "rejected"> =
         inheritedOnly && outcome === "approved" ? "approved" : "changes_requested";
@@ -2392,7 +2440,7 @@ export class FactoryService {
     await fs.writeFile(parsed.stdoutPath, results.map((result) => result.stdout).join("\n"), "utf-8");
     await fs.writeFile(parsed.stderrPath, results.map((result) => result.stderr).join("\n"), "utf-8");
     if (failed) {
-      const classification = this.classifyFailedCheck(state, failed);
+      const classification = await this.classifyFailedCheck(state, failed, state.integration.headCommit ?? state.baseHash);
       if (classification.inherited) {
         const head = await this.git.worktreeStatus(parsed.workspacePath);
         const summary = `Integration checks only reproduced inherited failures for ${parsed.candidateId}.`;
@@ -2568,7 +2616,7 @@ export class FactoryService {
     };
     const created = await this.queue.enqueue({
       jobId,
-      agentId: workerType === "codex" ? "codex" : String(workerType),
+      agentId: "codex",
       lane: "collect",
       sessionKey: `factory:${state.objectiveId}:${task.taskId}`,
       singletonMode: "allow",
@@ -4435,7 +4483,12 @@ export class FactoryService {
     await fs.mkdir(artifactPaths.root, { recursive: true });
     await fs.rm(artifactPaths.resultPath, { force: true });
     const profile = await this.resolveObjectiveProfileSnapshot(input.profileId);
-    const repoSkillPaths = await this.collectRepoSkillPaths();
+    const includeFactoryObjectiveSkills = Boolean(input.objectiveId);
+    const repoSkillPaths = (await this.collectRepoSkillPaths()).filter((skillPath) =>
+      includeFactoryObjectiveSkills
+      || (!skillPath.includes("/skills/factory-receipt-worker/")
+        && !skillPath.includes("/skills/factory-run-orchestrator/"))
+    );
     const repoKey = repoKeyForRoot(this.git.repoRoot);
     const repoScope = `repos/${repoKey}`;
     const profileScope = `${repoScope}/profiles/${profile.rootProfileId}`;
@@ -4556,10 +4609,13 @@ export class FactoryService {
       }));
 
     const contextPack = {
-      objectiveId: input.objectiveId ?? `direct/${input.jobId}`,
+      ...(input.objectiveId ? { objectiveId: input.objectiveId } : {}),
+      probeId: input.jobId,
       title: objectiveDetail?.title ?? "Direct Codex Probe",
       prompt: input.prompt,
-      mode: readOnly ? "read_only_direct_codex_probe" : "direct_codex",
+      mode: input.objectiveId
+        ? (readOnly ? "read_only_direct_codex_probe" : "direct_codex")
+        : (readOnly ? "read_only_repo_probe" : "direct_repo_probe"),
       profile,
       task: {
         taskId: `direct_codex_${input.jobId}`,
@@ -4569,9 +4625,9 @@ export class FactoryService {
         status: "running",
         candidateId: input.jobId,
       },
-      integration: objectiveDetail?.integration ?? {
-        status: "idle",
-      },
+      ...(objectiveDetail ? {
+        integration: objectiveDetail.integration,
+      } : {}),
       dependencyTree: [],
       relatedTasks: frontierTasks,
       candidateLineage: [],
@@ -4582,20 +4638,22 @@ export class FactoryService {
         candidateId: receipt.candidateId,
         summary: receipt.summary,
       })),
-      objectiveSlice: {
-        frontierTasks,
-        recentCompletedTasks,
-        integrationTasks,
-        recentObjectiveReceipts: objectiveReceipts.map((receipt) => ({
-          type: receipt.type,
-          at: receipt.ts,
-          taskId: receipt.taskId,
-          candidateId: receipt.candidateId,
-          summary: receipt.summary,
-        })),
-        objectiveMemorySummary: objectiveMemory,
-        integrationMemorySummary: integrationMemory,
-      },
+      ...(objectiveDetail ? {
+        objectiveSlice: {
+          frontierTasks,
+          recentCompletedTasks,
+          integrationTasks,
+          recentObjectiveReceipts: objectiveReceipts.map((receipt) => ({
+            type: receipt.type,
+            at: receipt.ts,
+            taskId: receipt.taskId,
+            candidateId: receipt.candidateId,
+            summary: receipt.summary,
+          })),
+          objectiveMemorySummary: objectiveMemory,
+          integrationMemorySummary: integrationMemory,
+        },
+      } : {}),
       memory: {
         overview: [repoMemory, profileMemory, objectiveMemory, workerMemory].filter(Boolean).join("\n\n") || undefined,
         objective: objectiveMemory,
@@ -4672,6 +4730,7 @@ export class FactoryService {
         summary: readOnly
           ? "This Codex probe is read-only. Use it for inspection, receipts, and diagnosis. Code changes must go through a Factory objective."
           : "This Codex run may edit the workspace.",
+        objectiveBacked: Boolean(input.objectiveId),
       },
     };
 
@@ -4716,13 +4775,18 @@ export class FactoryService {
     task: FactoryTaskRecord,
     payload: FactoryTaskJobPayload,
   ): Promise<string> {
-    const objectiveStreamRef = objectiveStream(state.objectiveId);
     const dependencySummaries = task.dependsOn
       .map((depId) => state.graph.nodes[depId])
       .filter((dep): dep is FactoryTaskRecord => Boolean(dep))
       .map((dep) => `- ${dep.taskId}: ${dep.latestSummary ?? dep.title}`)
       .join("\n") || "- none";
+    const downstreamSummaries = state.taskOrder
+      .map((taskId) => state.graph.nodes[taskId])
+      .filter((candidate): candidate is FactoryTaskRecord => Boolean(candidate) && candidate.dependsOn.includes(task.taskId))
+      .map((candidate) => `- ${candidate.taskId}: ${candidate.title}`)
+      .join("\n") || "- none";
     const memorySummary = await this.loadMemorySummary(`factory/objectives/${state.objectiveId}/tasks/${task.taskId}`, task.prompt);
+    const validationSection = this.renderTaskValidationSection(state, task);
     return [
       `# Factory Task`,
       ``,
@@ -4743,67 +4807,82 @@ export class FactoryService {
       `## Dependencies`,
       dependencySummaries,
       ``,
-      `## Checks`,
-      state.checks.map((check) => `- ${check}`).join("\n") || "- none",
+      `## Task Boundary`,
+      `Complete only ${task.taskId}. Do not absorb downstream work that already belongs to other planned tasks unless a tiny unblock is strictly required.`,
+      `Downstream tasks already queued in this objective:`,
+      downstreamSummaries,
+      `If you notice adjacent copy, validation, or follow-up work outside this task's scope, mention it in the handoff instead of implementing it here.`,
       ``,
-      `## Profile Context`,
-      `- Initiating profile: ${payload.profile.rootProfileLabel} (${payload.profile.rootProfileId})`,
-      `- Profile prompt: ${payload.profile.promptPath}`,
-      `- Profile prompt hash: ${payload.profilePromptHash}`,
-      `- Allowed workers: ${payload.profile.objectivePolicy.allowedWorkerTypes.join(", ") || "none"}`,
-      `- Default worker: ${payload.profile.objectivePolicy.defaultWorkerType}`,
-      `- Selected profile skills: ${payload.profileSkillRefs.join(", ") || "- none"}`,
+      ...validationSection,
       ``,
       `## Bootstrap Context`,
-      `The prompt is bootstrap only. Read AGENTS.md and skills/factory-receipt-worker/SKILL.md before making code, retry, review, or inherited-failure claims.`,
-      `Current packet files:`,
-      `- Manifest: ${payload.manifestPath}`,
-      `- Context Pack: ${payload.contextPackPath}`,
-      `- Memory Script: ${payload.memoryScriptPath}`,
-      `- Memory Config: ${payload.memoryConfigPath}`,
-      `- Result Path: ${payload.resultPath}`,
-      payload.sharedArtifactRefs.length ? `- Shared Artifacts: ${payload.sharedArtifactRefs.map((ref) => ref.ref).join(", ")}` : "",
-      `Current objective inspection:`,
-      `- receipt factory inspect ${state.objectiveId} --json --panel debug`,
+      `The prompt is bootstrap only. Prefer the packet files and memory script over broad repo exploration.`,
+      `Read, in order:`,
+      `1. AGENTS.md and skills/factory-receipt-worker/SKILL.md`,
+      `2. Manifest: ${payload.manifestPath}`,
+      `3. Context Pack: ${payload.contextPackPath}`,
+      `4. Memory Script: ${payload.memoryScriptPath}`,
+      `Use current-objective inspection only if the packet or memory script is insufficient, and run these sequentially, not in parallel:`,
       `- receipt factory inspect ${state.objectiveId} --json --panel receipts`,
-      `- receipt inspect ${objectiveStreamRef}`,
-      `- receipt trace ${objectiveStreamRef}`,
-      ``,
-      `## Context Refs`,
-      payload.contextRefs.map((ref) => `- ${ref.kind}: ${ref.label ?? ref.ref}`).join("\n") || "- none",
-      ``,
-      `## Repo Skills`,
-      payload.repoSkillPaths.map((skill) => `- ${skill}`).join("\n") || "- none",
-      ``,
-      `## Generated Skill Bundles`,
-      payload.skillBundlePaths.map((skill) => `- ${skill}`).join("\n") || "- none",
+      `- receipt factory inspect ${state.objectiveId} --json --panel debug`,
       ``,
       `## Memory Access`,
-      `Use the layered memory script at ${payload.memoryScriptPath} instead of pulling large raw memory dumps.`,
+      `Use the layered memory script at ${payload.memoryScriptPath} instead of raw memory dumps.`,
       `Recommended commands:`,
       `- node ${payload.memoryScriptPath} context 2800`,
       `- node ${payload.memoryScriptPath} objective 1800`,
-      `- node ${payload.memoryScriptPath} overview "${task.title}" 2400`,
       `- node ${payload.memoryScriptPath} scope task "${task.title}" 1400`,
-      `- node ${payload.memoryScriptPath} scope objective "${state.title}" 1400`,
       `- node ${payload.memoryScriptPath} search repo "${task.title}" 6`,
-      `- node ${payload.memoryScriptPath} commit task "short durable note"`,
-      `The script is the primary memory interface. It compacts receipt-backed memory across agent, repo, objective, task, candidate, and integration scopes, renders the focused recursive subgraph, and exposes a bounded objective-wide slice from ${payload.contextPackPath}.`,
-      ``,
-      `## Shared Context Boundary`,
-      `Shared by default: current worktree files, .receipt/factory packet files, checked-in repo skills, current-objective receipts, and scoped memory reachable through receipt.`,
-      `Shared cross-run artifacts must come from explicit artifact refs written into this packet or receipts, not from mutable shared directories.`,
-      `Not automatically shared: arbitrary cross-objective receipt discovery, other task worktrees, or uncommitted source changes outside this worktree.`,
-      ``,
-      `## Bootstrap Memory Summary`,
-      `Use this short summary only as a starting hint. Pull deeper context through the memory script and write durable notes back through it.`,
-      memorySummary || "No durable task memory yet.",
+      `Only write a durable memory note after gathering evidence from the packet, receipts, or repo files.`,
       ``,
       `## Result Contract`,
       `Write JSON to ${payload.resultPath} with:`,
       `{ "outcome": "approved" | "changes_requested" | "blocked", "summary": string, "handoff": string }`,
+      `Do not write this file yourself. Return exactly that JSON object as your final response and the runtime will persist it to the result path.`,
       `Use "changes_requested" only when more work is clearly needed; use "blocked" only for a hard blocker.`,
+      ``,
+      `## Starting Hint`,
+      memorySummary || "No durable task memory yet.",
     ].join("\n");
+  }
+
+  private renderTaskValidationSection(state: FactoryState, task: FactoryTaskRecord): string[] {
+    if (!this.shouldDeferBroadValidation(state, task)) {
+      return [
+        `## Checks`,
+        state.checks.map((check) => `- ${check}`).join("\n") || "- none",
+        `Run the relevant repo validation for this task and capture failures precisely in the handoff.`,
+      ];
+    }
+    return [
+      `## Validation Guidance`,
+      `A later task in this objective owns the broad repo validation suite.`,
+      `Do not run the full repo checks here unless this task is itself the validation pass or a tiny targeted check is strictly needed to de-risk the change.`,
+      ...(state.checks.length > 0
+        ? [
+            `Reserved full-suite commands for later:`,
+            state.checks.map((check) => `- ${check}`).join("\n"),
+          ]
+        : []),
+    ];
+  }
+
+  private shouldDeferBroadValidation(state: FactoryState, task: FactoryTaskRecord): boolean {
+    if (this.taskOwnsBroadValidation(task)) return false;
+    const taskIndex = state.taskOrder.indexOf(task.taskId);
+    const laterTaskIds = taskIndex >= 0 ? state.taskOrder.slice(taskIndex + 1) : [];
+    return laterTaskIds
+      .map((taskId) => state.graph.nodes[taskId])
+      .some((candidate) => Boolean(candidate) && this.taskOwnsBroadValidation(candidate));
+  }
+
+  private taskOwnsBroadValidation(task: Pick<FactoryTaskRecord, "title" | "prompt">): boolean {
+    const haystack = `${task.title}\n${task.prompt}`.toLowerCase();
+    return haystack.includes("validation suite")
+      || haystack.includes("run validation")
+      || haystack.includes("lint")
+      || haystack.includes("typecheck")
+      || haystack.includes("build");
   }
 
   private renderDirectCodexProbePrompt(input: {
@@ -4838,7 +4917,9 @@ export class FactoryService {
         : `This Codex run may edit the workspace.`,
       ``,
       `## Bootstrap Context`,
-      `Treat the prompt as bootstrap only. Read AGENTS.md and skills/factory-receipt-worker/SKILL.md before making claims about what context is available.`,
+      input.objective
+        ? `Treat the prompt as bootstrap only. Read AGENTS.md and skills/factory-receipt-worker/SKILL.md before making claims about what context is available.`
+        : `Treat the prompt as bootstrap only. Use the packet files, repo files, and memory script first. This direct probe is not a Factory task worktree and does not require Factory worker bootstrap commands.`,
       `Current packet files:`,
       `- Manifest: ${input.artifactPaths.manifestPath}`,
       `- Context Pack: ${input.artifactPaths.contextPackPath}`,
@@ -4849,7 +4930,7 @@ export class FactoryService {
       ``,
       `## Objective-First Query Order`,
       `1. Packet files in this artifact directory`,
-      input.objective ? `2. Current objective receipts and debug panels for ${input.objective.objectiveId}` : `2. Current parent Factory run stream if needed`,
+      input.objective ? `2. Current objective receipts and debug panels for ${input.objective.objectiveId}` : `2. Repo files/search in the current checkout`,
       `3. Scoped memory through the generated memory script`,
       `4. Broader history only if the packet or current objective explicitly points to it`,
       ``,
@@ -4861,12 +4942,17 @@ export class FactoryService {
             `- Phase: ${input.objective.phase}`,
             input.objective.latestDecision ? `- Latest decision: ${input.objective.latestDecision.summary}` : "",
             input.objective.blockedExplanation ? `- Blocked explanation: ${input.objective.blockedExplanation.summary}` : "",
-            `- receipt factory inspect ${input.objective.objectiveId} --json --panel debug`,
+            `- If the packet and memory script are still insufficient, inspect the objective sequentially (not in parallel):`,
             `- receipt factory inspect ${input.objective.objectiveId} --json --panel receipts`,
+            `- receipt factory inspect ${input.objective.objectiveId} --json --panel debug`,
             objectiveStreamRef ? `- receipt inspect ${objectiveStreamRef}` : "",
             objectiveStreamRef ? `- receipt trace ${objectiveStreamRef}` : "",
           ].filter(Boolean).join("\n")
-        : `- Use the packet, the parent run stream, and memory first. This probe is not a cross-objective history search.`,
+        : [
+            `- Use the packet, repo files, and memory first. This probe is not a Factory objective and should not call receipt factory inspect.`,
+            `- Do not assume skills/factory-receipt-worker/SKILL.md applies unless a real objectiveId is present.`,
+            `- Use current repo search/read results before escalating to broader receipt history.`,
+          ].join("\n"),
       ``,
       `## Memory Access`,
       `Use the layered memory script at ${input.artifactPaths.memoryScriptPath} instead of pulling large raw memory dumps.`,
@@ -4877,7 +4963,7 @@ export class FactoryService {
       `- node ${input.artifactPaths.memoryScriptPath} scope repo ${JSON.stringify(input.prompt)} 1400`,
       `- node ${input.artifactPaths.memoryScriptPath} scope profile ${JSON.stringify(input.prompt)} 1400`,
       `- node ${input.artifactPaths.memoryScriptPath} search repo ${JSON.stringify(input.prompt)} 6`,
-      `- node ${input.artifactPaths.memoryScriptPath} commit worker "short durable note"`,
+      ...(input.readOnly ? [] : [`- node ${input.artifactPaths.memoryScriptPath} commit worker "short durable note"`]),
       ``,
       `## Repo Skills`,
       input.repoSkillPaths.map((skill) => `- ${skill}`).join("\n") || "- none",
@@ -4941,6 +5027,40 @@ export class FactoryService {
       resultPath: requireNonEmpty(payload.resultPath, "resultPath required"),
       checks: Array.isArray(payload.checks) ? payload.checks.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [],
     };
+  }
+
+  private taskResultSchemaPath(resultPath: string): string {
+    return resultPath.replace(/\.json$/i, ".schema.json");
+  }
+
+  private parseJsonObjectCandidate(raw: string): Record<string, unknown> | undefined {
+    const trimmed = raw.trim();
+    if (!trimmed) return undefined;
+    const candidates = trimmed.includes("\n")
+      ? trimmed.split("\n").map((line) => line.trim()).filter(Boolean).reverse()
+      : [trimmed];
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        if (isRecord(parsed)) return parsed;
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
+  }
+
+  private async resolveTaskWorkerResult(
+    resultPath: string,
+    execution: { readonly stdout: string; readonly lastMessage?: string },
+  ): Promise<Record<string, unknown>> {
+    const rawResult = await fs.readFile(resultPath, "utf-8").catch(() => "");
+    if (rawResult.trim()) return this.parseTaskResult(rawResult);
+    const fromLastMessage = execution.lastMessage ? this.parseJsonObjectCandidate(execution.lastMessage) : undefined;
+    if (fromLastMessage) return fromLastMessage;
+    const fromStdout = this.parseJsonObjectCandidate(execution.stdout);
+    if (fromStdout) return fromStdout;
+    throw new FactoryServiceError(500, "missing structured factory task result from codex");
   }
 
   private parseTaskResult(raw: string): Record<string, unknown> {
@@ -5208,22 +5328,71 @@ export class FactoryService {
     return signatures;
   }
 
-  private classifyFailedCheck(
+  private async baselineFailureSignature(
+    state: FactoryState,
+    command: string,
+    baseHash: string,
+  ): Promise<{
+    readonly digest: string;
+    readonly excerpt: string;
+  } | undefined> {
+    const cacheKey = `${state.objectiveId}:${baseHash}:${command}`;
+    const existing = this.baselineCheckCache.get(cacheKey);
+    if (existing) return existing;
+
+    const pending = (async () => {
+      const workspaceId = `factory_baseline_${safeWorkspacePart(state.objectiveId)}_${createHash("sha1").update(command).digest("hex").slice(0, 10)}`;
+      const workspacePath = path.join(this.git.worktreesDir, workspaceId);
+      const branchName = `hub/baseline/${workspaceId}`;
+      try {
+        const workspace = await this.git.restoreWorkspace({
+          workspaceId,
+          branchName,
+          workspacePath,
+          baseHash,
+        });
+        const [result] = await this.runChecks([command], workspace.path);
+        if (!result || result.ok) return undefined;
+        return this.checkFailureSignature(result);
+      } catch {
+        return undefined;
+      } finally {
+        await this.git.removeWorkspace(workspacePath).catch(() => undefined);
+      }
+    })();
+
+    this.baselineCheckCache.set(cacheKey, pending);
+    return pending;
+  }
+
+  private async classifyFailedCheck(
     state: FactoryState,
     check: FactoryCheckResult,
-  ): {
+    baseHash: string = state.baseHash,
+  ): Promise<{
     readonly inherited: boolean;
     readonly digest: string;
     readonly excerpt: string;
     readonly source?: string;
-  } {
+  }> {
     const { digest, excerpt } = this.checkFailureSignature(check);
     const prior = this.priorFailureSignatureMap(state).get(digest);
+    if (prior) {
+      return {
+        inherited: true,
+        digest,
+        excerpt,
+        source: prior.source,
+      };
+    }
+    const baseline = await this.baselineFailureSignature(state, check.command, baseHash);
     return {
-      inherited: Boolean(prior),
+      inherited: Boolean(baseline && baseline.digest === digest),
       digest,
       excerpt,
-      source: prior?.source,
+      source: baseline && baseline.digest === digest
+        ? `baseline/${baseHash.slice(0, 8)}`
+        : undefined,
     };
   }
 

@@ -5,9 +5,9 @@ Use this workflow when a check fails or when you need to justify retry, approval
 ## Review Order
 
 1. Read the current task manifest and context pack.
-2. Inspect the current objective:
-   - `receipt factory inspect <objectiveId> --json`
+2. Inspect the current objective sequentially:
    - `receipt factory inspect <objectiveId> --json --panel receipts`
+   - `receipt factory inspect <objectiveId> --json` only if you still need the broader summary after the receipt slice
 3. Identify the current task, candidate, failed command, and current summary.
 4. Inspect prior candidates for the same task in the current objective.
 5. Compare the current failed command and failure text against prior current-objective failures.

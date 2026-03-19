@@ -399,6 +399,146 @@ test("jsonl queue: enqueue wakes an idle worker without relying on a short poll 
   }
 });
 
+test("jsonl queue: cross-queue enqueue wakes a worker watching the shared data dir", async () => {
+  const dir = await mkTmp("receipt-queue-cross-queue-wakeup");
+  try {
+    const workerRuntime = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob,
+    );
+    const clientRuntime = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob,
+    );
+    const workerQueue = jsonlQueue({ runtime: workerRuntime, stream: "jobs", watchDir: dir });
+    const clientQueue = jsonlQueue({ runtime: clientRuntime, stream: "jobs", watchDir: dir });
+    const handled: string[] = [];
+    const workerErrors: string[] = [];
+
+    const worker = new JobWorker({
+      queue: workerQueue,
+      workerId: "worker_cross_queue",
+      idleResyncMs: 20_000,
+      leaseMs: 5_000,
+      concurrency: 1,
+      handlers: {
+        writer: async (job) => {
+          handled.push(job.id);
+          return { ok: true, result: { ok: true } };
+        },
+      },
+      onError: (error) => {
+        workerErrors.push(error.message);
+      },
+    });
+
+    worker.start();
+    const job = await clientQueue.enqueue({
+      agentId: "writer",
+      payload: { kind: "writer.run", runId: "r_cross_queue" },
+      maxAttempts: 1,
+    });
+    const settled = await clientQueue.waitForJob(job.id, 2_000);
+    worker.stop();
+
+    expect(workerErrors).toEqual([]);
+    expect(handled).toEqual([job.id]);
+    expect(settled?.status).toBe("completed");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("jsonl queue: worker wakes for a child queued by an active parent before the parent finishes", async () => {
+  const dir = await mkTmp("receipt-queue-parent-child-wakeup");
+  try {
+    const runtime = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob,
+    );
+    const queue = jsonlQueue({ runtime, stream: "jobs" });
+    const handled: string[] = [];
+    const workerErrors: string[] = [];
+    let childJobId = "";
+    let resolveChildCreated: ((jobId: string) => void) | undefined;
+    const childCreated = new Promise<string>((resolve) => {
+      resolveChildCreated = resolve;
+    });
+    let resolveChildRan: (() => void) | undefined;
+    const childRan = new Promise<void>((resolve) => {
+      resolveChildRan = resolve;
+    });
+
+    const worker = new JobWorker({
+      queue,
+      workerId: "worker_parent_child",
+      idleResyncMs: 20_000,
+      leaseMs: 5_000,
+      concurrency: 2,
+      handlers: {
+        writer: async (job) => {
+          handled.push(job.id);
+          if (job.payload.kind === "writer.parent") {
+            const child = await queue.enqueue({
+              agentId: "writer",
+              payload: { kind: "writer.child", runId: "r_child" },
+              maxAttempts: 1,
+            });
+            childJobId = child.id;
+            resolveChildCreated?.(child.id);
+            const childCompleted = await Promise.race([
+              childRan.then(() => true),
+              new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_000)),
+            ]);
+            return childCompleted
+              ? { ok: true, result: { ok: true, childJobId: child.id } }
+              : { ok: false, error: "child job did not run before parent finished" };
+          }
+          resolveChildRan?.();
+          return { ok: true, result: { ok: true } };
+        },
+      },
+      onError: (error) => {
+        workerErrors.push(error.message);
+      },
+    });
+
+    worker.start();
+    const parent = await queue.enqueue({
+      agentId: "writer",
+      payload: { kind: "writer.parent", runId: "r_parent" },
+      maxAttempts: 1,
+    });
+    const createdChildId = await Promise.race([
+      childCreated,
+      new Promise<string>((_, reject) => setTimeout(() => reject(new Error("child job was never enqueued")), 1_000)),
+    ]);
+    const [parentSettled, childSettled] = await Promise.all([
+      queue.waitForJob(parent.id, 2_000),
+      queue.waitForJob(createdChildId, 2_000),
+    ]);
+    worker.stop();
+
+    expect(workerErrors).toEqual([]);
+    expect(childJobId).toBe(createdChildId);
+    expect(handled).toContain(parent.id);
+    expect(handled).toContain(createdChildId);
+    expect(parentSettled?.status).toBe("completed");
+    expect(childSettled?.status).toBe("completed");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("jsonl queue: worker keeps leasing later jobs after an unexpected heartbeat error", async () => {
   const dir = await mkTmp("receipt-queue-worker-recover");
   try {
@@ -460,6 +600,135 @@ test("jsonl queue: worker keeps leasing later jobs after an unexpected heartbeat
     expect(workerErrors).toContain("simulated heartbeat failure");
     expect(handled).toContain(second.id);
     expect(secondSettled?.status).toBe("completed");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("jsonl queue: scoped workers prevent parent and control jobs from starving a codex child", async () => {
+  const dir = await mkTmp("receipt-queue-scoped-workers");
+  try {
+    const runtime = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob,
+    );
+    const queue = jsonlQueue({ runtime, stream: "jobs" });
+    const handled: string[] = [];
+    const workerErrors: string[] = [];
+    let resolveCodexRan: (() => void) | undefined;
+    const codexRan = new Promise<void>((resolve) => {
+      resolveCodexRan = resolve;
+    });
+
+    const generalWorker = new JobWorker({
+      queue,
+      workerId: "worker_general",
+      leaseAgentIds: ["agent"],
+      idleResyncMs: 20_000,
+      leaseMs: 5_000,
+      concurrency: 1,
+      handlers: {
+        agent: async () => {
+          const controlJob = await queue.enqueue({
+            agentId: "factory-control",
+            payload: { kind: "factory.objective.control", runId: "r_control" },
+            maxAttempts: 1,
+          });
+          handled.push(`agent:${controlJob.id}`);
+          const completed = await Promise.race([
+            codexRan.then(() => true),
+            new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_000)),
+          ]);
+          return completed
+            ? { ok: true, result: { controlJobId: controlJob.id } }
+            : { ok: false, error: "codex child never ran" };
+        },
+      },
+      onError: (error) => {
+        workerErrors.push(`general:${error.message}`);
+      },
+    });
+
+    const controlWorker = new JobWorker({
+      queue,
+      workerId: "worker_factory_control",
+      leaseAgentIds: ["factory-control"],
+      idleResyncMs: 20_000,
+      leaseMs: 5_000,
+      concurrency: 1,
+      handlers: {
+        "factory-control": async (job) => {
+          handled.push(`factory-control:${job.id}`);
+          const codexJob = await queue.enqueue({
+            agentId: "codex",
+            payload: { kind: "codex.run", runId: "r_codex" },
+            maxAttempts: 1,
+          });
+          const completed = await Promise.race([
+            codexRan.then(() => true),
+            new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_000)),
+          ]);
+          return completed
+            ? { ok: true, result: { codexJobId: codexJob.id } }
+            : { ok: false, error: "queued codex child was starved" };
+        },
+      },
+      onError: (error) => {
+        workerErrors.push(`control:${error.message}`);
+      },
+    });
+
+    const codexWorker = new JobWorker({
+      queue,
+      workerId: "worker_codex",
+      leaseAgentIds: ["codex"],
+      idleResyncMs: 20_000,
+      leaseMs: 5_000,
+      concurrency: 1,
+      handlers: {
+        codex: async (job) => {
+          handled.push(`codex:${job.id}`);
+          resolveCodexRan?.();
+          return { ok: true, result: { ok: true } };
+        },
+      },
+      onError: (error) => {
+        workerErrors.push(`codex:${error.message}`);
+      },
+    });
+
+    generalWorker.start();
+    controlWorker.start();
+    codexWorker.start();
+
+    const parentJob = await queue.enqueue({
+      agentId: "agent",
+      payload: { kind: "agent.run", runId: "r_agent" },
+      maxAttempts: 1,
+    });
+
+    const codexCompleted = await Promise.race([
+      codexRan.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2_000)),
+    ]);
+    const jobs = await queue.listJobs({ limit: 10 });
+    const codexJob = jobs.find((job) => job.agentId === "codex");
+    const parentSettled = await queue.waitForJob(parentJob.id, 2_000);
+
+    generalWorker.stop();
+    controlWorker.stop();
+    codexWorker.stop();
+
+    expect(workerErrors).toEqual([]);
+    expect(codexCompleted).toBe(true);
+    expect(codexJob?.status).toBe("completed");
+    expect(parentSettled?.status).toBe("completed");
+    expect(handled.some((entry) => entry.startsWith("agent:"))).toBe(true);
+    expect(handled.some((entry) => entry.startsWith("factory-control:"))).toBe(true);
+    expect(handled.some((entry) => entry.startsWith("codex:"))).toBe(true);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

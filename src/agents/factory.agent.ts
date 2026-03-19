@@ -81,7 +81,7 @@ const asString = (value: unknown): string | undefined =>
 
 const profileLabel = (profileId?: string): string => {
   const value = profileId?.trim();
-  if (!value) return "Active skill";
+  if (!value) return "Active profile";
   return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (match) => match.toUpperCase());
 };
 
@@ -877,13 +877,13 @@ const workCardFromObservation = (observation: ToolObservation): FactoryWorkCard 
   if (observation.tool === "profile.handoff") {
     return {
       key: `${observation.tool}-${asString(parsed?.toProfileId) ?? observation.summary ?? "handoff"}`,
-      title: "Skill handoff",
+      title: "Profile handoff",
       worker: "profile",
       status: asString(parsed?.status) ?? "queued",
-      summary: asString(parsed?.summary) ?? observation.summary ?? "Continuation queued on another skill.",
+      summary: asString(parsed?.summary) ?? observation.summary ?? "Continuation queued on another profile.",
       detail: buildDetail(
-        asString(parsed?.fromProfileId) ? `From skill: ${asString(parsed?.fromProfileId)}` : undefined,
-        asString(parsed?.toProfileId) ? `To skill: ${asString(parsed?.toProfileId)}` : undefined,
+        asString(parsed?.fromProfileId) ? `From profile: ${asString(parsed?.fromProfileId)}` : undefined,
+        asString(parsed?.toProfileId) ? `To profile: ${asString(parsed?.toProfileId)}` : undefined,
         asString(parsed?.runId) ? `Run ${asString(parsed?.runId)}` : undefined,
       ),
       meta: durationLabel,
@@ -937,7 +937,7 @@ export const buildChatItemsForRun = (
       items.push({
         key: `${runId}-profile-handoff-${receipt.hash}`,
         kind: "system",
-        title: `Handed off to ${event.toProfileId} skill`,
+        title: `Handed off to ${event.toProfileId} profile`,
         body: event.reason,
         meta: new Date(receipt.ts).toLocaleString(),
       });

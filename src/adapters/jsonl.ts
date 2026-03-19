@@ -115,6 +115,11 @@ export const createStreamLocator = (dir: string): StreamLocator => {
     return loaded;
   };
 
+  const refreshManifest = async (): Promise<StreamManifest> => {
+    loaded = await readManifestFromDisk();
+    return loaded;
+  };
+
   const withManifestLock = async <T>(fn: () => Promise<T>): Promise<T> => {
     for (;;) {
       let handle: fs.promises.FileHandle | undefined;
@@ -183,18 +188,24 @@ export const createStreamLocator = (dir: string): StreamLocator => {
   };
 
   const keyFor = async (stream: string): Promise<string> => ensureStreamKey(stream);
-  const existingKeyFor = async (stream: string): Promise<string | undefined> =>
-    (await readManifest()).byStream[stream];
+  const existingKeyFor = async (stream: string): Promise<string | undefined> => {
+    const manifest = await readManifest();
+    if (manifest.byStream[stream]) return manifest.byStream[stream];
+    return (await refreshManifest()).byStream[stream];
+  };
   const fileFor = async (stream: string): Promise<string> =>
     path.join(dir, `${await ensureStreamKey(stream)}.jsonl`);
   const fileForExisting = async (stream: string): Promise<string | undefined> => {
     const key = await existingKeyFor(stream);
     return key ? path.join(dir, `${key}.jsonl`) : undefined;
   };
-  const streamForKey = async (key: string): Promise<string | undefined> =>
-    (await readManifest()).byKey[key];
+  const streamForKey = async (key: string): Promise<string | undefined> => {
+    const manifest = await readManifest();
+    if (manifest.byKey[key]) return manifest.byKey[key];
+    return (await refreshManifest()).byKey[key];
+  };
   const listStreams = async (prefix?: string): Promise<ReadonlyArray<string>> =>
-    Object.keys((await readManifest()).byStream)
+    Object.keys((await refreshManifest()).byStream)
       .filter((stream) => (prefix ? stream.startsWith(prefix) : true))
       .sort((a, b) => a.localeCompare(b));
 

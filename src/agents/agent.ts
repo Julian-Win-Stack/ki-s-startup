@@ -118,6 +118,7 @@ export type AgentRunInput = {
 export type AgentToolResult = {
   readonly output: string;
   readonly summary: string;
+  readonly pauseBudget?: boolean;
   readonly events?: ReadonlyArray<AgentEvent>;
   readonly reports?: ReadonlyArray<Omit<Extract<AgentEvent, { type: "validation.report" }>, "type" | "runId" | "iteration" | "agentId">>;
 };
@@ -1174,6 +1175,9 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
             agentId: "orchestrator",
             ...report,
           });
+        }
+        if (result.pauseBudget === true) {
+          maxIterations += 1;
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
