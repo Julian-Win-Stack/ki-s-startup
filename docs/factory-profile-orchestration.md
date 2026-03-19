@@ -42,9 +42,10 @@ At runtime, Factory:
 3. resolves imported profiles into a final profile stack
 4. expands profile capabilities into primitive tools, builds a merged system prompt and tool allowlist
 5. runs the Factory chat agent against that profile
-6. lets the profile answer directly, inspect memory, queue subagents, queue Codex, dispatch Factory objectives, or hand off to another profile
+6. lets the profile answer directly, inspect memory/status/receipts, queue subagents, queue read-only Codex probes, dispatch Factory objectives, or hand off to another profile
 
 The profile is the operator-facing decision layer. The Factory service remains the durable execution layer.
+`/factory` is the canonical user-facing surface. Any generic supervisor outside Factory is internal/debug plumbing, not the primary product interface.
 
 ## Main Idea
 
@@ -59,6 +60,7 @@ That means:
 - receipts still shape truth
 - Factory still owns objectives, tasks, candidates, integration, and promotion
 - Git still owns code
+- profiles do not get direct repo read/write tools
 
 Profiles do not replace Factory state. They provide a customizable front door into it.
 
@@ -142,18 +144,17 @@ Profiles should describe orchestration intent, not carry giant raw tool arrays. 
 
 Current capability groups include:
 
-- `repo.read` -> `ls`, `read`, `grep`
-- `repo.write` -> `write`, `bash`
 - `memory.read` -> memory inspection tools
 - `memory.write` -> memory commit/diff tools
 - `skill.read` -> `skill.read`
-- `status.read` -> `agent.inspect`, `agent.status`, `jobs.list`, `codex.status`, `factory.status`
+- `status.read` -> `agent.status`, `jobs.list`, `codex.status`, `codex.logs`, `factory.status`, `factory.output`, `factory.receipts`
 - `async.dispatch` -> `codex.run`, `agent.delegate`
 - `async.control` -> `job.control`
 - `objective.control` -> `factory.dispatch`
 - `profile.handoff` -> `profile.handoff`
 
 This keeps profiles readable while the runtime still receives an exact tool allowlist.
+Legacy `repo.read` and `repo.write` capabilities are rejected. Factory profiles are orchestration-only.
 
 ### Profile resolver
 
@@ -186,13 +187,15 @@ It wraps the generic Receipt agent runner with Factory-specific behavior:
 - profile-scoped tool allowlist
 - Factory-specific tool specs
 - Factory-specific async tools like `codex.run`, `factory.dispatch`, and `profile.handoff`
-- Codex-focused live status inspection through `codex.status`
+- objective-first status and evidence tools like `codex.logs`, `factory.status`, `factory.output`, and `factory.receipts`
+- a bounded situation block built from current objective state, latest decisions, active jobs, worktrees, and recent receipts
 
 The loop is intentionally constrained:
 
 - the model picks one tool at a time
 - tools are queued async where possible
 - the final answer is returned to the operator without blocking on long-running work
+- direct `codex.run` is a read-only probe path; code-changing delivery belongs to `factory.dispatch -> objective -> worktree -> Codex`
 
 ### Factory route and UI
 
@@ -301,8 +304,11 @@ The current Factory-specific tools exposed by `src/agents/factory-chat.ts` are:
 - `jobs.list`
 - `job.control`
 - `codex.run`
+- `codex.logs`
 - `factory.dispatch`
 - `factory.status`
+- `factory.output`
+- `factory.receipts`
 - `profile.handoff`
 
 The general profile guidance in `PROFILE.md` decides when to use them. The frontmatter allowlist decides whether they are available at all.
@@ -314,7 +320,7 @@ This gives a clean customization boundary:
 - instructions shape policy
 - allowlists shape capability
 
-A planning-oriented profile can be read-heavy and dispatch-light. A delivery profile can allow `codex.run` and `factory.dispatch`. A reviewer profile can avoid promotion tools entirely.
+A planning-oriented profile can be evidence-heavy and dispatch-light. A delivery profile can allow `codex.run` probes plus `factory.dispatch`. A reviewer profile can avoid promotion tools entirely.
 
 ## What The Profile Layer Can Do
 
@@ -322,15 +328,16 @@ A profile can:
 
 - answer directly
 - inspect memory before answering
-- inspect current jobs
+- inspect current jobs, receipts, and live output
 - queue a Receipt subagent
-- queue a focused Codex run
-- create or react a Factory objective
+- queue a focused read-only Codex probe
+- create or react a Factory objective for code-changing work
 - promote, cancel, clean up, or archive an objective
 - hand the conversation to another profile
 
 What it cannot do on its own:
 
+- read or write repo files directly
 - mutate Factory state without going through the Factory service
 - bypass receipts as the source of truth
 - bypass queue lifecycle for async work
@@ -373,7 +380,7 @@ Examples:
 - `"ship"`
 - `"release"`
 
-This is a simple substring-based heuristic today. It is cheap, deterministic, and easy to reason about.
+This is a simple whole-word / phrase heuristic today. It is cheap, deterministic, and easy to reason about.
 
 #### 4. Share behavior through imports
 

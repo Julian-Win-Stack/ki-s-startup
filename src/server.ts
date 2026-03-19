@@ -62,8 +62,9 @@ import { loadInfraPrompts, hashInfraPrompts } from "./prompts/infra.js";
 import { loadAxiomPrompts, hashAxiomPrompts } from "./prompts/axiom.js";
 import { runTheoremGuild, normalizeTheoremConfig } from "./agents/theorem.js";
 import { runWriterGuild, normalizeWriterConfig } from "./agents/writer.js";
-import { runAgent, normalizeAgentConfig } from "./agents/agent.js";
+import { normalizeAgentConfig } from "./agents/agent.js";
 import { createQueuedBudgetContinuation, parseContinuationDepth } from "./agents/agent-continuation.js";
+import { runCodexSupervisor } from "./agents/codex-supervisor.js";
 import { runInfra, normalizeInfraConfig } from "./agents/infra.js";
 import { runAxiom, normalizeAxiomConfig } from "./agents/axiom.js";
 import { runAxiomSimple, normalizeAxiomSimpleConfig, type AxiomSimpleWorkerLauncher } from "./agents/axiom-simple.js";
@@ -358,22 +359,29 @@ type AgentRunnerSpec = {
 const createAgentRunner = (spec: AgentRunnerSpec): AgentRunner =>
   async (payload, control) => {
     const { stream, runId, runStream, problem } = extractRunPayload(payload, spec.defaultStream);
+    const supervisorSessionId = typeof payload.supervisorSessionId === "string" && payload.supervisorSessionId.trim().length > 0
+      ? payload.supervisorSessionId.trim()
+      : runId;
     const configInput = typeof payload.config === "object" && payload.config
       ? payload.config as Record<string, unknown> : {};
     const config = spec.normalizeConfig(configInput);
     const { apiReady, apiNote } = apiStatus();
+    const payloadWithSession = {
+      ...payload,
+      supervisorSessionId,
+    };
     const onIterationBudgetExhausted = spec.autoContinueOnBudget
       ? createQueuedBudgetContinuation({
         queue,
         agentId: spec.defaultAgentId,
         jobKind: spec.jobKind,
         stream,
-        payload,
+        payload: payloadWithSession,
         continuationDepth: parseContinuationDepth(payload.continuationDepth),
       })
       : undefined;
     const runnerResult = await spec.runFn({
-      ...payload,
+      ...payloadWithSession,
       stream, runId, runStream, problem, config,
       runtime: spec.runtime, prompts: spec.prompts,
       llmText: (opts: Record<string, unknown>) => llmText({
@@ -452,9 +460,9 @@ const agentRunner = createAgentRunner({
   normalizeConfig: normalizeAgentConfig, runtime: agentRuntime,
   prompts: AGENT_PROMPTS, model: AGENT_MODEL,
   promptHash: AGENT_PROMPTS_HASH, promptPath: AGENT_PROMPTS_PATH,
-  runFn: runAgent as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  runFn: runCodexSupervisor as unknown as (input: Record<string, unknown>) => Promise<Record<string, unknown>>,
   autoContinueOnBudget: true,
-  extras: { memoryTools, delegationTools, workspaceRoot: WORKSPACE_ROOT, llmStructured },
+  extras: { memoryTools, delegationTools, workspaceRoot: WORKSPACE_ROOT, llmStructured, queue, dataDir: DATA_DIR, factoryService },
 });
 
 const infraRunner = createAgentRunner({
@@ -496,6 +504,7 @@ const factoryRunner = createAgentRunner({
     llmStructured,
     queue,
     factoryService,
+    dataDir: DATA_DIR,
     repoRoot: factoryService.git.repoRoot,
     profileRoot: process.cwd(),
   },
@@ -1422,6 +1431,8 @@ const worker = new JobWorker({
           prompt,
           timeoutMs,
           executor: factoryService.codexExecutor,
+          factoryService,
+          payload,
           onProgress: async (update) => {
             await queue.progress(job.id, ctx.workerId, update);
             const summary = typeof update.summary === "string" ? update.summary : "";

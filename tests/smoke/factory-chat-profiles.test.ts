@@ -137,7 +137,7 @@ test("factory chat profiles: resolves imports, route hints, and profile hashes s
   expect(resolved.root.id).toBe("reviewer");
   expect(resolved.imports.map((profile) => profile.id)).toEqual(["shared"]);
   expect(resolved.capabilities).toEqual(["memory.read", "status.read", "profile.handoff"]);
-  expect(resolved.toolAllowlist).toEqual(["memory.read", "memory.search", "memory.summarize", "agent.inspect", "agent.status", "jobs.list", "codex.status", "factory.status", "profile.handoff"]);
+  expect(resolved.toolAllowlist).toEqual(["memory.read", "memory.search", "memory.summarize", "agent.status", "jobs.list", "codex.status", "codex.logs", "factory.status", "factory.output", "factory.receipts", "profile.handoff"]);
   expect(resolved.skills).toEqual(["skills/shared/SKILL.md", "skills/reviewer/SKILL.md"]);
   expect(resolved.orchestration.executionMode).toBe("supervisor");
   expect(resolved.orchestration.discoveryBudget).toBe(1);
@@ -172,7 +172,7 @@ test("factory chat profiles: routes concrete bug-fix prompts to the software pro
     id: "software",
     label: "Software",
     routeHints: ["bug", "fix", "ui", "tailwind", "truncate"],
-    capabilities: ["async.dispatch", "repo.write"],
+    capabilities: ["status.read", "async.dispatch", "objective.control"],
   });
 
   const resolved = await resolveFactoryChatProfile({
@@ -183,7 +183,23 @@ test("factory chat profiles: routes concrete bug-fix prompts to the software pro
 
   expect(resolved.root.id).toBe("software");
   expect(resolved.selectionReason).toBe("route_hint");
-  expect(resolved.toolAllowlist).toEqual(["codex.run", "agent.delegate", "write", "bash"]);
+  expect(resolved.toolAllowlist).toEqual(["agent.status", "jobs.list", "codex.status", "codex.logs", "factory.status", "factory.output", "factory.receipts", "codex.run", "agent.delegate", "factory.dispatch"]);
+});
+
+test("factory chat profiles: reject legacy repo capabilities because Factory profiles are orchestration-only", async () => {
+  const profileRoot = await createTempDir("receipt-factory-profile-root");
+  const repoRoot = await createTempDir("receipt-factory-target-repo");
+  await writeProfile(profileRoot, {
+    id: "software",
+    label: "Software",
+    default: true,
+    capabilities: ["repo.write"],
+  });
+
+  await expect(resolveFactoryChatProfile({
+    repoRoot,
+    profileRoot,
+  })).rejects.toThrow("no longer allowed");
 });
 
 test("factory chat profiles: route hints match whole words and phrases instead of loose substrings", async () => {

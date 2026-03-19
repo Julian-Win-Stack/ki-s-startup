@@ -106,11 +106,13 @@ export const createFactoryWorkerHandlers = (service: FactoryService): Record<typ
               return aborts.length > 0 || job.abortRequested === true;
             },
           })
-        : job.payload.kind === "factory.codex.run"
+        : job.payload.kind === "factory.codex.run" || job.payload.kind === "codex.run"
           ? await (async () => {
             const payload = job.payload as Record<string, unknown>;
             const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
-            if (!prompt) throw new Error("factory codex prompt required");
+            if (!prompt) {
+              throw new Error(job.payload.kind === "factory.codex.run" ? "factory codex prompt required" : "codex prompt required");
+            }
             const timeoutMs = typeof payload.timeoutMs === "number" && Number.isFinite(payload.timeoutMs)
               ? Math.max(30_000, Math.min(Math.floor(payload.timeoutMs), 900_000))
               : 180_000;
@@ -121,6 +123,8 @@ export const createFactoryWorkerHandlers = (service: FactoryService): Record<typ
               prompt,
               timeoutMs,
               executor: service.codexExecutor,
+              factoryService: service,
+              payload,
               onProgress: async (update) => {
                 await service.queue.progress(job.id, ctx.workerId, update);
               },

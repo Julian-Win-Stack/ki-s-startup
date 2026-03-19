@@ -17,6 +17,7 @@ import {
   runFactoryChat,
   runFactoryCodexJob,
 } from "../../src/agents/factory-chat.ts";
+import type { QueueJob } from "../../src/adapters/jsonl-queue.ts";
 
 const createTempDir = async (label: string): Promise<string> =>
   fs.mkdtemp(path.join(os.tmpdir(), `${label}-`));
@@ -43,6 +44,101 @@ const createNoopDelegationTools = () => ({
   "agent.inspect": async () => ({ output: "unused", summary: "unused" }),
 });
 
+const createFactoryServiceStub = (overrides: Partial<Record<string, unknown>> = {}) => ({
+  getObjective: async (objectiveId: string) => ({
+    objectiveId,
+    title: "Objective demo",
+    status: "active",
+    phase: "executing",
+    latestSummary: "Investigating the sidebar objective.",
+    nextAction: "React the current objective.",
+    integration: {
+      status: "idle",
+      queuedCandidateIds: [],
+    },
+    latestDecision: {
+      summary: "Inspect the current candidate before reacting.",
+      at: Date.now(),
+      source: "runtime",
+    },
+    blockedExplanation: undefined,
+    evidenceCards: [{
+      kind: "decision",
+      title: "Latest decision",
+      summary: "Inspect the current candidate before reacting.",
+      at: Date.now(),
+      receiptType: "rebracket.applied",
+    }],
+    tasks: [],
+  }),
+  getObjectiveDebug: async () => ({
+    activeJobs: [] as QueueJob[],
+    taskWorktrees: [],
+    integrationWorktree: undefined,
+    latestContextPacks: [],
+  }),
+  listObjectiveReceipts: async () => ([
+    {
+      type: "rebracket.applied",
+      hash: "hash_receipt_demo",
+      ts: Date.now(),
+      summary: "Inspect the current candidate before reacting.",
+    },
+  ]),
+  getObjectiveLiveOutput: async (objectiveId: string, focusKind: string, focusId: string) => ({
+    objectiveId,
+    focusKind,
+    focusId,
+    title: "Live output",
+    status: "running",
+    active: true,
+    summary: "Streaming live output.",
+    stdoutTail: "tail",
+  }),
+  createObjective: async ({ prompt }: { readonly prompt: string }) => ({
+    objectiveId: "objective_created",
+    title: prompt,
+    status: "queued",
+    phase: "queued",
+    latestSummary: prompt,
+    integration: { status: "idle", queuedCandidateIds: [] },
+  }),
+  reactObjective: async () => undefined,
+  promoteObjective: async (objectiveId: string) => ({
+    objectiveId,
+    title: "Objective demo",
+    status: "completed",
+    phase: "completed",
+    latestSummary: "Promoted.",
+    integration: { status: "promoted", queuedCandidateIds: [] },
+  }),
+  cancelObjective: async (objectiveId: string) => ({
+    objectiveId,
+    title: "Objective demo",
+    status: "canceled",
+    phase: "blocked",
+    latestSummary: "Canceled.",
+    integration: { status: "idle", queuedCandidateIds: [] },
+  }),
+  cleanupObjectiveWorkspaces: async (objectiveId: string) => ({
+    objectiveId,
+    title: "Objective demo",
+    status: "active",
+    phase: "executing",
+    latestSummary: "Cleaned up.",
+    integration: { status: "idle", queuedCandidateIds: [] },
+  }),
+  archiveObjective: async (objectiveId: string) => ({
+    objectiveId,
+    title: "Objective demo",
+    status: "completed",
+    phase: "completed",
+    latestSummary: "Archived.",
+    integration: { status: "idle", queuedCandidateIds: [] },
+  }),
+  ...overrides,
+});
+
 const createAgentRuntime = (dataDir: string) =>
   createRuntime<AgentCmd, AgentEvent, AgentState>(
     jsonlStore<AgentEvent>(dataDir),
@@ -60,6 +156,28 @@ const createJobRuntime = (dataDir: string) =>
     reduceJob,
     initialJob,
   );
+
+const runGit = (repoRoot: string, args: ReadonlyArray<string>): void => {
+  const result = Bun.spawnSync(["git", ...args], {
+    cwd: repoRoot,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${new TextDecoder().decode(result.stderr).trim()}`);
+  }
+};
+
+const createGitRepo = async (label: string): Promise<string> => {
+  const repoRoot = await createTempDir(label);
+  await fs.writeFile(path.join(repoRoot, "README.md"), "# demo\n", "utf-8");
+  runGit(repoRoot, ["init"]);
+  runGit(repoRoot, ["config", "user.email", "codex@example.com"]);
+  runGit(repoRoot, ["config", "user.name", "Codex"]);
+  runGit(repoRoot, ["add", "README.md"]);
+  runGit(repoRoot, ["commit", "-m", "init"]);
+  return repoRoot;
+};
 
 const writeProfile = async (root: string, input: {
   readonly id: string;
@@ -182,7 +300,7 @@ test("factory chat runner: codex.run queues work asynchronously and returns imme
   const observed = chain.find((receipt) => receipt.body.type === "tool.observed")?.body;
   expect(observed && "output" in observed ? observed.output : "").toContain('"status": "queued"');
   expect(observed && "output" in observed ? observed.output : "").toContain('"jobId":');
-  expect(observed && "output" in observed ? observed.output : "").toContain("codex child queued as");
+  expect(observed && "output" in observed ? observed.output : "").toContain("codex read-only probe queued as");
 });
 
 test("factory chat runner: codex.status reports live codex work for the current run", async () => {
@@ -252,7 +370,7 @@ test("factory chat runner: codex.status reports live codex work for the current 
     delegationTools: createNoopDelegationTools(),
     workspaceRoot: repoRoot,
     queue,
-    factoryService: {} as never,
+    factoryService: createFactoryServiceStub() as never,
     repoRoot,
     profileRoot,
   });
@@ -263,6 +381,115 @@ test("factory chat runner: codex.status reports live codex work for the current 
   expect(statusObservation && "output" in statusObservation ? statusObservation.output : "").toContain('"worker": "codex"');
   expect(statusObservation && "output" in statusObservation ? statusObservation.output : "").toContain('"activeCount": 1');
   expect(statusObservation && "output" in statusObservation ? statusObservation.output : "").toContain('"status": "queued"');
+});
+
+test("factory chat runner: status.read tools expose codex logs, objective status, receipts, and live output", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-status-tools");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  await writeProfile(profileRoot, {
+    id: "software",
+    label: "Software",
+    default: true,
+    capabilities: ["status.read", "async.dispatch"],
+    mode: "supervisor",
+    allowPollingWhileChildRunning: true,
+  });
+
+  const actions = [
+    {
+      thought: "queue codex probe",
+      action: {
+        type: "tool",
+        name: "codex.run",
+        input: JSON.stringify({ prompt: "Inspect the current repo state only." }),
+        text: null,
+      },
+    },
+    {
+      thought: "inspect codex artifacts",
+      action: {
+        type: "tool",
+        name: "codex.logs",
+        input: "{}",
+        text: null,
+      },
+    },
+    {
+      thought: "inspect objective status",
+      action: {
+        type: "tool",
+        name: "factory.status",
+        input: "{}",
+        text: null,
+      },
+    },
+    {
+      thought: "inspect receipt evidence",
+      action: {
+        type: "tool",
+        name: "factory.receipts",
+        input: JSON.stringify({ limit: 4 }),
+        text: null,
+      },
+    },
+    {
+      thought: "inspect live output",
+      action: {
+        type: "tool",
+        name: "factory.output",
+        input: JSON.stringify({ focusKind: "job", focusId: "job_live_demo" }),
+        text: null,
+      },
+    },
+    {
+      thought: "respond",
+      action: {
+        type: "final",
+        name: null,
+        input: "{}",
+        text: "Collected the current receipts, logs, and live output.",
+      },
+    },
+  ];
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_status_tools",
+    problem: "Inspect the current objective evidence.",
+    profileId: "software",
+    objectiveId: "objective_demo",
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    dataDir,
+    factoryService: createFactoryServiceStub() as never,
+    repoRoot,
+    profileRoot,
+  });
+
+  expect(result.status).toBe("completed");
+  const chain = await agentRuntime.chain(agentRunStream("agents/factory/demo", "run_status_tools"));
+  const observations = chain.filter((receipt) => receipt.body.type === "tool.observed").map((receipt) => receipt.body);
+  expect(observations.find((event) => event.tool === "codex.logs" && "output" in event)?.output ?? "").toContain('"artifacts"');
+  expect(observations.find((event) => event.tool === "factory.status" && "output" in event)?.output ?? "").toContain('"latestDecision"');
+  expect(observations.find((event) => event.tool === "factory.receipts" && "output" in event)?.output ?? "").toContain('"receipts"');
+  expect(observations.find((event) => event.tool === "factory.output" && "output" in event)?.output ?? "").toContain('Streaming live output.');
 });
 
 test("factory chat runner: agent.delegate queues work and agent.status sees the queued job", async () => {
@@ -1042,7 +1269,7 @@ test("factory chat runner: exhausted slices queue an automatic continuation on t
   });
 
   expect(result.status).toBe("completed");
-  expect(result.finalResponse).toContain("Continuing automatically in this thread");
+  expect(result.finalResponse).toContain("Continuing automatically in this project chat");
 
   const jobs = await queue.listJobs({ limit: 10 });
   expect(jobs).toHaveLength(1);
@@ -1093,4 +1320,139 @@ test("factory chat runner: codex progress snapshots surface while the child is s
   expect(updates.length).toBeGreaterThan(0);
   expect(updates.some((update) => update.status === "running")).toBe(true);
   expect(updates.some((update) => String(update.summary ?? "").includes("Inspecting the repository."))).toBe(true);
+});
+
+test("factory chat runner: direct codex probes run read-only and materialize a packet", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-direct-packet");
+  const repoRoot = await createTempDir("receipt-factory-chat-direct-packet-repo");
+  const captured: Array<Record<string, unknown>> = [];
+
+  const result = await runFactoryCodexJob({
+    dataDir,
+    repoRoot,
+    jobId: "job_direct_packet",
+    prompt: "Inspect the repo without changing it.",
+    payload: {
+      readOnly: true,
+      mode: "read_only_probe",
+      profileId: "software",
+      stream: "agents/factory/demo",
+    },
+    factoryService: {
+      prepareDirectCodexProbePacket: async ({ jobId, prompt, readOnly }) => {
+        const root = path.join(dataDir, "factory-chat", "codex", jobId);
+        const packet = {
+          artifactPaths: {
+            root,
+            promptPath: path.join(root, "prompt.md"),
+            lastMessagePath: path.join(root, "last-message.txt"),
+            stdoutPath: path.join(root, "stdout.log"),
+            stderrPath: path.join(root, "stderr.log"),
+            manifestPath: path.join(root, "manifest.json"),
+            contextPackPath: path.join(root, "context-pack.json"),
+            resultPath: path.join(root, "result.json"),
+            memoryScriptPath: path.join(root, "memory.cjs"),
+            memoryConfigPath: path.join(root, "memory-scopes.json"),
+          },
+          renderedPrompt: `READ ONLY\n${prompt}`,
+          readOnly: readOnly !== false,
+          env: {},
+        };
+        await fs.mkdir(packet.artifactPaths.root, { recursive: true });
+        await fs.writeFile(packet.artifactPaths.manifestPath, JSON.stringify({ kind: "factory.codex.probe" }, null, 2), "utf-8");
+        await fs.writeFile(packet.artifactPaths.contextPackPath, JSON.stringify({ title: "Direct Codex Probe", task: { taskId: "direct", title: "Direct probe", status: "running" } }, null, 2), "utf-8");
+        await fs.writeFile(packet.artifactPaths.memoryConfigPath, JSON.stringify({ scopes: [] }, null, 2), "utf-8");
+        await fs.writeFile(packet.artifactPaths.memoryScriptPath, "#!/usr/bin/env bun\n", "utf-8");
+        return packet;
+      },
+    } as never,
+    executor: {
+      run: async (execInput) => {
+        captured.push({
+          sandboxMode: execInput.sandboxMode,
+          mutationPolicy: execInput.mutationPolicy,
+          prompt: execInput.prompt,
+        });
+        await fs.writeFile(execInput.lastMessagePath, "Read-only inspection complete.", "utf-8");
+        await fs.writeFile(execInput.stdoutPath, "Scanned files\n", "utf-8");
+        await fs.writeFile(execInput.stderrPath, "", "utf-8");
+        return {
+          exitCode: 0,
+          signal: null,
+          stdout: "Scanned files\n",
+          stderr: "",
+          lastMessage: "Read-only inspection complete.",
+        };
+      },
+    },
+  });
+
+  expect(result.status).toBe("completed");
+  expect(result.readOnly).toBe(true);
+  expect(captured[0]?.sandboxMode).toBe("read-only");
+  expect(captured[0]?.mutationPolicy).toBe("read_only_probe");
+  expect(String(captured[0]?.prompt ?? "")).toContain("READ ONLY");
+  await expect(fs.readFile(path.join(dataDir, "factory-chat", "codex", "job_direct_packet", "manifest.json"), "utf-8")).resolves.toContain("factory.codex.probe");
+  await expect(fs.readFile(path.join(dataDir, "factory-chat", "codex", "job_direct_packet", "result.json"), "utf-8")).resolves.toContain("\"readOnly\": true");
+});
+
+test("factory chat runner: direct codex probes fail explicitly if they mutate tracked files", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-direct-mutation");
+  const repoRoot = await createGitRepo("receipt-factory-chat-direct-mutation-repo");
+
+  await expect(runFactoryCodexJob({
+    dataDir,
+    repoRoot,
+    jobId: "job_direct_mutation",
+    prompt: "Do not change files.",
+    payload: {
+      readOnly: true,
+      mode: "read_only_probe",
+      profileId: "software",
+      stream: "agents/factory/demo",
+    },
+    factoryService: {
+      prepareDirectCodexProbePacket: async ({ jobId, prompt, readOnly }) => {
+        const root = path.join(dataDir, "factory-chat", "codex", jobId);
+        const packet = {
+          artifactPaths: {
+            root,
+            promptPath: path.join(root, "prompt.md"),
+            lastMessagePath: path.join(root, "last-message.txt"),
+            stdoutPath: path.join(root, "stdout.log"),
+            stderrPath: path.join(root, "stderr.log"),
+            manifestPath: path.join(root, "manifest.json"),
+            contextPackPath: path.join(root, "context-pack.json"),
+            resultPath: path.join(root, "result.json"),
+            memoryScriptPath: path.join(root, "memory.cjs"),
+            memoryConfigPath: path.join(root, "memory-scopes.json"),
+          },
+          renderedPrompt: `READ ONLY\n${prompt}`,
+          readOnly: readOnly !== false,
+          env: {},
+        };
+        await fs.mkdir(packet.artifactPaths.root, { recursive: true });
+        await fs.writeFile(packet.artifactPaths.manifestPath, JSON.stringify({ kind: "factory.codex.probe" }, null, 2), "utf-8");
+        await fs.writeFile(packet.artifactPaths.contextPackPath, JSON.stringify({ title: "Direct Codex Probe", task: { taskId: "direct", title: "Direct probe", status: "running" } }, null, 2), "utf-8");
+        await fs.writeFile(packet.artifactPaths.memoryConfigPath, JSON.stringify({ scopes: [] }, null, 2), "utf-8");
+        await fs.writeFile(packet.artifactPaths.memoryScriptPath, "#!/usr/bin/env bun\n", "utf-8");
+        return packet;
+      },
+    } as never,
+    executor: {
+      run: async (execInput) => {
+        await fs.writeFile(path.join(repoRoot, "README.md"), "# changed\n", "utf-8");
+        await fs.writeFile(execInput.lastMessagePath, "Attempted to change files.", "utf-8");
+        return {
+          exitCode: 0,
+          signal: null,
+          stdout: "",
+          stderr: "",
+          lastMessage: "Attempted to change files.",
+        };
+      },
+    },
+  })).rejects.toThrow("Direct Codex probes are read-only");
+
+  await expect(fs.readFile(path.join(dataDir, "factory-chat", "codex", "job_direct_mutation", "result.json"), "utf-8")).resolves.toContain("\"status\": \"failed\"");
 });

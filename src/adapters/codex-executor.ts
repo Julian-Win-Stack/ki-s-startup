@@ -10,6 +10,8 @@ export type CodexRunInput = {
   readonly lastMessagePath: string;
   readonly stdoutPath: string;
   readonly stderrPath: string;
+  readonly sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
+  readonly mutationPolicy?: "read_only_probe" | "workspace_edit";
   readonly objectiveId?: string;
   readonly taskId?: string;
   readonly candidateId?: string;
@@ -36,6 +38,25 @@ export type CodexRunControl = {
 export type CodexExecutor = {
   readonly run: (input: CodexRunInput, control?: CodexRunControl) => Promise<CodexRunResult>;
 };
+
+export class CodexExecutionError extends Error {
+  readonly result: CodexRunResult;
+  readonly sandboxMode: NonNullable<CodexRunInput["sandboxMode"]>;
+  readonly mutationPolicy: NonNullable<CodexRunInput["mutationPolicy"]>;
+
+  constructor(
+    message: string,
+    result: CodexRunResult,
+    sandboxMode: NonNullable<CodexRunInput["sandboxMode"]>,
+    mutationPolicy: NonNullable<CodexRunInput["mutationPolicy"]>,
+  ) {
+    super(message);
+    this.name = "CodexExecutionError";
+    this.result = result;
+    this.sandboxMode = sandboxMode;
+    this.mutationPolicy = mutationPolicy;
+  }
+}
 
 type LocalCodexExecutorOptions = {
   readonly bin?: string;
@@ -82,6 +103,9 @@ export class LocalCodexExecutor implements CodexExecutor {
       fsp.writeFile(input.stderrPath, "", "utf-8"),
     ]);
 
+    const sandboxMode = input.sandboxMode
+      ?? (input.mutationPolicy === "read_only_probe" ? "read-only" : "workspace-write");
+    const mutationPolicy = input.mutationPolicy ?? (sandboxMode === "read-only" ? "read_only_probe" : "workspace_edit");
     const args = [
       "-a",
       "never",
@@ -89,7 +113,7 @@ export class LocalCodexExecutor implements CodexExecutor {
       "--cd",
       input.workspacePath,
       "--sandbox",
-      "workspace-write",
+      sandboxMode,
       "--skip-git-repo-check",
       "--color",
       "never",
@@ -173,7 +197,7 @@ export class LocalCodexExecutor implements CodexExecutor {
     }
     if ((result.exitCode ?? 1) !== 0) {
       const summary = (result.stderr.trim() || result.stdout.trim() || `codex exited with ${result.exitCode}`).slice(0, 1_000);
-      throw new Error(summary);
+      throw new CodexExecutionError(summary, result, sandboxMode, mutationPolicy);
     }
     return result;
   }

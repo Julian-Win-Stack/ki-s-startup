@@ -101,6 +101,15 @@ export type AgentRunInput = {
   readonly extraToolSpecs?: Readonly<Record<string, string>>;
   readonly extraTools?: Readonly<Record<string, AgentToolExecutor>>;
   readonly toolAllowlist?: ReadonlyArray<string>;
+  readonly promptContextBuilder?: (input: {
+    readonly runId: string;
+    readonly runStream: string;
+    readonly iteration: number;
+    readonly problem: string;
+    readonly workspaceRoot: string;
+    readonly transcript: string;
+    readonly memorySummary: string;
+  }) => Promise<Readonly<Record<string, string>> | undefined>;
   readonly startupEvents?: ReadonlyArray<AgentEvent>;
   readonly finalizer?: AgentFinalizer;
   readonly onIterationBudgetExhausted?: AgentIterationBudgetHandler;
@@ -352,7 +361,8 @@ const runShell = async (
 
 const BASE_TOOL_SPECS: Readonly<Record<string, string>> = {
   ls: '{"path"?: string} — List directory contents. Defaults to workspace root.',
-  read: '{"path": string, "startLine"?: number, "endLine"?: number, "maxChars"?: number} — Read file contents with optional line range.',
+  read: '{"path": string, "startLine"?: number, "endLine"?: number, "start"?: number, "end"?: number, "maxChars"?: number} — Read file contents with optional line range. `start`/`end` are accepted aliases for line-based ranges.',
+  replace: '{"path": string, "find": string, "replace": string, "all"?: boolean} — Replace exact text in a file without shelling out. Prefer this for small targeted edits.',
   write: '{"path": string, "content": string, "append"?: boolean} — Write or append to a file.',
   bash: '{"cmd": string, "timeoutMs"?: number} — Execute a shell command (default timeout 20s, max 120s).',
   grep: '{"pattern": string, "path"?: string, "maxMatches"?: number} — Search files using ripgrep.',
@@ -391,6 +401,28 @@ const createTools = (opts: {
     return defaultScope;
   };
 
+  const parseLineNumber = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.max(1, Math.floor(value))
+      : undefined;
+
+  const blockedBashCommand = (cmd: string): string | undefined => {
+    const normalized = cmd.replace(/\s+/g, " ").trim();
+    if (/\bgit\s+checkout\s+--(?:\s|$)/.test(normalized)) {
+      return "bash command blocked: destructive git checkout -- is not allowed; use read/replace/write for file edits";
+    }
+    if (/\bgit\s+restore\b/.test(normalized)) {
+      return "bash command blocked: destructive git restore is not allowed; use read/replace/write for file edits";
+    }
+    if (/\bgit\s+reset\s+--hard\b/.test(normalized)) {
+      return "bash command blocked: destructive git reset --hard is not allowed";
+    }
+    if (/\bgit\s+clean\b/.test(normalized)) {
+      return "bash command blocked: destructive git clean is not allowed";
+    }
+    return undefined;
+  };
+
   const summarize = (value: unknown): AgentToolResult => {
     const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
     const clipped = truncateText(text, maxChars);
@@ -420,18 +452,40 @@ const createTools = (opts: {
       const raw = await fs.promises.readFile(abs);
       if (raw.includes(0)) throw new Error("binary file not supported by read tool");
       const text = raw.toString("utf-8");
-      const startLine = typeof input.startLine === "number" && Number.isFinite(input.startLine)
-        ? Math.max(1, Math.floor(input.startLine))
-        : 1;
-      const endLine = typeof input.endLine === "number" && Number.isFinite(input.endLine)
-        ? Math.max(startLine, Math.floor(input.endLine))
-        : Number.MAX_SAFE_INTEGER;
+      const startLine = parseLineNumber(input.startLine) ?? parseLineNumber(input.start) ?? 1;
+      const endLine = parseLineNumber(input.endLine) ?? parseLineNumber(input.end) ?? Number.MAX_SAFE_INTEGER;
+      const normalizedEndLine = Math.max(startLine, endLine);
       const lines = text.split("\n");
-      const sliced = lines.slice(startLine - 1, endLine).join("\n");
+      const sliced = lines.slice(startLine - 1, normalizedEndLine).join("\n");
       const localLimit = typeof input.maxChars === "number" && Number.isFinite(input.maxChars)
         ? Math.max(100, Math.min(Math.floor(input.maxChars), maxChars))
         : maxChars;
       return summarize(truncateText(sliced, localLimit).text);
+    },
+
+    replace: async (input) => {
+      const rawPath = typeof input.path === "string" ? input.path.trim() : "";
+      const find = typeof input.find === "string" ? input.find : "";
+      const replace = typeof input.replace === "string" ? input.replace : "";
+      if (!rawPath) throw new Error("replace.path is required");
+      if (!find) throw new Error("replace.find is required");
+      const abs = resolveWorkspacePath(workspaceRoot, rawPath);
+      const current = await fs.promises.readFile(abs, "utf-8");
+      if (!current.includes(find)) {
+        throw new Error(`replace.find not found in ${rawPath}`);
+      }
+      let count = 0;
+      const next = input.all === true
+        ? current.replaceAll(find, () => {
+            count += 1;
+            return replace;
+          })
+        : current.replace(find, () => {
+            count += 1;
+            return replace;
+          });
+      await fs.promises.writeFile(abs, next, "utf-8");
+      return summarize(`replaced ${count} occurrence${count === 1 ? "" : "s"} in ${rawPath}`);
     },
 
     write: async (input) => {
@@ -451,6 +505,8 @@ const createTools = (opts: {
     bash: async (input) => {
       const cmd = typeof input.cmd === "string" ? input.cmd.trim() : "";
       if (!cmd) throw new Error("bash.cmd is required");
+      const blocked = blockedBashCommand(cmd);
+      if (blocked) throw new Error(blocked);
       const timeoutMs = typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs)
         ? Math.max(500, Math.min(Math.floor(input.timeoutMs), 120_000))
         : 20_000;
@@ -928,6 +984,15 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
 
       const chain = await input.runtime.chain(runStream);
       const transcriptText = deriveTranscriptLines(chain, 12).join("\n\n");
+      const promptVars = await input.promptContextBuilder?.({
+        runId: input.runId,
+        runStream,
+        iteration,
+        problem,
+        workspaceRoot: resolvedWorkspaceRoot,
+        transcript: transcriptText || "(no prior steps)",
+        memorySummary: memorySummary.summary || "(empty)",
+      });
       const prompt = renderPrompt(prompts.user.loop, {
         problem,
         iteration: String(iteration),
@@ -937,6 +1002,7 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
         memory: memorySummary.summary || "(empty)",
         available_tools: availableTools.join(", "),
         tool_help: toolHelp || "(no tools available)",
+        ...(promptVars ?? {}),
       });
 
       let raw = "";

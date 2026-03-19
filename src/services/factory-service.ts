@@ -43,7 +43,12 @@ import {
   type FactoryWorkerType,
   type FactoryCandidateStatus,
 } from "../modules/factory.js";
-import { resolveFactoryChatProfile } from "./factory-chat-profiles.js";
+import { repoKeyForRoot, resolveFactoryChatProfile } from "./factory-chat-profiles.js";
+import {
+  buildFactoryMemoryScriptSource,
+  factoryChatCodexArtifactPaths,
+  type FactoryChatCodexArtifactPaths,
+} from "./factory-codex-artifacts.js";
 import { createRuntime, type Runtime } from "../core/runtime.js";
 import { type GraphRef } from "../core/graph.js";
 import type { Chain } from "../core/types.js";
@@ -522,6 +527,22 @@ export type FactoryObjectiveControlJobPayload = {
   readonly kind: "factory.objective.control";
   readonly objectiveId: string;
   readonly reason: "startup" | "admitted";
+};
+
+export type FactoryObjectiveReceiptSummary = {
+  readonly type: string;
+  readonly hash: string;
+  readonly ts: number;
+  readonly summary: string;
+  readonly taskId?: string;
+  readonly candidateId?: string;
+};
+
+export type FactoryObjectiveReceiptQuery = {
+  readonly limit?: number;
+  readonly taskId?: string;
+  readonly candidateId?: string;
+  readonly types?: ReadonlyArray<string>;
 };
 
 type FactoryMemoryScopeSpec = {
@@ -1009,19 +1030,18 @@ export class FactoryService {
 
   async listObjectiveReceipts(
     objectiveId: string,
-    limit = 40,
-  ): Promise<ReadonlyArray<{ readonly type: string; readonly hash: string; readonly ts: number; readonly summary: string }>> {
+    limitOrQuery: number | FactoryObjectiveReceiptQuery = 40,
+  ): Promise<ReadonlyArray<FactoryObjectiveReceiptSummary>> {
     await this.getObjectiveState(objectiveId);
     const chain = await this.runtime.chain(objectiveStream(objectiveId));
-    return [...chain]
-      .filter((receipt) => !CONTROL_RECEIPT_TYPES.has(receipt.body.type as never))
-      .slice(-Math.max(1, Math.min(limit, 200)))
-      .map((receipt) => ({
-        type: receipt.body.type,
-        hash: receipt.hash,
-        ts: receipt.ts,
-        summary: this.summarizeReceipt(receipt.body),
-      }));
+    const query = typeof limitOrQuery === "number" ? { limit: limitOrQuery } : limitOrQuery;
+    const limit = Math.max(1, Math.min(query.limit ?? 40, 200));
+    const typeFilter = new Set((query.types ?? []).map((type) => type.trim()).filter(Boolean));
+    return this.summarizedReceipts(chain, 200)
+      .filter((receipt) => !query.taskId || receipt.taskId === query.taskId)
+      .filter((receipt) => !query.candidateId || receipt.candidateId === query.candidateId)
+      .filter((receipt) => typeFilter.size === 0 || typeFilter.has(receipt.type))
+      .slice(-limit);
   }
 
   async buildBoardProjection(selectedObjectiveId?: string): Promise<FactoryBoardProjection> {
@@ -4247,139 +4267,7 @@ export class FactoryService {
   }
 
   private buildMemoryScriptSource(configPath: string): string {
-    const normalizedConfigPath = configPath.replace(/\\/g, "\\\\");
-    return [
-      "#!/usr/bin/env bun",
-      `const fs = require("node:fs");`,
-      `const { execFileSync } = require("node:child_process");`,
-      `const config = JSON.parse(fs.readFileSync(${JSON.stringify(normalizedConfigPath)}, "utf-8"));`,
-      `const args = process.argv.slice(2);`,
-      `const compact = (value, maxChars) => value.length <= maxChars ? value : \`\${value.slice(0, Math.max(0, maxChars - 1))}…\`;`,
-      `const formatTree = (nodes, depth = 0) => (nodes || []).flatMap((node) => {`,
-      `  const indent = "  ".repeat(depth);`,
-      `  const head = \`\${indent}- \${node.taskId}: \${node.title} [\${node.status}]\${node.candidateStatus ? \` · candidate \${node.candidateStatus}\` : ""}\`;`,
-      `  const note = node.memorySummary ? \`\${indent}  memory: \${node.memorySummary}\` : "";`,
-      `  return [head, note, ...formatTree(node.children || [], depth + 1)].filter(Boolean);`,
-      `});`,
-      `const runReceipt = (receiptArgs) => {`,
-      `  const raw = execFileSync("receipt", receiptArgs, { encoding: "utf-8", maxBuffer: 16 * 1024 * 1024 });`,
-      `  return JSON.parse(raw || "{}");`,
-      `};`,
-      `const resolveScope = (key) => config.scopes.find((scope) => scope.key === key || scope.scope === key);`,
-      `const formatEntries = (entries) => (entries || []).map((entry) => \`- \${entry.text}\${entry.tags?.length ? \` [\${entry.tags.join(", ")}]\` : ""}\`).join("\\n");`,
-      `const command = args[0] || "overview";`,
-      `if (command === "context") {`,
-      `  const maxChars = Number(args[1] || config.defaultMaxChars || 2800) || 2800;`,
-      `  const pack = config.contextPackPath ? JSON.parse(fs.readFileSync(config.contextPackPath, "utf-8")) : undefined;`,
-      `  if (!pack) {`,
-      `    process.stdout.write("No recursive context pack found.\\n");`,
-      `    process.exit(0);`,
-      `  }`,
-      `  const lines = [`,
-      `    \`Objective: \${pack.title}\`,`,
-      `    \`Task: \${pack.task.taskId} · \${pack.task.title} [\${pack.task.status}]\`,`,
-      `    pack.profile ? \`Profile: \${pack.profile.rootProfileLabel} (\${pack.profile.rootProfileId})\` : "",`,
-      `    pack.memory?.overview ? \`Overview: \${pack.memory.overview}\` : "",`,
-      `    pack.contextSources?.profileSkillRefs?.length ? \`Profile skills: \${pack.contextSources.profileSkillRefs.join(", ")}\` : "",`,
-      `    pack.integration?.status ? \`Integration: \${pack.integration.status}\${pack.integration.lastSummary ? \` · \${pack.integration.lastSummary}\` : ""}\` : "",`,
-      `    pack.relatedTasks?.length ? "Recursive subgraph:" : "",`,
-      `    ...(pack.relatedTasks || []).map((task) => \`- \${task.taskId} [\${task.relations.join(", ")}] · \${task.title} [\${task.status}]\${task.candidateStatus ? \` · candidate \${task.candidateStatus}\` : ""}\${task.memorySummary ? \` · \${task.memorySummary}\` : ""}\`),`,
-      `    pack.dependencyTree?.length ? "Dependencies:" : "",`,
-      `    ...formatTree(pack.dependencyTree || []),`,
-      `    pack.candidateLineage?.length ? "Candidate lineage:" : "",`,
-      `    ...(pack.candidateLineage || []).map((candidate) => \`- \${candidate.candidateId} [\${candidate.status}]\${candidate.summary ? \` · \${candidate.summary}\` : ""}\`),`,
-      `    pack.recentReceipts?.length ? "Recent receipts:" : "",`,
-      `    ...(pack.recentReceipts || []).map((receipt) => \`- \${receipt.type}: \${receipt.summary}\`),`,
-      `    pack.objectiveSlice?.frontierTasks?.length ? "Objective frontier:" : "",`,
-      `    ...(pack.objectiveSlice?.frontierTasks || []).map((task) => \`- \${task.taskId} · \${task.title} [\${task.status}]\${task.memorySummary ? \` · \${task.memorySummary}\` : ""}\`),`,
-      `    pack.objectiveSlice?.recentCompletedTasks?.length ? "Recent completed tasks:" : "",`,
-      `    ...(pack.objectiveSlice?.recentCompletedTasks || []).map((task) => \`- \${task.taskId} · \${task.title} [\${task.status}]\${task.memorySummary ? \` · \${task.memorySummary}\` : ""}\`),`,
-      `    pack.objectiveSlice?.integrationTasks?.length ? "Integration tasks:" : "",`,
-      `    ...(pack.objectiveSlice?.integrationTasks || []).map((task) => \`- \${task.taskId} · \${task.title} [\${task.status}]\${task.memorySummary ? \` · \${task.memorySummary}\` : ""}\`),`,
-      `    pack.objectiveSlice?.objectiveMemorySummary ? \`Objective memory: \${pack.objectiveSlice.objectiveMemorySummary}\` : "",`,
-      `    pack.objectiveSlice?.integrationMemorySummary ? \`Integration memory: \${pack.objectiveSlice.integrationMemorySummary}\` : "",`,
-      `    pack.objectiveSlice?.recentObjectiveReceipts?.length ? "Objective-wide receipts:" : "",`,
-      `    ...(pack.objectiveSlice?.recentObjectiveReceipts || []).map((receipt) => \`- \${receipt.type}: \${receipt.summary}\`),`,
-      `  ].filter(Boolean);`,
-      `  process.stdout.write(compact(lines.join("\\n"), maxChars) + "\\n");`,
-      `  process.exit(0);`,
-      `}`,
-      `if (command === "objective") {`,
-      `  const maxChars = Number(args[1] || 1800) || 1800;`,
-      `  const pack = config.contextPackPath ? JSON.parse(fs.readFileSync(config.contextPackPath, "utf-8")) : undefined;`,
-      `  if (!pack?.objectiveSlice) {`,
-      `    process.stdout.write("No objective slice found.\\n");`,
-      `    process.exit(0);`,
-      `  }`,
-      `  const lines = [`,
-      `    \`Objective: \${pack.title}\`,`,
-      `    pack.profile ? \`Profile: \${pack.profile.rootProfileLabel} (\${pack.profile.rootProfileId})\` : "",`,
-      `    pack.objectiveSlice.objectiveMemorySummary ? \`Objective memory: \${pack.objectiveSlice.objectiveMemorySummary}\` : "",`,
-      `    pack.objectiveSlice.integrationMemorySummary ? \`Integration memory: \${pack.objectiveSlice.integrationMemorySummary}\` : "",`,
-      `    pack.objectiveSlice.frontierTasks?.length ? "Frontier tasks:" : "",`,
-      `    ...(pack.objectiveSlice.frontierTasks || []).map((task) => \`- \${task.taskId} · \${task.title} [\${task.status}]\${task.memorySummary ? \` · \${task.memorySummary}\` : ""}\`),`,
-      `    pack.objectiveSlice.integrationTasks?.length ? "Integration tasks:" : "",`,
-      `    ...(pack.objectiveSlice.integrationTasks || []).map((task) => \`- \${task.taskId} · \${task.title} [\${task.status}]\${task.memorySummary ? \` · \${task.memorySummary}\` : ""}\`),`,
-      `    pack.objectiveSlice.recentCompletedTasks?.length ? "Recent completed tasks:" : "",`,
-      `    ...(pack.objectiveSlice.recentCompletedTasks || []).map((task) => \`- \${task.taskId} · \${task.title} [\${task.status}]\${task.memorySummary ? \` · \${task.memorySummary}\` : ""}\`),`,
-      `    pack.objectiveSlice.recentObjectiveReceipts?.length ? "Recent objective receipts:" : "",`,
-      `    ...(pack.objectiveSlice.recentObjectiveReceipts || []).map((receipt) => \`- \${receipt.type}: \${receipt.summary}\`),`,
-      `  ].filter(Boolean);`,
-      `  process.stdout.write(compact(lines.join("\\n"), maxChars) + "\\n");`,
-      `  process.exit(0);`,
-      `}`,
-      `if (command === "overview") {`,
-      `  const query = (args[1] || config.defaultQuery || "").trim();`,
-      `  const maxChars = Number(args[2] || config.defaultMaxChars || 2400) || 2400;`,
-      `  const perScopeMax = Math.max(180, Math.floor(maxChars / Math.max(1, config.scopes.length)));`,
-      `  const blocks = config.scopes.map((scope) => {`,
-      `    const result = runReceipt(["memory", "summarize", scope.scope, "--query", query || scope.defaultQuery || "", "--limit", String(config.defaultLimit || 6), "--max-chars", String(perScopeMax)]);`,
-      `    const summary = typeof result.summary === "string" ? result.summary.trim() : "";`,
-      `    return summary ? \`## \${scope.label}\\n\${summary}\` : "";`,
-      `  }).filter(Boolean);`,
-      `  const output = blocks.length ? compact(blocks.join("\\n\\n"), maxChars) : "No memory entries found.";`,
-      `  process.stdout.write(output + "\\n");`,
-      `  process.exit(0);`,
-      `}`,
-      `if (command === "scope") {`,
-      `  const scope = resolveScope(args[1]);`,
-      `  if (!scope) throw new Error("unknown memory scope");`,
-      `  const query = (args[2] || scope.defaultQuery || config.defaultQuery || "").trim();`,
-      `  const maxChars = Number(args[3] || config.defaultMaxChars || 1600) || 1600;`,
-      `  const result = runReceipt(["memory", "summarize", scope.scope, "--query", query, "--limit", String(config.defaultLimit || 6), "--max-chars", String(maxChars)]);`,
-      `  process.stdout.write((result.summary || "No memory entries found.") + "\\n");`,
-      `  process.exit(0);`,
-      `}`,
-      `if (command === "search") {`,
-      `  const scope = resolveScope(args[1]);`,
-      `  if (!scope) throw new Error("unknown memory scope");`,
-      `  const query = (args[2] || "").trim();`,
-      `  if (!query) throw new Error("search requires a query");`,
-      `  const limit = Number(args[3] || config.defaultLimit || 6) || 6;`,
-      `  const result = runReceipt(["memory", "search", scope.scope, "--query", query, "--limit", String(limit)]);`,
-      `  process.stdout.write((formatEntries(result.entries) || "No memory entries found.") + "\\n");`,
-      `  process.exit(0);`,
-      `}`,
-      `if (command === "read") {`,
-      `  const scope = resolveScope(args[1]);`,
-      `  if (!scope) throw new Error("unknown memory scope");`,
-      `  const limit = Number(args[2] || config.defaultLimit || 6) || 6;`,
-      `  const result = runReceipt(["memory", "read", scope.scope, "--limit", String(limit)]);`,
-      `  process.stdout.write((formatEntries(result.entries) || "No memory entries found.") + "\\n");`,
-      `  process.exit(0);`,
-      `}`,
-      `if (command === "commit") {`,
-      `  const scope = resolveScope(args[1]);`,
-      `  if (!scope) throw new Error("unknown memory scope");`,
-      `  const text = args.slice(2).join(" ").trim();`,
-      `  if (!text) throw new Error("commit requires text");`,
-      `  const result = runReceipt(["memory", "commit", scope.scope, "--text", text]);`,
-      `  process.stdout.write(JSON.stringify(result, null, 2) + "\\n");`,
-      `  process.exit(0);`,
-      `}`,
-      `throw new Error(\`unknown memory command '\${command}'\`);`,
-      "",
-    ].join("\n");
+    return buildFactoryMemoryScriptSource(configPath);
   }
 
   private taskFilePaths(workspacePath: string, taskId: string) {
@@ -4526,6 +4414,303 @@ export class FactoryService {
     };
   }
 
+  async prepareDirectCodexProbePacket(input: {
+    readonly jobId: string;
+    readonly prompt: string;
+    readonly profileId?: string;
+    readonly objectiveId?: string;
+    readonly parentRunId?: string;
+    readonly parentStream?: string;
+    readonly stream?: string;
+    readonly supervisorSessionId?: string;
+    readonly readOnly?: boolean;
+  }): Promise<{
+    readonly artifactPaths: FactoryChatCodexArtifactPaths;
+    readonly renderedPrompt: string;
+    readonly readOnly: boolean;
+    readonly env: NodeJS.ProcessEnv;
+  }> {
+    const readOnly = input.readOnly !== false;
+    const artifactPaths = factoryChatCodexArtifactPaths(this.dataDir, input.jobId);
+    await fs.mkdir(artifactPaths.root, { recursive: true });
+    await fs.rm(artifactPaths.resultPath, { force: true });
+    const profile = await this.resolveObjectiveProfileSnapshot(input.profileId);
+    const repoSkillPaths = await this.collectRepoSkillPaths();
+    const repoKey = repoKeyForRoot(this.git.repoRoot);
+    const repoScope = `repos/${repoKey}`;
+    const profileScope = `${repoScope}/profiles/${profile.rootProfileId}`;
+    const objectiveScope = input.objectiveId ? `${profileScope}/objectives/${input.objectiveId}` : undefined;
+    const workerScope = `${repoScope}/subagents/codex`;
+
+    const memoryScopes = [
+      {
+        key: "repo",
+        scope: repoScope,
+        label: "Repo memory",
+        defaultQuery: input.prompt,
+      },
+      {
+        key: "profile",
+        scope: profileScope,
+        label: `Profile memory (${profile.rootProfileLabel})`,
+        defaultQuery: input.prompt,
+      },
+      ...(objectiveScope ? [{
+        key: "objective",
+        scope: objectiveScope,
+        label: "Objective memory",
+        defaultQuery: input.prompt,
+      }, {
+        key: "integration",
+        scope: `factory/objectives/${input.objectiveId}/integration`,
+        label: "Integration memory",
+        defaultQuery: input.prompt,
+      }] : []),
+      {
+        key: "worker",
+        scope: workerScope,
+        label: "Codex worker memory",
+        defaultQuery: input.prompt,
+      },
+    ] satisfies ReadonlyArray<FactoryMemoryScopeSpec>;
+
+    const [
+      repoMemory,
+      profileMemory,
+      workerMemory,
+      objectiveDetail,
+      objectiveDebug,
+      objectiveReceipts,
+      objectiveMemory,
+      integrationMemory,
+    ] = await Promise.all([
+      this.summarizeScope(repoScope, input.prompt, 360),
+      this.summarizeScope(profileScope, input.prompt, 360),
+      this.summarizeScope(workerScope, input.prompt, 280),
+      input.objectiveId ? this.getObjective(input.objectiveId) : Promise.resolve(undefined),
+      input.objectiveId ? this.getObjectiveDebug(input.objectiveId) : Promise.resolve(undefined),
+      input.objectiveId ? this.listObjectiveReceipts(input.objectiveId, { limit: 20 }) : Promise.resolve([]),
+      objectiveScope ? this.summarizeScope(objectiveScope, input.prompt, 360) : Promise.resolve(undefined),
+      input.objectiveId ? this.summarizeScope(`factory/objectives/${input.objectiveId}/integration`, input.prompt, 360) : Promise.resolve(undefined),
+    ]);
+
+    const frontierTasks = (objectiveDetail?.tasks ?? [])
+      .filter((task) => ["ready", "running", "reviewing", "blocked"].includes(task.status))
+      .slice(0, 10)
+      .map((task) => ({
+        taskId: task.taskId,
+        taskKind: task.taskKind,
+        title: task.title,
+        status: task.status,
+        workerType: task.workerType,
+        sourceTaskId: task.sourceTaskId,
+        sourceCandidateId: task.sourceCandidateId,
+        relations: ["focus"] as const,
+        latestSummary: task.latestSummary,
+        blockedReason: task.blockedReason,
+        candidateId: task.candidateId,
+        candidateStatus: task.candidate?.status,
+      }));
+    const recentCompletedTasks = (objectiveDetail?.tasks ?? [])
+      .filter((task) => ["approved", "integrated", "blocked", "superseded"].includes(task.status))
+      .slice(0, 8)
+      .map((task) => ({
+        taskId: task.taskId,
+        taskKind: task.taskKind,
+        title: task.title,
+        status: task.status,
+        workerType: task.workerType,
+        sourceTaskId: task.sourceTaskId,
+        sourceCandidateId: task.sourceCandidateId,
+        relations: ["focus"] as const,
+        latestSummary: task.latestSummary,
+        blockedReason: task.blockedReason,
+        candidateId: task.candidateId,
+        candidateStatus: task.candidate?.status,
+      }));
+    const integrationTaskIds = new Set<string>();
+    if (objectiveDetail?.integration.activeCandidateId) {
+      const activeTask = objectiveDetail.tasks.find((task) => task.candidateId === objectiveDetail.integration.activeCandidateId);
+      if (activeTask) integrationTaskIds.add(activeTask.taskId);
+    }
+    for (const candidateId of objectiveDetail?.integration.queuedCandidateIds ?? []) {
+      const queuedTask = objectiveDetail?.tasks.find((task) => task.candidateId === candidateId);
+      if (queuedTask) integrationTaskIds.add(queuedTask.taskId);
+    }
+    const integrationTasks = (objectiveDetail?.tasks ?? [])
+      .filter((task) => integrationTaskIds.has(task.taskId))
+      .slice(0, 8)
+      .map((task) => ({
+        taskId: task.taskId,
+        taskKind: task.taskKind,
+        title: task.title,
+        status: task.status,
+        workerType: task.workerType,
+        sourceTaskId: task.sourceTaskId,
+        sourceCandidateId: task.sourceCandidateId,
+        relations: ["focus"] as const,
+        latestSummary: task.latestSummary,
+        blockedReason: task.blockedReason,
+        candidateId: task.candidateId,
+        candidateStatus: task.candidate?.status,
+      }));
+
+    const contextPack = {
+      objectiveId: input.objectiveId ?? `direct/${input.jobId}`,
+      title: objectiveDetail?.title ?? "Direct Codex Probe",
+      prompt: input.prompt,
+      mode: readOnly ? "read_only_direct_codex_probe" : "direct_codex",
+      profile,
+      task: {
+        taskId: `direct_codex_${input.jobId}`,
+        title: objectiveDetail?.title ? `Direct probe for ${objectiveDetail.title}` : "Direct Codex Probe",
+        prompt: input.prompt,
+        workerType: "codex",
+        status: "running",
+        candidateId: input.jobId,
+      },
+      integration: objectiveDetail?.integration ?? {
+        status: "idle",
+      },
+      dependencyTree: [],
+      relatedTasks: frontierTasks,
+      candidateLineage: [],
+      recentReceipts: objectiveReceipts.slice(-12).map((receipt) => ({
+        type: receipt.type,
+        at: receipt.ts,
+        taskId: receipt.taskId,
+        candidateId: receipt.candidateId,
+        summary: receipt.summary,
+      })),
+      objectiveSlice: {
+        frontierTasks,
+        recentCompletedTasks,
+        integrationTasks,
+        recentObjectiveReceipts: objectiveReceipts.map((receipt) => ({
+          type: receipt.type,
+          at: receipt.ts,
+          taskId: receipt.taskId,
+          candidateId: receipt.candidateId,
+          summary: receipt.summary,
+        })),
+        objectiveMemorySummary: objectiveMemory,
+        integrationMemorySummary: integrationMemory,
+      },
+      memory: {
+        overview: [repoMemory, profileMemory, objectiveMemory, workerMemory].filter(Boolean).join("\n\n") || undefined,
+        objective: objectiveMemory,
+        integration: integrationMemory,
+      },
+      contextSources: {
+        repoSharedMemoryScope: repoScope,
+        objectiveMemoryScope: objectiveScope ?? profileScope,
+        integrationMemoryScope: input.objectiveId ? `factory/objectives/${input.objectiveId}/integration` : workerScope,
+        profileSkillRefs: profile.selectedSkills,
+        repoSkillPaths,
+        sharedArtifactRefs: [],
+      },
+      latestDecision: objectiveDetail?.latestDecision,
+      blockedExplanation: objectiveDetail?.blockedExplanation,
+      evidenceCards: objectiveDetail?.evidenceCards.slice(-8) ?? [],
+      activeJobs: objectiveDebug?.activeJobs.slice(0, 8) ?? [],
+      latestContextPacks: objectiveDebug?.latestContextPacks ?? [],
+      session: {
+        jobId: input.jobId,
+        parentRunId: input.parentRunId,
+        parentStream: input.parentStream,
+        stream: input.stream,
+        supervisorSessionId: input.supervisorSessionId,
+      },
+    };
+
+    const memoryConfig = {
+      objectiveId: input.objectiveId,
+      taskId: `direct_codex_${input.jobId}`,
+      candidateId: input.jobId,
+      contextPackPath: artifactPaths.contextPackPath,
+      defaultQuery: input.prompt,
+      defaultLimit: 6,
+      defaultMaxChars: 2400,
+      scopes: memoryScopes,
+    };
+    const manifest = {
+      kind: "factory.codex.probe",
+      mode: readOnly ? "read_only" : "workspace_write",
+      run: {
+        jobId: input.jobId,
+        parentRunId: input.parentRunId,
+        parentStream: input.parentStream,
+        stream: input.stream,
+        supervisorSessionId: input.supervisorSessionId,
+      },
+      objective: objectiveDetail ? {
+        objectiveId: objectiveDetail.objectiveId,
+        title: objectiveDetail.title,
+        status: objectiveDetail.status,
+        phase: objectiveDetail.phase,
+        latestSummary: objectiveDetail.latestSummary,
+        nextAction: objectiveDetail.nextAction,
+        latestDecision: objectiveDetail.latestDecision,
+        blockedExplanation: objectiveDetail.blockedExplanation,
+      } : undefined,
+      profile,
+      memory: {
+        scriptPath: artifactPaths.memoryScriptPath,
+        configPath: artifactPaths.memoryConfigPath,
+        scopes: memoryScopes,
+      },
+      context: {
+        packPath: artifactPaths.contextPackPath,
+      },
+      repoSkillPaths,
+      traceRefs: [
+        ...(input.objectiveId ? [stateRef(objectiveStream(input.objectiveId), "factory objective stream")] : []),
+        ...(input.parentStream ? [stateRef(input.parentStream, "parent Factory run stream")] : []),
+      ],
+      contract: {
+        readOnly,
+        summary: readOnly
+          ? "This Codex probe is read-only. Use it for inspection, receipts, and diagnosis. Code changes must go through a Factory objective."
+          : "This Codex run may edit the workspace.",
+      },
+    };
+
+    await fs.writeFile(artifactPaths.contextPackPath, JSON.stringify(contextPack, null, 2), "utf-8");
+    await fs.writeFile(artifactPaths.manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
+    await fs.writeFile(artifactPaths.memoryConfigPath, JSON.stringify(memoryConfig, null, 2), "utf-8");
+    await fs.writeFile(artifactPaths.memoryScriptPath, buildFactoryMemoryScriptSource(artifactPaths.memoryConfigPath), "utf-8");
+    if (process.platform !== "win32") await fs.chmod(artifactPaths.memoryScriptPath, 0o755);
+
+    const receiptBinDir = await this.ensureWorkspaceReceiptCli(this.git.repoRoot);
+    const renderedPrompt = this.renderDirectCodexProbePrompt({
+      prompt: input.prompt,
+      readOnly,
+      artifactPaths,
+      manifest,
+      objective: objectiveDetail ? {
+        objectiveId: objectiveDetail.objectiveId,
+        title: objectiveDetail.title,
+        status: objectiveDetail.status,
+        phase: objectiveDetail.phase,
+        latestDecision: objectiveDetail.latestDecision,
+        blockedExplanation: objectiveDetail.blockedExplanation,
+      } : undefined,
+      repoSkillPaths,
+      recentReceipts: objectiveReceipts.slice(-10),
+    });
+
+    return {
+      artifactPaths,
+      renderedPrompt,
+      readOnly,
+      env: {
+        DATA_DIR: this.dataDir,
+        RECEIPT_DATA_DIR: this.dataDir,
+        PATH: prependPath(receiptBinDir, process.env.PATH),
+      },
+    };
+  }
+
   private async renderTaskPrompt(
     state: FactoryState,
     task: FactoryTaskRecord,
@@ -4618,6 +4803,90 @@ export class FactoryService {
       `Write JSON to ${payload.resultPath} with:`,
       `{ "outcome": "approved" | "changes_requested" | "blocked", "summary": string, "handoff": string }`,
       `Use "changes_requested" only when more work is clearly needed; use "blocked" only for a hard blocker.`,
+    ].join("\n");
+  }
+
+  private renderDirectCodexProbePrompt(input: {
+    readonly prompt: string;
+    readonly readOnly: boolean;
+    readonly artifactPaths: FactoryChatCodexArtifactPaths;
+    readonly manifest: Record<string, unknown>;
+    readonly objective?: {
+      readonly objectiveId: string;
+      readonly title: string;
+      readonly status: FactoryObjectiveStatus;
+      readonly phase: FactoryObjectivePhase;
+      readonly latestDecision?: FactoryObjectiveCard["latestDecision"];
+      readonly blockedExplanation?: FactoryObjectiveCard["blockedExplanation"];
+    };
+    readonly repoSkillPaths: ReadonlyArray<string>;
+    readonly recentReceipts: ReadonlyArray<FactoryObjectiveReceiptSummary>;
+  }): string {
+    const objectiveStreamRef = input.objective ? objectiveStream(input.objective.objectiveId) : undefined;
+    return [
+      `# Factory Direct Codex Probe`,
+      ``,
+      `Mode: ${input.readOnly ? "read-only probe" : "workspace-write"}`,
+      `Workspace: ${this.git.repoRoot}`,
+      ``,
+      `## Operator Request`,
+      input.prompt,
+      ``,
+      `## Read-Only Contract`,
+      input.readOnly
+        ? `This Codex run is read-only. Inspect receipts, memory, files, and logs, but do not modify tracked files or generate patches. If code changes are required, explain the change and say that Factory must create or react an objective/worktree run.`
+        : `This Codex run may edit the workspace.`,
+      ``,
+      `## Bootstrap Context`,
+      `Treat the prompt as bootstrap only. Read AGENTS.md and skills/factory-receipt-worker/SKILL.md before making claims about what context is available.`,
+      `Current packet files:`,
+      `- Manifest: ${input.artifactPaths.manifestPath}`,
+      `- Context Pack: ${input.artifactPaths.contextPackPath}`,
+      `- Memory Script: ${input.artifactPaths.memoryScriptPath}`,
+      `- Memory Config: ${input.artifactPaths.memoryConfigPath}`,
+      `- Result Path: ${input.artifactPaths.resultPath}`,
+      `- Prompt Path: ${input.artifactPaths.promptPath}`,
+      ``,
+      `## Objective-First Query Order`,
+      `1. Packet files in this artifact directory`,
+      input.objective ? `2. Current objective receipts and debug panels for ${input.objective.objectiveId}` : `2. Current parent Factory run stream if needed`,
+      `3. Scoped memory through the generated memory script`,
+      `4. Broader history only if the packet or current objective explicitly points to it`,
+      ``,
+      input.objective ? `## Current Objective` : `## Current Context`,
+      input.objective
+        ? [
+            `- Objective: ${input.objective.title} (${input.objective.objectiveId})`,
+            `- Status: ${input.objective.status}`,
+            `- Phase: ${input.objective.phase}`,
+            input.objective.latestDecision ? `- Latest decision: ${input.objective.latestDecision.summary}` : "",
+            input.objective.blockedExplanation ? `- Blocked explanation: ${input.objective.blockedExplanation.summary}` : "",
+            `- receipt factory inspect ${input.objective.objectiveId} --json --panel debug`,
+            `- receipt factory inspect ${input.objective.objectiveId} --json --panel receipts`,
+            objectiveStreamRef ? `- receipt inspect ${objectiveStreamRef}` : "",
+            objectiveStreamRef ? `- receipt trace ${objectiveStreamRef}` : "",
+          ].filter(Boolean).join("\n")
+        : `- Use the packet, the parent run stream, and memory first. This probe is not a cross-objective history search.`,
+      ``,
+      `## Memory Access`,
+      `Use the layered memory script at ${input.artifactPaths.memoryScriptPath} instead of pulling large raw memory dumps.`,
+      `Recommended commands:`,
+      `- node ${input.artifactPaths.memoryScriptPath} context 2800`,
+      `- node ${input.artifactPaths.memoryScriptPath} objective 1800`,
+      `- node ${input.artifactPaths.memoryScriptPath} overview ${JSON.stringify(input.prompt)} 2400`,
+      `- node ${input.artifactPaths.memoryScriptPath} scope repo ${JSON.stringify(input.prompt)} 1400`,
+      `- node ${input.artifactPaths.memoryScriptPath} scope profile ${JSON.stringify(input.prompt)} 1400`,
+      `- node ${input.artifactPaths.memoryScriptPath} search repo ${JSON.stringify(input.prompt)} 6`,
+      `- node ${input.artifactPaths.memoryScriptPath} commit worker "short durable note"`,
+      ``,
+      `## Repo Skills`,
+      input.repoSkillPaths.map((skill) => `- ${skill}`).join("\n") || "- none",
+      ``,
+      `## Recent Receipt Evidence`,
+      input.recentReceipts.map((receipt) => `- ${receipt.type}: ${receipt.summary}`).join("\n") || "- none",
+      ``,
+      `## Delivery Boundary`,
+      `Use this probe to inspect, summarize, and recommend. If implementation work is needed, say so explicitly and point the parent back to factory.dispatch.`,
     ].join("\n");
   }
 

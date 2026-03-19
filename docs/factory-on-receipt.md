@@ -61,6 +61,8 @@ Use `Factory` when you want to:
 - use profile-driven orchestration and handoff
 
 There is no separate Hub UI anymore. Factory still reuses `HubGit` as its Git/worktree adapter, but operator interaction now uses `/factory` for chat/thread flow and `/factory/control` for advanced work details. `/factory/chat` remains as a compatibility redirect.
+Profiles are orchestration lenses over the Factory control plane. They do not receive direct repo read/write tools.
+If a Factory chat session uses direct `codex.run`, that path is a read-only probe; code-changing work still flows through objective-managed worktrees.
 
 ## Thesis
 
@@ -78,6 +80,7 @@ In practice that means:
 - Git remains the only durable representation of code content, worktrees, commits, and source-branch promotion
 - Hub reads projections from factory state instead of acting as a second objective state store
 - only one objective per repo holds the execution slot at a time; later objectives remain visibly queued until admitted
+- profiles and direct Codex probes consume receipt-backed evidence, but they do not replace Receipt as the control plane or Git as the code plane
 
 ## V1.1 Additions
 

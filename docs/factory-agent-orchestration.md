@@ -30,7 +30,10 @@ Everything durable around those model calls is receipt-backed and reducer-driven
 
 That means:
 
+- Factory chat is the canonical human-facing orchestration surface
 - objective creation returns immediately and a queued factory control job performs repo prep, planning, and the first react pass
+- Factory profiles orchestrate through receipts, status, and dispatch tools instead of direct repo access
+- direct `codex.run` from Factory chat is a read-only probe path
 - OpenAI prepares a repo profile and proposes a task DAG during startup
 - OpenAI can also choose among legal orchestration actions and propose runtime task mutations when enabled
 - Codex does not decide the overall workflow; it executes one task at a time inside an isolated Git worktree
@@ -165,7 +168,43 @@ Every consequential orchestration decision still becomes receipts.
 
 ## Where Codex Is Used
 
-Codex is the default task worker.
+Codex is used in two different modes:
+
+- direct Factory-chat probes for read-only inspection
+- task-worker execution inside objective-managed worktrees for code changes
+
+The first mode is orchestration support. The second mode is delivery.
+
+### Direct Codex probes from Factory chat
+
+`codex.run` in Factory chat is now a read-only probe, not a delivery path.
+
+When the profile queues a direct probe, Factory materializes a bounded packet under the job artifact directory with:
+
+- `manifest.json`
+- `context-pack.json`
+- `memory-scopes.json`
+- `memory.cjs`
+- `prompt.md`
+- `stdout.log`
+- `stderr.log`
+- `last-message.txt`
+- `result.json`
+
+That packet includes current run/profile context, the linked objective summary when present, recent objective receipts/evidence, and scoped memory summaries.
+
+The direct probe contract is:
+
+- inspect the packet first
+- use current-objective receipts and memory before broader history
+- do not edit tracked files
+- if the work needs code changes, hand it back to `factory.dispatch`
+
+The executor runs these probes in a read-only sandbox. If the probe attempts to mutate tracked files, Factory fails the job explicitly and tells the parent to create or react a Factory objective instead.
+
+### Objective task execution
+
+Objective task execution is where Codex edits code.
 
 When a task is ready to run, Factory queues a job with payload kind:
 
@@ -184,13 +223,13 @@ Inside that path:
 - Codex writes its result JSON
 - Factory parses the result and emits receipts like candidate produced/reviewed/approved/changes requested/blocked
 
-Codex is therefore a bounded tool worker:
+Codex is therefore a bounded delivery worker:
 
 - one task
 - one workspace
 - one result contract
 
-It is not the orchestrator.
+It is not the orchestrator, and it does not replace the Factory control plane.
 
 ## Other Worker Types
 
@@ -504,6 +543,7 @@ sequenceDiagram
 
 - OpenAI is optional. Factory still works with deterministic fallbacks, but orchestration becomes less adaptive.
 - Codex is the default worker, but Factory is not hard-coded to Codex-only tasks.
+- direct `codex.run` packets now mirror the task-packet model, but remain read-only probes instead of delivery paths.
 - Integration validation shares the `codex` lane for scheduling simplicity even though validation itself is local shell execution.
 - The repo-root env var is still named `HUB_REPO_ROOT` even though Factory is the real objective surface.
 - Task context is passed through generated packet files, not only through in-memory prompt assembly.
@@ -512,11 +552,12 @@ sequenceDiagram
 
 If you want one sentence:
 
-Factory uses OpenAI to plan and steer, Codex to execute task-local code changes, Git worktrees to isolate each pass, and an integration branch to prove changes before promotion.
+Factory uses OpenAI to plan and steer, Factory chat profiles to orchestrate through receipts, Codex probes for narrow inspection, Codex task workers for code changes, Git worktrees to isolate each pass, and an integration branch to prove changes before promotion.
 
 If you want the control split:
 
 - OpenAI decides structure and action selection
-- Codex performs bounded task work
+- Factory chat/profile decides when to inspect, dispatch, react, or promote
+- Codex performs bounded read-only probes or bounded task work depending on the path
 - Git owns code movement
 - receipts own orchestration truth

@@ -18,7 +18,11 @@ import {
 } from "./agent.js";
 import type { AgentEvent } from "../modules/agent.js";
 import type { JsonlQueue, QueueJob } from "../adapters/jsonl-queue.js";
-import type { FactoryService, FactoryObjectiveInput } from "../services/factory-service.js";
+import type {
+  FactoryService,
+  FactoryObjectiveInput,
+  FactoryObjectiveReceiptSummary,
+} from "../services/factory-service.js";
 import {
   factoryChatStream,
   repoKeyForRoot,
@@ -27,6 +31,10 @@ import {
 } from "../services/factory-chat-profiles.js";
 import type { CodexExecutor, CodexRunControl } from "../adapters/codex-executor.js";
 import type { MemoryTools } from "../adapters/memory-tools.js";
+import {
+  factoryChatCodexArtifactPaths,
+  readTextTail,
+} from "../services/factory-codex-artifacts.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,6 +56,7 @@ export type FactoryChatRunInput = Omit<AgentRunInput, "config" | "prompts" | "ll
   readonly config: FactoryChatRunConfig;
   readonly queue: JsonlQueue;
   readonly factoryService: FactoryService;
+  readonly dataDir?: string;
   readonly repoRoot: string;
   readonly profileRoot?: string;
   readonly objectiveId?: string;
@@ -71,6 +80,9 @@ const FACTORY_CHAT_LOOP_TEMPLATE = [
   "Recent transcript:",
   "{{transcript}}",
   "",
+  "Current situation:",
+  "{{situation}}",
+  "",
   "Memory summary:",
   "{{memory}}",
   "",
@@ -80,11 +92,18 @@ const FACTORY_CHAT_LOOP_TEMPLATE = [
   "Tool specs:",
   "{{tool_help}}",
   "",
+  "Orchestration rules:",
+  "- Profiles are orchestration-only. Do not claim this chat edited code directly.",
+  "- Use `codex.run` only for read-only inspection or evidence-gathering in the current repo.",
+  "- Use `factory.dispatch` for any code-changing delivery work or when the next step should run in an objective worktree.",
+  "- Before `react`, `promote`, `cancel`, or duplicate dispatch, ground the decision in the current situation, receipts, or live output.",
+  "",
   "For final answers to the user:",
   "- write plain language, not raw JSON",
   "- keep it concise and operator-facing",
   "- prefer the words Skill, Chat, and Work",
   "- mention objective, run, and job only when needed for debugging or inspection",
+  "- if code changes are needed, route them through Factory objective work instead of claiming this chat changed code directly",
   "",
   "Respond with JSON only, no markdown. Always include every field in the action object:",
   "{",
@@ -252,6 +271,8 @@ const normalizeJobSnapshot = (job: QueueJob): Record<string, unknown> => {
     profileId: asString(job.payload.profileId),
     delegatedTo: asString(result?.delegatedTo) ?? asString(job.payload.delegatedTo),
     objectiveId: asString(result?.objectiveId) ?? asString(job.payload.objectiveId),
+    mode: asString(result?.mode) ?? asString(job.payload.mode),
+    readOnly: result?.readOnly === true || job.payload.readOnly === true,
     lastMessage: asString(result?.lastMessage),
     stdoutTail: asString(result?.stdoutTail),
     stderrTail: asString(result?.stderrTail),
@@ -318,6 +339,77 @@ const buildActiveChildWaitingMessage = (jobs: ReadonlyArray<QueueJob>): string =
   return lines.join("\n");
 };
 
+const summarizeObjectiveReceipts = (receipts: ReadonlyArray<FactoryObjectiveReceiptSummary>, limit = 5): ReadonlyArray<string> =>
+  receipts.slice(-Math.max(1, limit)).map((receipt) => `- ${receipt.type}: ${receipt.summary}`);
+
+const buildFactorySituation = async (input: {
+  readonly queue: JsonlQueue;
+  readonly runId: string;
+  readonly stream: string;
+  readonly profile: FactoryChatResolvedProfile;
+  readonly objectiveId?: string;
+  readonly factoryService: FactoryService;
+  readonly dataDir?: string;
+}): Promise<string> => {
+  const lines = [`Profile: ${input.profile.root.label} (${input.profile.root.id})`];
+  const childJobs = await listChildJobsForRun(input.queue, input.runId);
+  const activeChildren = childJobs.filter((job) => isActiveJobStatus(job.status));
+  const canInspectObjective = typeof input.factoryService.getObjective === "function"
+    && typeof input.factoryService.getObjectiveDebug === "function"
+    && typeof input.factoryService.listObjectiveReceipts === "function";
+  if (input.objectiveId && canInspectObjective) {
+    const [detail, debug, receipts] = await Promise.all([
+      input.factoryService.getObjective(input.objectiveId),
+      input.factoryService.getObjectiveDebug(input.objectiveId),
+      input.factoryService.listObjectiveReceipts(input.objectiveId, { limit: 8 }),
+    ]);
+    lines.push(`Objective: ${detail.title} (${detail.objectiveId})`);
+    lines.push(`Status: ${detail.status} · phase ${detail.phase} · integration ${detail.integration.status}`);
+    if (detail.latestDecision?.summary) lines.push(`Latest decision: ${detail.latestDecision.summary}`);
+    if (detail.blockedExplanation?.summary) lines.push(`Blocked: ${detail.blockedExplanation.summary}`);
+    const activeJobs = debug.activeJobs.slice(0, 3);
+    if (activeJobs.length > 0) {
+      lines.push("Active jobs:");
+      lines.push(...activeJobs.map((job) => `- ${job.id}: ${job.agentId} ${job.status}`));
+    }
+    const receiptLines = summarizeObjectiveReceipts(receipts, 5);
+    if (receiptLines.length > 0) {
+      lines.push("Recent receipts:");
+      lines.push(...receiptLines);
+    }
+  } else if (input.objectiveId) {
+    lines.push(`Objective: ${input.objectiveId}`);
+    lines.push("Objective detail is not available in this runtime.");
+  } else if (activeChildren.length > 0) {
+    lines.push("Active child jobs:");
+    const snapshots = await Promise.all(activeChildren.slice(0, 3).map((job) => codexJobSnapshot(job, input.dataDir)));
+    lines.push(...snapshots.map((snapshot) =>
+      `- ${String(snapshot.jobId)}: ${String(snapshot.worker)} ${String(snapshot.status)}${asString(snapshot.summary) ? ` · ${String(snapshot.summary)}` : ""}`
+    ));
+  } else {
+    lines.push("No active objective or child work.");
+  }
+  return lines.join("\n");
+};
+
+const codexJobSnapshot = async (job: QueueJob, dataDir?: string): Promise<Record<string, unknown>> => {
+  const base = normalizeJobSnapshot(job);
+  if (job.agentId !== "codex" || !dataDir) return base;
+  const artifacts = factoryChatCodexArtifactPaths(dataDir, job.id);
+  const [lastMessage, stdoutTail, stderrTail] = await Promise.all([
+    readTextTail(artifacts.lastMessagePath, 400),
+    readTextTail(artifacts.stdoutPath, 900),
+    readTextTail(artifacts.stderrPath, 600),
+  ]);
+  return {
+    ...base,
+    artifacts,
+    lastMessage: lastMessage ?? base.lastMessage,
+    stdoutTail: stdoutTail ?? base.stdoutTail,
+    stderrTail: stderrTail ?? base.stderrTail,
+  };
+};
+
 const createCodexRunTool = (input: {
   readonly repoRoot: string;
   readonly repoKey: string;
@@ -353,6 +445,8 @@ const createCodexRunTool = (input: {
         stream: input.stream,
         profileId: input.profile.root.id,
         ...(input.objectiveId ? { objectiveId: input.objectiveId } : {}),
+        mode: "read_only_probe",
+        readOnly: true,
         task: prompt,
         prompt,
         timeoutMs,
@@ -361,7 +455,9 @@ const createCodexRunTool = (input: {
     const result: Record<string, unknown> = {
       ...normalizeJobSnapshot(created),
       worker: "codex",
-      summary: `codex child queued as ${created.id}`,
+      mode: "read_only_probe",
+      readOnly: true,
+      summary: `codex read-only probe queued as ${created.id}`,
     };
     await commitWorkerSummary(
       input.memoryTools,
@@ -482,6 +578,7 @@ const createCodexStatusTool = (input: {
   readonly stream: string;
   readonly profile: FactoryChatResolvedProfile;
   readonly objectiveId?: string;
+  readonly dataDir?: string;
 }): AgentToolExecutor =>
   async (toolInput) => {
     const jobId = asString(toolInput.jobId);
@@ -489,7 +586,7 @@ const createCodexStatusTool = (input: {
       const job = await input.queue.getJob(jobId);
       if (!job) throw new Error(`job ${jobId} not found`);
       if (job.agentId !== "codex") throw new Error(`job ${jobId} is not a codex job`);
-      const snapshot = normalizeJobSnapshot(job);
+      const snapshot = await codexJobSnapshot(job, input.dataDir);
       return {
         output: JSON.stringify({
           worker: "codex",
@@ -517,7 +614,7 @@ const createCodexStatusTool = (input: {
         codexJobPriority(right, { runId: input.runId, objectiveId: input.objectiveId })
         - codexJobPriority(left, { runId: input.runId, objectiveId: input.objectiveId })
         || right.updatedAt - left.updatedAt);
-    const snapshots = jobs.slice(0, limit).map((job) => normalizeJobSnapshot(job));
+    const snapshots = await Promise.all(jobs.slice(0, limit).map((job) => codexJobSnapshot(job, input.dataDir)));
     const latest = snapshots[0];
     const activeCount = jobs.filter((job) => isActiveJobStatus(job.status)).length;
     const summary = latest
@@ -533,6 +630,40 @@ const createCodexStatusTool = (input: {
         jobs: snapshots,
       }, null, 2),
       summary,
+    };
+  };
+
+const createCodexLogsTool = (input: {
+  readonly queue: JsonlQueue;
+  readonly runId: string;
+  readonly stream: string;
+  readonly profile: FactoryChatResolvedProfile;
+  readonly objectiveId?: string;
+  readonly dataDir: string;
+}): AgentToolExecutor =>
+  async (toolInput) => {
+    const requestedJobId = asString(toolInput.jobId);
+    const targetJob = requestedJobId
+      ? await input.queue.getJob(requestedJobId)
+      : (await input.queue.listJobs({ limit: 200 }))
+        .filter((job) => job.agentId === "codex")
+        .filter((job) => jobMatchesProfileContext(job, {
+          runId: input.runId,
+          stream: input.stream,
+          profileId: input.profile.root.id,
+          objectiveId: input.objectiveId,
+        }))
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+    if (!targetJob) throw new Error(requestedJobId ? `job ${requestedJobId} not found` : "no codex jobs found for this context");
+    if (targetJob.agentId !== "codex") throw new Error(`job ${targetJob.id} is not a codex job`);
+    const snapshot = await codexJobSnapshot(targetJob, input.dataDir);
+    return {
+      output: JSON.stringify({
+        worker: "codex",
+        action: "logs",
+        ...snapshot,
+      }, null, 2),
+      summary: `codex logs ${targetJob.id}: ${String(snapshot.status ?? targetJob.status)}`,
     };
   };
 
@@ -640,41 +771,118 @@ const createFactoryDispatchTool = (input: {
 
 const createFactoryStatusTool = (input: {
   readonly factoryService: FactoryService;
+  readonly objectiveId?: string;
 }): AgentToolExecutor =>
   async (toolInput) => {
-    const objectiveId = asString(toolInput.objectiveId);
+    const objectiveId = asString(toolInput.objectiveId) ?? input.objectiveId;
     if (!objectiveId) throw new Error("factory.status requires objectiveId");
-    const detail = await input.factoryService.getObjective(objectiveId);
+    const [detail, debug, receipts] = await Promise.all([
+      input.factoryService.getObjective(objectiveId),
+      input.factoryService.getObjectiveDebug(objectiveId),
+      input.factoryService.listObjectiveReceipts(objectiveId, { limit: 20 }),
+    ]);
     const summary = summarizeObjective(detail);
     return {
-      output: JSON.stringify({ worker: "factory", action: "status", ...summary }, null, 2),
+      output: JSON.stringify({
+        worker: "factory",
+        action: "status",
+        ...summary,
+        latestDecision: detail.latestDecision,
+        blockedExplanation: detail.blockedExplanation,
+        evidenceCards: detail.evidenceCards.slice(-8),
+        recentReceipts: receipts,
+        activeJobs: debug.activeJobs,
+        taskWorktrees: debug.taskWorktrees,
+        integrationWorktree: debug.integrationWorktree,
+        latestContextPacks: debug.latestContextPacks,
+      }, null, 2),
       summary: summary.summary,
     };
   };
 
+const createFactoryOutputTool = (input: {
+  readonly factoryService: FactoryService;
+  readonly objectiveId?: string;
+}): AgentToolExecutor =>
+  async (toolInput) => {
+    const objectiveId = asString(toolInput.objectiveId) ?? input.objectiveId;
+    const focusKind = asString(toolInput.focusKind);
+    const focusId = asString(toolInput.focusId);
+    if (!objectiveId) throw new Error("factory.output requires objectiveId");
+    if (focusKind !== "task" && focusKind !== "job") {
+      throw new Error("factory.output requires focusKind of 'task' or 'job'");
+    }
+    if (!focusId) throw new Error("factory.output requires focusId");
+    const liveOutput = await input.factoryService.getObjectiveLiveOutput(objectiveId, focusKind, focusId);
+    return {
+      output: JSON.stringify({
+        worker: "factory",
+        action: "output",
+        ...liveOutput,
+      }, null, 2),
+      summary: liveOutput.summary ?? `${focusKind} ${focusId}: ${liveOutput.status}`,
+    };
+  };
+
+const createFactoryReceiptsTool = (input: {
+  readonly factoryService: FactoryService;
+  readonly objectiveId?: string;
+}): AgentToolExecutor =>
+  async (toolInput) => {
+    const objectiveId = asString(toolInput.objectiveId) ?? input.objectiveId;
+    if (!objectiveId) throw new Error("factory.receipts requires objectiveId");
+    const limit = typeof toolInput.limit === "number" && Number.isFinite(toolInput.limit)
+      ? Math.max(1, Math.min(Math.floor(toolInput.limit), 40))
+      : 12;
+    const types = Array.isArray(toolInput.types)
+      ? toolInput.types.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim())
+      : [];
+    const receipts = await input.factoryService.listObjectiveReceipts(objectiveId, {
+      limit,
+      taskId: asString(toolInput.taskId),
+      candidateId: asString(toolInput.candidateId),
+      types,
+    });
+    return {
+      output: JSON.stringify({
+        worker: "factory",
+        action: "receipts",
+        objectiveId,
+        count: receipts.length,
+        receipts,
+      }, null, 2),
+      summary: `${receipts.length} receipts`,
+    };
+  };
+
 const discoveryTools = new Set([
-  "ls",
-  "read",
-  "grep",
+  "memory.read",
+  "memory.search",
+  "memory.summarize",
+  "codex.run",
   "agent.status",
   "codex.status",
+  "codex.logs",
   "jobs.list",
-  "agent.inspect",
+  "factory.status",
+  "factory.output",
+  "factory.receipts",
   "skill.read",
 ]);
 
 const deliveryTools = new Set([
-  "codex.run",
-  "write",
-  "bash",
   "factory.dispatch",
+  "agent.delegate",
 ]);
 
 const monitorWhileChildRunningTools = new Set([
   "agent.status",
   "codex.status",
+  "codex.logs",
   "jobs.list",
-  "agent.inspect",
+  "factory.status",
+  "factory.output",
+  "factory.receipts",
   "job.control",
 ]);
 
@@ -896,7 +1104,18 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
       stream: input.stream,
       profile: resolvedProfile,
       objectiveId: input.objectiveId,
+      dataDir: input.dataDir,
     }),
+    ...(input.dataDir ? {
+      "codex.logs": createCodexLogsTool({
+        queue: input.queue,
+        runId: input.runId,
+        stream: input.stream,
+        profile: resolvedProfile,
+        objectiveId: input.objectiveId,
+        dataDir: input.dataDir,
+      }),
+    } : {}),
     "job.control": createJobControlTool({
       queue: input.queue,
       currentJobId: input.control?.jobId,
@@ -920,6 +1139,15 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
     }),
     "factory.status": createFactoryStatusTool({
       factoryService: input.factoryService,
+      objectiveId: input.objectiveId,
+    }),
+    "factory.output": createFactoryOutputTool({
+      factoryService: input.factoryService,
+      objectiveId: input.objectiveId,
+    }),
+    "factory.receipts": createFactoryReceiptsTool({
+      factoryService: input.factoryService,
+      objectiveId: input.objectiveId,
     }),
     "profile.handoff": createProfileHandoffTool({
       currentProfile: resolvedProfile,
@@ -1028,15 +1256,31 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
       orchestrationPolicy: resolvedProfile.orchestration,
       stream: resolvedStream,
     },
+    promptContextBuilder: async () => ({
+      situation: await buildFactorySituation({
+        queue: input.queue,
+        runId: input.runId,
+        stream: input.stream,
+        profile: resolvedProfile,
+        objectiveId: input.objectiveId,
+        factoryService: input.factoryService,
+        dataDir: input.dataDir,
+      }),
+    }),
     extraToolSpecs: {
       "agent.delegate": "{\"agentId\": string, \"task\": string, \"config\"?: object} — Queue a Receipt-native subagent and return its live job handle immediately.",
       "agent.status": "{\"jobId\": string} — Inspect a queued or running child job and return its latest normalized state. Do not pass the current factory job id.",
       "jobs.list": "{\"limit\"?: number, \"status\"?: string, \"includeCompleted\"?: boolean} — List recent jobs related to the current Factory skill chat.",
       "codex.status": "{\"jobId\"?: string, \"limit\"?: number, \"includeCompleted\"?: boolean} — Inspect live Codex activity for the current run, project, or skill chat. With jobId, inspect that Codex child directly.",
+      ...(input.dataDir ? {
+        "codex.logs": "{\"jobId\"?: string} — Inspect Codex child logs, packet files, and artifact paths for this Factory chat context. Without jobId, use the latest Codex child.",
+      } : {}),
       "job.control": "{\"jobId\": string, \"command\": \"steer\"|\"follow_up\"|\"abort\", \"problem\"?: string, \"config\"?: object, \"note\"?: string, \"reason\"?: string} — Queue a steer, follow-up, or abort command for a running child job. Do not pass the current factory job id.",
-      "codex.run": "{\"prompt\": string, \"timeoutMs\"?: number} — Queue a focused Codex run against the repo and return its live child job handle immediately. Reuse that returned jobId for agent.status/job.control.",
+      "codex.run": "{\"prompt\": string, \"timeoutMs\"?: number} — Queue a read-only Codex probe against the repo and return its live child job handle immediately. Use it for inspection and evidence-gathering only; use factory.dispatch for code changes.",
       "factory.dispatch": "{\"action\"?: \"create\"|\"react\"|\"promote\"|\"cancel\"|\"cleanup\"|\"archive\", \"objectiveId\"?: string, \"prompt\"?: string, \"title\"?: string, \"baseHash\"?: string, \"checks\"?: string[], \"channel\"?: string, \"reason\"?: string} — Create or operate on a tracked Factory project. 'react' means re-evaluate the project and dispatch the next eligible step.",
-      "factory.status": "{\"objectiveId\": string} — Inspect a tracked Factory project and return a concise status summary.",
+      "factory.status": "{\"objectiveId\"?: string} — Inspect a tracked Factory project and return objective state, decisions, evidence cards, recent receipts, jobs, worktrees, and latest context packs.",
+      "factory.output": "{\"objectiveId\"?: string, \"focusKind\": \"task\"|\"job\", \"focusId\": string} — Inspect live output and log tails for an objective task or job.",
+      "factory.receipts": "{\"objectiveId\"?: string, \"taskId\"?: string, \"candidateId\"?: string, \"types\"?: string[], \"limit\"?: number} — Inspect a bounded objective-scoped receipt slice for the current project.",
       "profile.handoff": "{\"profileId\": string, \"reason\"?: string} — Hand off the conversation to another Factory skill chat.",
       ...(input.extraToolSpecs ?? {}),
     },
@@ -1049,6 +1293,11 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
   });
 };
 
+const DIRECT_CODEX_MUTATION_MESSAGE = "Direct Codex probes are read-only. This work needs code changes; create or react a Factory objective instead.";
+
+const looksLikeReadOnlyMutationFailure = (message: string): boolean =>
+  /\bread[- ]only\b|\bpermission denied\b|\bcannot write\b|\bwrite access\b|\bsandbox\b/i.test(message);
+
 export const runFactoryCodexJob = async (input: {
   readonly dataDir: string;
   readonly repoRoot: string;
@@ -1057,26 +1306,50 @@ export const runFactoryCodexJob = async (input: {
   readonly executor: CodexExecutor;
   readonly timeoutMs?: number;
   readonly onProgress?: (update: Record<string, unknown>) => Promise<void>;
+  readonly factoryService?: FactoryService;
+  readonly payload?: Record<string, unknown>;
 }, control?: CodexRunControl): Promise<Record<string, unknown>> => {
-  const root = path.join(input.dataDir, "factory-chat", "codex", input.jobId);
-  await fs.mkdir(root, { recursive: true });
-  const lastMessagePath = path.join(root, "last-message.txt");
-  const stdoutPath = path.join(root, "stdout.log");
-  const stderrPath = path.join(root, "stderr.log");
+  const artifacts = factoryChatCodexArtifactPaths(input.dataDir, input.jobId);
+  await fs.mkdir(artifacts.root, { recursive: true });
+
+  let renderedPrompt = input.prompt;
+  let readOnly = input.payload?.readOnly === true || asString(input.payload?.mode) === "read_only_probe";
+  let env: NodeJS.ProcessEnv | undefined;
+  if (input.factoryService && input.payload) {
+    const prepared = await input.factoryService.prepareDirectCodexProbePacket({
+      jobId: input.jobId,
+      prompt: input.prompt,
+      profileId: asString(input.payload.profileId),
+      objectiveId: asString(input.payload.objectiveId),
+      parentRunId: asString(input.payload.parentRunId),
+      parentStream: asString(input.payload.parentStream),
+      stream: asString(input.payload.stream),
+      supervisorSessionId: asString(input.payload.supervisorSessionId),
+      readOnly,
+    });
+    renderedPrompt = prepared.renderedPrompt;
+    readOnly = prepared.readOnly;
+    env = prepared.env;
+  } else {
+    await fs.rm(artifacts.resultPath, { force: true });
+  }
+
   let progressStopped = false;
   let lastFingerprint = "";
   const emitProgress = async (): Promise<void> => {
-    const [lastMessageRaw, stdoutRaw, stderrRaw] = await Promise.all([
-      fs.readFile(lastMessagePath, "utf-8").catch(() => ""),
-      fs.readFile(stdoutPath, "utf-8").catch(() => ""),
-      fs.readFile(stderrPath, "utf-8").catch(() => ""),
+    const [lastMessage, stdoutTail, stderrTail] = await Promise.all([
+      readTextTail(artifacts.lastMessagePath, 400),
+      readTextTail(artifacts.stdoutPath, 900),
+      readTextTail(artifacts.stderrPath, 600),
     ]);
     const update = {
       worker: "codex",
+      mode: readOnly ? "read_only_probe" : "workspace_write",
+      readOnly,
       status: "running",
-      lastMessage: asString(lastMessageRaw),
-      stdoutTail: tail(stdoutRaw),
-      stderrTail: tail(stderrRaw),
+      lastMessage,
+      stdoutTail,
+      stderrTail,
     };
     const next = {
       ...update,
@@ -1093,29 +1366,87 @@ export const runFactoryCodexJob = async (input: {
       await new Promise((resolve) => setTimeout(resolve, 900));
     }
   })();
-  let result: Awaited<ReturnType<CodexExecutor["run"]>>;
+
+  const writeResult = async (result: Record<string, unknown>): Promise<void> => {
+    await fs.writeFile(artifacts.resultPath, JSON.stringify(result, null, 2), "utf-8");
+  };
+
   try {
-    result = await input.executor.run({
-      prompt: input.prompt,
+    const result = await input.executor.run({
+      prompt: renderedPrompt,
       workspacePath: input.repoRoot,
-      promptPath: path.join(root, "prompt.md"),
-      lastMessagePath,
-      stdoutPath,
-      stderrPath,
+      promptPath: artifacts.promptPath,
+      lastMessagePath: artifacts.lastMessagePath,
+      stdoutPath: artifacts.stdoutPath,
+      stderrPath: artifacts.stderrPath,
       timeoutMs: input.timeoutMs,
+      env,
+      sandboxMode: readOnly ? "read-only" : "workspace-write",
+      mutationPolicy: readOnly ? "read_only_probe" : "workspace_edit",
     }, control);
-  } finally {
     progressStopped = true;
     await progressLoop;
+    await emitProgress();
+
+    const changedFiles = await gitChangedFiles(input.repoRoot);
+    if (readOnly && changedFiles.length > 0) {
+      const failed = {
+        status: "failed",
+        worker: "codex",
+        mode: "read_only_probe",
+        readOnly: true,
+        summary: DIRECT_CODEX_MUTATION_MESSAGE,
+        lastMessage: asString(result.lastMessage),
+        stdoutTail: tail(result.stdout),
+        stderrTail: tail(result.stderr),
+        changedFiles,
+        artifacts,
+      };
+      await writeResult(failed);
+      throw new Error(DIRECT_CODEX_MUTATION_MESSAGE);
+    }
+
+    const completed = {
+      status: "completed",
+      worker: "codex",
+      mode: readOnly ? "read_only_probe" : "workspace_write",
+      readOnly,
+      summary: asString(result.lastMessage) ?? "Codex completed.",
+      lastMessage: asString(result.lastMessage),
+      stdoutTail: tail(result.stdout),
+      stderrTail: tail(result.stderr),
+      changedFiles,
+      artifacts,
+    };
+    await writeResult(completed);
+    return completed;
+  } catch (err) {
+    progressStopped = true;
+    await progressLoop;
+    await emitProgress();
+
+    const [lastMessage, stdoutTail, stderrTail, changedFiles] = await Promise.all([
+      readTextTail(artifacts.lastMessagePath, 400),
+      readTextTail(artifacts.stdoutPath, 900),
+      readTextTail(artifacts.stderrPath, 600),
+      gitChangedFiles(input.repoRoot),
+    ]);
+    const rawMessage = err instanceof Error ? err.message : String(err);
+    const message = readOnly && (changedFiles.length > 0 || looksLikeReadOnlyMutationFailure(rawMessage))
+      ? DIRECT_CODEX_MUTATION_MESSAGE
+      : rawMessage;
+    await writeResult({
+      status: "failed",
+      worker: "codex",
+      mode: readOnly ? "read_only_probe" : "workspace_write",
+      readOnly,
+      summary: message,
+      lastMessage,
+      stdoutTail,
+      stderrTail,
+      changedFiles,
+      artifacts,
+    });
+    throw new Error(message);
   }
-  await emitProgress();
-  const changedFiles = await gitChangedFiles(input.repoRoot);
-  return {
-    status: "completed",
-    summary: asString(result.lastMessage) ?? "Codex completed.",
-    lastMessage: asString(result.lastMessage),
-    stdoutTail: tail(result.stdout),
-    stderrTail: tail(result.stderr),
-    changedFiles,
-  };
 };

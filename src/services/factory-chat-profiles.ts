@@ -12,8 +12,6 @@ const PROFILE_DIR = "profiles";
 export type FactoryChatProfileObjectiveWorktreeMode = "required" | "forbidden";
 export type FactoryChatProfileObjectiveValidationMode = "repo_profile" | "none";
 export type FactoryChatProfileCapability =
-  | "repo.read"
-  | "repo.write"
   | "memory.read"
   | "memory.write"
   | "skill.read"
@@ -148,12 +146,10 @@ export type FactoryChatResolvedProfile = {
 const unique = (items: ReadonlyArray<string>): ReadonlyArray<string> => [...new Set(items.filter(Boolean))];
 
 const PROFILE_CAPABILITY_TOOLS = {
-  "repo.read": ["ls", "read", "grep"],
-  "repo.write": ["write", "bash"],
   "memory.read": ["memory.read", "memory.search", "memory.summarize"],
   "memory.write": ["memory.commit", "memory.diff"],
   "skill.read": ["skill.read"],
-  "status.read": ["agent.inspect", "agent.status", "jobs.list", "codex.status", "factory.status"],
+  "status.read": ["agent.status", "jobs.list", "codex.status", "codex.logs", "factory.status", "factory.output", "factory.receipts"],
   "async.dispatch": ["codex.run", "agent.delegate"],
   "async.control": ["job.control"],
   "objective.control": ["factory.dispatch"],
@@ -189,6 +185,9 @@ const normalizeCapabilities = (raw: ReadonlyArray<string> | undefined): Readonly
   unique(Array.isArray(raw)
     ? raw.filter((item): item is string => typeof item === "string").map((item) => item.trim())
     : []).map((item) => {
+      if (item === "repo.read" || item === "repo.write") {
+        throw new Error(`factory profile capability '${item}' is no longer allowed; Factory profiles are orchestration-only and must use status, memory, dispatch, and objective tools instead`);
+      }
       if (item in PROFILE_CAPABILITY_TOOLS) return item as FactoryChatProfileCapability;
       throw new Error(`unknown factory profile capability '${item}'`);
     });

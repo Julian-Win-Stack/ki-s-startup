@@ -6,6 +6,7 @@ description: Use when working inside a Receipt Factory task worktree, reviewing 
 # Factory Receipt Worker
 
 Use this skill when the task is running inside a Factory worktree or when you need to explain or justify a Factory review, retry, or inherited-failure decision from evidence already available in the repo.
+Use it for direct Codex probe debugging too, but remember that probe packets are read-only evidence paths, not delivery workspaces.
 
 ## First Pass
 
@@ -20,6 +21,7 @@ Do this before making code or review claims:
 ## Working Rules
 
 - Treat the worktree packet and receipt surfaces as the primary worker context.
+- If the packet links to an objective, inspect current-objective receipts before claiming prior decisions, inherited failures, or missing context.
 - Treat the prompt as bootstrap only.
 - Prefer the current objective over broader history.
 - Use repo-shared memory before assuming you need broader cross-objective context.
@@ -28,6 +30,7 @@ Do this before making code or review claims:
 - If the evidence is incomplete, say so explicitly instead of guessing.
 - Use `receipt factory ...` for Factory mutations. Treat `/factory` web views as inspect-only.
 - Use `receipt factory codex-probe` only for Codex runtime/status debugging. Treat it as an isolated runtime probe, not as evidence about the current objective unless you tie it back to receipts or live job state.
+- Direct Codex probes from Factory chat are read-only. If the requested outcome needs code changes, say so and route the work back through Factory objective dispatch.
 
 ## References
 

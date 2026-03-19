@@ -27,3 +27,24 @@ test("factory context instructions: checked-in skill covers commands, memory sco
   expect(failures).toContain("Call a failure inherited only when");
   expect(failures).toContain("Do not call a failure inherited when:");
 });
+
+test("factory orchestration docs and skills: profiles stay orchestration-only and decisions stay receipt-aware", async () => {
+  const profileDoc = await fs.readFile(new URL("../../docs/factory-profile-orchestration.md", import.meta.url), "utf-8");
+  const agentDoc = await fs.readFile(new URL("../../docs/factory-agent-orchestration.md", import.meta.url), "utf-8");
+  const orchestratorSkill = await fs.readFile(new URL("../../skills/factory-run-orchestrator/SKILL.md", import.meta.url), "utf-8");
+  const orchestratorPrompt = await fs.readFile(new URL("../../prompts/factory/orchestrator.md", import.meta.url), "utf-8");
+
+  expect(profileDoc).toContain("Legacy `repo.read` and `repo.write` capabilities are rejected.");
+  expect(profileDoc).toContain("codex.logs");
+  expect(profileDoc).toContain("factory.output");
+  expect(profileDoc).toContain("factory.receipts");
+  expect(profileDoc).toContain("read-only probe");
+  expect(agentDoc).toContain("`codex.run` in Factory chat is now a read-only probe");
+  expect(agentDoc).toContain("hand it back to `factory.dispatch`");
+  expect(orchestratorSkill).toContain("factory.receipts");
+  expect(orchestratorSkill).toContain("factory.output");
+  expect(orchestratorSkill).toContain("codex.logs");
+  expect(orchestratorSkill).toContain("read-only probe");
+  expect(orchestratorPrompt).toContain("Ground the choice in the provided receipts, evidence cards, active jobs, and current objective state.");
+  expect(orchestratorPrompt).toContain("Prefer existing active or queued work over duplicate dispatch.");
+});

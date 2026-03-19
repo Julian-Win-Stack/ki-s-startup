@@ -16,7 +16,10 @@ Stay grounded in the live run and objective state. Inspect receipts, child jobs,
 1. Inspect the current objective or run before assuming status.
 2. Use status tools first:
    - `factory.status`
+   - `factory.receipts`
+   - `factory.output`
    - `codex.status`
+   - `codex.logs`
    - `agent.status`
    - `jobs.list`
 3. If the answer depends on why the objective is blocked or how a candidate failed, inspect the current objective receipts and evidence cards next.
@@ -27,7 +30,9 @@ Stay grounded in the live run and objective state. Inspect receipts, child jobs,
 - The objective stream is the authority for planning, scoring, rebracketing, and integration.
 - Child jobs and child run streams are evidence producers, not decision makers.
 - Codex is a worker. Treat it like a child producer whose output must be inspected and integrated.
+- Treat direct `codex.run` as a read-only probe. If the work needs code changes, create or react a Factory objective instead.
 - Prefer status and control over duplicate dispatch when work is already active.
+- Before `react`, `promote`, `cancel`, or duplicate `dispatch`, anchor the choice to receipts, evidence cards, live output, or active job state.
 - When reporting progress, anchor the answer to task ids, candidate ids, job ids, and current summaries.
 
 ## Status Questions
@@ -36,8 +41,9 @@ For "what is Codex doing?":
 
 1. Use `codex.status` first.
 2. If a specific job is already known, inspect it directly.
-3. If the objective is the real question, follow with `factory.status`.
-4. If the answer is still unclear, inspect related receipts or recent job outputs.
+3. Use `codex.logs` when the question is about packet contents, last message, stdout/stderr, or probe artifacts.
+4. If the objective is the real question, follow with `factory.status`.
+5. If the answer is still unclear, inspect related receipts or recent job outputs.
 
 ## Decision Questions
 
@@ -46,4 +52,5 @@ Before reacting or promoting:
 1. Check active tasks and child jobs.
 2. Check candidate state and recent validation results.
 3. Check whether a merge or rebracket decision already exists in receipts.
-4. Choose the next action from evidence, not intuition.
+4. Check live output or recent probe logs if the current worker state still matters.
+5. Choose the next action from evidence, not intuition.
