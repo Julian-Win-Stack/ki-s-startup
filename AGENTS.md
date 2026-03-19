@@ -8,8 +8,9 @@ Use the checked-in skill at `skills/factory-receipt-worker/SKILL.md` when workin
 2. Read the current context pack under `.receipt/factory/<taskId>.context-pack.json`.
 3. Run the generated memory script from `.receipt/factory/<taskId>.memory.cjs` for `context`, `objective`, and the relevant scope summaries before assuming the prompt told you everything.
 4. Query current-objective state with:
-   - `receipt factory inspect <objectiveId> --json --panel debug`
    - `receipt factory inspect <objectiveId> --json --panel receipts`
+   - `receipt factory inspect <objectiveId> --json --panel debug`
+   Run these sequentially, not in parallel.
 5. Use `receipt inspect`, `receipt trace`, `receipt replay`, and `receipt memory ...` only as needed for deeper evidence.
 
 ## Working Rules
