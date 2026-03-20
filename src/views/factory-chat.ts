@@ -562,7 +562,7 @@ export const factoryChatIsland = (model: FactoryChatIslandModel): string => {
   </div>`;
 };
 
-const renderSkillCard = (model: FactorySidebarModel): string => {
+const renderProfileCard = (model: FactorySidebarModel): string => {
   const skillInitials = model.activeProfileLabel
     .split(/\s+/)
     .map((part) => part[0] ?? "")
@@ -572,19 +572,21 @@ const renderSkillCard = (model: FactorySidebarModel): string => {
   const sections = (model.activeProfileSections ?? []).slice(0, 2);
   const tools = model.activeProfileTools.map(skillToolLabel).filter(Boolean).slice(0, 6);
   return `<section class="${railCardClass}">
-    <div class="flex items-start justify-between gap-3">
-      <div class="min-w-0">
-        <div class="${sectionLabelClass}">Profile</div>
-        <div class="mt-3 text-lg font-semibold text-white">${esc(model.activeProfileLabel)}</div>
-        <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(model.activeProfileSummary ?? "Factory uses the active profile to decide how to inspect, queue, and steer projects.")}</div>
+    <div class="${sectionLabelClass}">Profile</div>
+    <div class="mt-3 rounded-[20px] border border-white/10 bg-black/20 px-4 py-4">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <div class="text-lg font-semibold text-white">${esc(model.activeProfileLabel)}</div>
+          <div class="mt-2 text-sm leading-6 text-zinc-300">${esc(model.activeProfileSummary ?? "Active profile controls how Factory inspects and routes work.")}</div>
+        </div>
+        <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.05] text-xs font-semibold uppercase tracking-[0.2em] text-zinc-200">${esc(skillInitials || "PF")}</div>
       </div>
-      <div class="flex h-11 w-11 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.05] text-xs font-semibold uppercase tracking-[0.2em] text-zinc-200">${esc(skillInitials || "SK")}</div>
     </div>
     ${sections.length > 0 ? `<div class="mt-4 grid gap-3">
       ${sections.map((section) => `<div class="rounded-[20px] border border-white/10 bg-black/20 px-4 py-3">
         <div class="${sectionLabelClass}">${esc(section.title)}</div>
         <div class="mt-2 grid gap-2">
-          ${section.items.slice(0, 3).map((item) => `<div class="text-sm leading-6 text-zinc-300">${esc(item)}</div>`).join("")}
+          ${section.items.slice(0, 3).map((item) => `<div class="text-sm leading-6 text-zinc-300">${esc(truncate(item, 120))}</div>`).join("")}
         </div>
       </div>`).join("")}
     </div>` : ""}
@@ -661,8 +663,28 @@ export const factoryRailIsland = (model: FactorySidebarModel): string => {
       </details>
     </div>`
     : objectiveCards;
+  const profileLinks = model.profiles.length > 0
+    ? model.profiles.map((profile) => {
+        const selectedClass = profile.selected
+          ? "border-emerald-300/25 bg-emerald-300/10 text-emerald-100"
+          : "border-white/10 bg-white/[0.03] text-zinc-300 hover:bg-white/[0.06]";
+        return `<a class="block rounded-[22px] border px-4 py-3 transition ${selectedClass}" href="/factory?profile=${encodeURIComponent(profile.id)}${selectedObjectiveQuery}${selectedChatQuery}">
+          <div class="text-sm font-medium">${esc(profile.label)}</div>
+          ${profile.summary ? `<div class="mt-1 text-xs leading-5 text-zinc-400">${esc(truncate(profile.summary, 88))}</div>` : ""}
+        </a>`;
+      }).join("")
+    : `<div class="rounded-2xl border border-dashed border-white/10 px-4 py-5 text-sm text-zinc-500">No profiles found.</div>`;
   return `<div class="space-y-5 px-4 py-5 md:px-5">
-    ${renderSkillCard(model)}
+    <section class="${railCardClass}">
+      <div class="flex items-center justify-between gap-3">
+        <div class="${sectionLabelClass}">Profile</div>
+        <div class="text-xs text-zinc-500">${esc(`${model.profiles.length}`)}</div>
+      </div>
+      <div class="mt-4 grid gap-3">
+        ${profileLinks}
+      </div>
+    </section>
+    ${renderProfileCard(model)}
     <section class="${railCardClass}">
       <div class="flex items-center justify-between gap-3">
         <div class="${sectionLabelClass}">${blankChat ? "Recent projects" : "Projects"}</div>
@@ -671,17 +693,6 @@ export const factoryRailIsland = (model: FactorySidebarModel): string => {
       <div class="mt-4 grid gap-3">
         ${objectives}
       </div>
-    </section>
-    <section class="${railCardClass}">
-      <details>
-        <summary class="flex cursor-pointer list-none items-center justify-between gap-3">
-          <span class="${sectionLabelClass}">Skills</span>
-          <span class="text-xs text-zinc-500">${esc(`${model.profiles.length}`)}</span>
-        </summary>
-        <div class="mt-4 grid gap-3">
-          ${profileLinks}
-        </div>
-      </details>
     </section>
     <a class="flex items-center gap-2 rounded-2xl border border-sky-300/20 bg-sky-300/[0.06] px-4 py-3 text-sm font-medium text-sky-200 transition hover:bg-sky-300/[0.12]" href="/receipt">
       <span class="text-xs tracking-widest uppercase text-sky-300/70">Receipts</span>
