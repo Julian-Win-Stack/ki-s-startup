@@ -465,7 +465,7 @@ const renderSidebarMetrics = (obj?: FactorySelectedObjectiveCard): string => {
   </section>`;
 };
 
-export const factoryRailIsland = (model: FactoryNavModel, selectedObjective?: FactorySelectedObjectiveCard, chatId?: string): string => {
+const factoryRailIsland = (model: FactoryNavModel, selectedObjective?: FactorySelectedObjectiveCard, chatId?: string): string => {
   const blankChat = !selectedObjective;
   const visibleObjectives = model.objectives.slice(0, 5);
   const hasMoreObjectives = model.objectives.length > visibleObjectives.length;
