@@ -15,8 +15,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "css:build": "bunx @tailwindcss/cli -i src/styles/factory.css -o dist/assets/factory.css --minify",
-    "css:watch": "bunx @tailwindcss/cli -i src/styles/factory.css -o dist/assets/factory.css --watch",
+    "css:build": "tailwindcss -i src/styles/factory.css -o dist/assets/factory.css --minify",
+    "css:watch": "tailwindcss -i src/styles/factory.css -o dist/assets/factory.css --watch",
     "dev": "bun run css:build && bun --watch src/server.ts",
     "cli": "bun src/cli.ts",
     "receipt": "bun src/cli.ts",

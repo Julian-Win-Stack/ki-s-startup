@@ -9,7 +9,11 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["bun-types"]
+    "types": ["bun-types"],
+    "paths": {
+      "@receipt/core/*": ["./packages/core/src/*", "./packages/core/src/*.ts", "./packages/core/src/*.tsx"],
+      "@receipt/core/*.js": ["./packages/core/src/*.ts", "./packages/core/src/*.tsx"]
+    }
   },
   "references": [
     { "path": "./packages/core" }
