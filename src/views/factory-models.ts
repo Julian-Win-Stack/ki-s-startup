@@ -184,13 +184,15 @@ export type FactoryInspectorModel = {
   readonly liveChildren?: ReadonlyArray<FactoryLiveChildCard>;
   readonly activeRun?: FactoryLiveRunCard;
   readonly jobs: ReadonlyArray<FactoryChatJobNav>;
+  readonly receipts?: ReadonlyArray<any>;
+  readonly debugInfo?: any;
+  readonly tasks?: ReadonlyArray<any>;
 };
 
 export type FactoryChatShellModel = {
   readonly activeProfileId: string;
   readonly activeProfileLabel: string;
   readonly objectiveId?: string;
-  readonly chatId?: string;
   readonly runId?: string;
   readonly jobId?: string;
   readonly chat: FactoryChatIslandModel;

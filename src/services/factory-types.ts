@@ -50,6 +50,7 @@ export type FactoryServiceOptions = {
 };
 
 export type FactoryObjectiveInput = {
+  readonly objectiveId?: string;
   readonly title: string;
   readonly prompt: string;
   readonly baseHash?: string;
@@ -335,7 +336,7 @@ export type FactoryIntegrationPublishJobPayload = {
 export type FactoryObjectiveControlJobPayload = {
   readonly kind: "factory.objective.control";
   readonly objectiveId: string;
-  readonly reason: "startup" | "admitted";
+  readonly reason: "startup" | "admitted" | "reconcile";
 };
 
 export type FactoryObjectiveReceiptSummary = {

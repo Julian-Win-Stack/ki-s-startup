@@ -19,6 +19,7 @@ import type { AgentCmd, AgentEvent, AgentState } from "../modules/agent.js";
 import { initial as initialAgent, reduce as reduceAgent } from "../modules/agent.js";
 import {
   factoryChatStream,
+  factoryChatSessionStream,
   discoverFactoryChatProfiles,
   resolveFactoryChatProfile,
 } from "../services/factory-chat-profiles.js";
@@ -824,20 +825,20 @@ const workCardFromObservation = (observation: ToolObservation): FactoryWorkCard 
     return {
       key: `${observation.tool}-${asString(parsed?.objectiveId) ?? observation.summary ?? "factory"}`,
       title: observation.tool === "factory.status"
-        ? "Project status"
+        ? "Thread status"
         : action === "create"
-          ? "Project started"
+          ? "Thread started"
           : action === "react"
-            ? "Project updated"
+            ? "Thread updated"
             : action === "promote"
-              ? "Project promoted"
+              ? "Thread promoted"
               : action === "cancel"
-                ? "Project stopped"
+                ? "Thread stopped"
                 : action === "cleanup"
                   ? "Worktrees removed"
                   : action === "archive"
-                    ? "Project archived"
-                    : "Factory project",
+                    ? "Thread archived"
+                    : "Factory thread",
       worker: asString(parsed?.worker) ?? "factory",
       status: asString(parsed?.status) ?? "updated",
       summary: asString(parsed?.summary) ?? observation.summary ?? "Factory updated.",
@@ -1039,7 +1040,7 @@ export const buildChatItemsForRun = (
       items.push({
         key: `${runId}-continued`,
         kind: "system",
-        title: "Project continues automatically",
+        title: "Thread continues automatically",
         body: `${continued.summary}\n\nNext run: ${continued.nextRunId}\nNext job: ${continued.nextJobId}`,
         meta: `${continued.previousMaxIterations} -> ${continued.nextMaxIterations} steps`,
       });
@@ -1058,8 +1059,8 @@ export const buildChatItemsForRun = (
       items.push({
         key: `${runId}-objective-status`,
         kind: "system",
-        title: "Project continues",
-        body: `The parent skill hit its 8-turn budget after updating this project. The project is still ${latestObjectiveCard.status}.\n\n${latestObjectiveCard.summary}`,
+        title: "Thread continues",
+        body: `The parent skill hit its 8-turn budget after updating this thread. The thread is still ${latestObjectiveCard.status}.\n\n${latestObjectiveCard.summary}`,
         meta: state.statusNote ?? state.status,
       });
     } else {
@@ -1075,7 +1076,7 @@ export const buildChatItemsForRun = (
     const activeProfile = profileLabel(state.profile?.profileId);
     const activityLine = state.lastTool?.name
       ? `${activeProfile} is using ${state.lastTool.name}${state.lastTool.summary ? `.\n\n${state.lastTool.summary}` : ""}${state.lastTool.error ? `\n\n${state.lastTool.error}` : ""}`
-      : `${activeProfile} is shaping the next step in this project chat. Live updates will appear here.`;
+      : `${activeProfile} is shaping the next step in this thread. Live updates will appear here.`;
     if (!hasRunningWorkCard()) {
       items.push({
         key: `${runId}-running`,
@@ -1111,23 +1112,23 @@ const collectRunIds = (chain: Awaited<ReturnType<Runtime<AgentCmd, AgentEvent, A
 
 const buildChatLink = (input: {
   readonly profileId?: string;
-  readonly objectiveId?: string;
   readonly chatId?: string;
+  readonly objectiveId?: string;
   readonly runId?: string;
   readonly jobId?: string;
 }): string => {
   const params = new URLSearchParams();
   if (input.profileId) params.set("profile", input.profileId);
+  if (input.chatId) params.set("chat", input.chatId);
   if (input.objectiveId) params.set("thread", input.objectiveId);
-  if (!input.objectiveId && input.chatId) params.set("chat", input.chatId);
   if (input.runId) params.set("run", input.runId);
   if (input.jobId) params.set("job", input.jobId);
   const query = params.toString();
   return `/factory${query ? `?${query}` : ""}`;
 };
 
-const makeFactoryChatId = (): string =>
-  `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+const makeFactoryObjectiveId = (): string =>
+  `objective_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 
 const makeFactoryRunId = (): string =>
   `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1168,7 +1169,6 @@ const summarizePendingRunJob = (job: QueueJob, profileLabel: string): FactoryLiv
     link: buildChatLink({
       profileId: asString(job.payload.profileId),
       objectiveId: asString(job.payload.objectiveId),
-      chatId: asString(job.payload.chatId),
       runId: asString(job.payload.runId) ?? asString(job.payload.parentRunId),
       jobId: job.id,
     }),
@@ -1187,13 +1187,13 @@ const describeRunActivity = (
   if (tool === "jobs.list") return `${profileLabel} is checking live jobs.`;
   if (tool === "agent.status") return `${profileLabel} is checking child status.`;
   if (tool === "codex.status") return `${profileLabel} is checking Codex progress.`;
-  if (tool === "factory.status") return `${profileLabel} is checking project status.`;
+  if (tool === "factory.status") return `${profileLabel} is checking thread status.`;
   if (tool === "repo.status") return `${profileLabel} is checking repo state.`;
   if (tool === "agent.inspect") return `${profileLabel} is tracing child activity.`;
-  if (tool === "factory.dispatch") return `${profileLabel} is updating the project.`;
+  if (tool === "factory.dispatch") return `${profileLabel} is updating the thread.`;
   if (tool === "codex.run") return `${profileLabel} queued Codex work and is waiting for progress.`;
   if (tool === "agent.delegate") return `${profileLabel} delegated follow-up work.`;
-  if (tool === "profile.handoff") return `${profileLabel} is handing off this project chat.`;
+  if (tool === "profile.handoff") return `${profileLabel} is handing off this thread.`;
   if (tool && tool.length > 0) return `${profileLabel} is using ${tool}.`;
   if (finalContent?.trim()) return "Run completed.";
   if (state.status === "running") return `${profileLabel} is still working.`;
@@ -1208,7 +1208,6 @@ const summarizeActiveRunCard = (
     readonly profileLabel: string;
     readonly profileId: string;
     readonly objectiveId?: string;
-    readonly chatId?: string;
   },
 ): FactoryLiveRunCard => {
   const state = fold(input.runChain, reduceAgent, initialAgent);
@@ -1257,7 +1256,6 @@ const summarizeActiveRunCard = (
     link: buildChatLink({
       profileId: input.profileId,
       objectiveId: input.objectiveId,
-      chatId: input.chatId,
       runId: input.runId,
     }),
   };
@@ -1302,6 +1300,9 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     optionalTrimmedString(new URL(req.url).searchParams.get("thread"))
     ?? optionalTrimmedString(new URL(req.url).searchParams.get("objective"));
 
+  const requestedChatId = (req: Request): string | undefined =>
+    optionalTrimmedString(new URL(req.url).searchParams.get("chat"));
+
   const requestedProfileId = (req: Request): string | undefined =>
     optionalTrimmedString(new URL(req.url).searchParams.get("profile"));
 
@@ -1310,9 +1311,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
   const requestedJobId = (req: Request): string | undefined =>
     optionalTrimmedString(new URL(req.url).searchParams.get("job"));
-
-  const requestedChatId = (req: Request): string | undefined =>
-    optionalTrimmedString(new URL(req.url).searchParams.get("chat"));
 
   const requestedFocusId = (req: Request): string | undefined =>
     optionalTrimmedString(new URL(req.url).searchParams.get("focusId"));
@@ -1412,7 +1410,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
   const buildChatShellModel = async (input: {
     readonly profileId?: string;
     readonly objectiveId?: string;
-    readonly chatId?: string;
     readonly runId?: string;
     readonly jobId?: string;
   }): Promise<FactoryChatShellModel> => {
@@ -1423,11 +1420,16 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       profileRoot,
       requestedId: input.profileId,
     });
-    const stream = factoryChatStream(repoRoot, resolved.root.id, input.objectiveId, input.chatId);
+    const stream = factoryChatStream(repoRoot, resolved.root.id, input.objectiveId);
     const [profiles, objectives, selectedObjective, jobs, indexChain] = await Promise.all([
       discoverFactoryChatProfiles(profileRoot),
       service.listObjectives(),
-      input.objectiveId ? service.getObjective(input.objectiveId) : Promise.resolve(undefined),
+      input.objectiveId 
+        ? service.getObjective(input.objectiveId).catch(err => {
+            if (err instanceof FactoryServiceError && err.status === 404) return undefined;
+            throw err;
+          })
+        : Promise.resolve(undefined),
       ctx.queue.listJobs({ limit: 120 }),
       agentRuntime.chain(stream),
     ]);
@@ -1501,7 +1503,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           profileLabel: resolved.root.label,
           profileId: resolved.root.id,
           objectiveId: input.objectiveId,
-          chatId: input.chatId,
         })
       : selectedJob
           ? summarizePendingRunJob(selectedJob, resolved.root.label)
@@ -1520,7 +1521,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         link: buildChatLink({
           profileId: resolved.root.id,
           objectiveId: jobObjectiveId(job),
-          chatId: input.chatId,
           runId: jobAnyRunId(job),
           jobId: job.id,
         }),
@@ -1583,7 +1583,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       activeProfileId: resolved.root.id,
       activeProfileLabel: resolved.root.label,
       objectiveId: input.objectiveId,
-      chatId: input.chatId,
       runId: activeRunId,
       jobId: input.jobId,
       chat: chatModel,
@@ -1595,7 +1594,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
   const buildChatShellModelCached = async (input: {
     readonly profileId?: string;
     readonly objectiveId?: string;
-    readonly chatId?: string;
     readonly runId?: string;
     readonly jobId?: string;
   }): Promise<FactoryChatShellModel> => withProjectionCache(
@@ -1611,7 +1609,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
   const collectChatSubscriptionJobIds = async (input: {
     readonly profileId?: string;
     readonly objectiveId?: string;
-    readonly chatId?: string;
     readonly runId?: string;
     readonly jobId?: string;
   }): Promise<ReadonlyArray<string>> => {
@@ -1620,7 +1617,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       profileRoot,
       requestedId: input.profileId,
     });
-    const stream = factoryChatStream(service.git.repoRoot, resolved.root.id, input.objectiveId, input.chatId);
+    const stream = factoryChatStream(service.git.repoRoot, resolved.root.id, input.objectiveId);
     const jobs = await ctx.queue.listJobs({ limit: 120 });
     const jobsById = new Map(jobs.map((job) => [job.id, job] as const));
     const baseQueueJobs = jobs.filter((job) => isRelevantShellJob(job, stream, input.objectiveId));
@@ -1682,7 +1679,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                   `${buildChatLink({
                     profileId: resolved.root.id,
                     objectiveId,
-                    chatId: requestedChat,
                     runId: requestedRun,
                     jobId: requestedJob,
                   })}#factory-command-help`,
@@ -1763,7 +1759,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
                   objectiveId: jobObjectiveId(queued.job) ?? objectiveId,
-                  chatId: requestedChat,
                   runId: jobAnyRunId(queued.job) ?? requestedRun,
                   jobId: queued.job.id,
                 }));
@@ -1778,7 +1773,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
                   objectiveId: jobObjectiveId(queued.job) ?? objectiveId,
-                  chatId: requestedChat,
                   runId: jobAnyRunId(queued.job) ?? requestedRun,
                   jobId: queued.job.id,
                 }));
@@ -1793,7 +1787,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
                   objectiveId: jobObjectiveId(queued.job) ?? objectiveId,
-                  chatId: requestedChat,
                   runId: jobAnyRunId(queued.job) ?? requestedRun,
                   jobId: queued.job.id,
                 }));
@@ -1801,8 +1794,9 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             }
           }
 
-          const chatId = objectiveId ? undefined : (requestedChat ?? makeFactoryChatId());
-          const stream = factoryChatStream(service.git.repoRoot, resolved.root.id, objectiveId, chatId);
+          const stream = requestedChat
+            ? factoryChatSessionStream(service.git.repoRoot, resolved.root.id, requestedChat)
+            : factoryChatStream(service.git.repoRoot, resolved.root.id, objectiveId);
           const runId = makeFactoryRunId();
           const created = await ctx.queue.enqueue({
             agentId: "factory",
@@ -1817,15 +1811,15 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
               problem: prompt,
               profileId: resolved.root.id,
               ...(objectiveId ? { objectiveId } : {}),
-              ...(chatId ? { chatId } : {}),
+              ...(requestedChat ? { chatId: requestedChat } : {}),
             },
           });
           ctx.sse.publish("jobs", created.id);
           if (objectiveId) ctx.sse.publish("factory", objectiveId);
           return navigationResponse(req, buildChatLink({
             profileId: resolved.root.id,
+            chatId: requestedChat,
             objectiveId,
-            chatId,
             runId,
             jobId: created.id,
           }));
@@ -1841,7 +1835,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         async () => buildChatShellModelCached({
           profileId: requestedProfileId(c.req.raw),
           objectiveId: requestedObjectiveId(c.req.raw),
-          chatId: requestedChatId(c.req.raw),
           runId: requestedRunId(c.req.raw),
           jobId: requestedJobId(c.req.raw),
         }),
@@ -1851,7 +1844,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       app.get("/factory/new-chat", async (c) => wrap(
         async () => buildChatLink({
           profileId: requestedProfileId(c.req.raw) ?? "generalist",
-          chatId: makeFactoryChatId(),
+          objectiveId: makeFactoryObjectiveId(),
         }),
         (location) => new Response(null, {
           status: 303,
@@ -1875,14 +1868,12 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
               service.git.repoRoot,
               resolved.root.id,
               requestedObjectiveId(c.req.raw),
-              requestedChatId(c.req.raw),
             ),
             objectiveId: requestedObjectiveId(c.req.raw),
             jobId: requestedJobId(c.req.raw),
             jobIds: await collectChatSubscriptionJobIds({
               profileId: requestedProfileId(c.req.raw),
               objectiveId: requestedObjectiveId(c.req.raw),
-              chatId: requestedChatId(c.req.raw),
               runId: requestedRunId(c.req.raw),
               jobId: requestedJobId(c.req.raw),
             }),
@@ -1901,7 +1892,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           const model = await buildChatShellModelCached({
             profileId: requestedProfileId(c.req.raw),
             objectiveId: requestedObjectiveId(c.req.raw),
-            chatId: requestedChatId(c.req.raw),
             runId: requestedRunId(c.req.raw),
             jobId: requestedJobId(c.req.raw),
           });
@@ -1915,25 +1905,52 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           const model = await buildChatShellModelCached({
             profileId: requestedProfileId(c.req.raw),
             objectiveId: requestedObjectiveId(c.req.raw),
-            chatId: requestedChatId(c.req.raw),
             runId: requestedRunId(c.req.raw),
             jobId: requestedJobId(c.req.raw),
           });
           return model;
         },
-        (model) => html(factorySidebarIsland(model.nav, model.inspector.selectedObjective, model.chatId))
+        (model) => html(factorySidebarIsland(model.nav, model.inspector.selectedObjective))
       ));
 
       app.get("/factory/island/inspector", async (c) => wrap(
         async () => {
+          const objectiveId = requestedObjectiveId(c.req.raw);
           const model = await buildChatShellModelCached({
             profileId: requestedProfileId(c.req.raw),
-            objectiveId: requestedObjectiveId(c.req.raw),
-            chatId: requestedChatId(c.req.raw),
+            objectiveId,
             runId: requestedRunId(c.req.raw),
             jobId: requestedJobId(c.req.raw),
           });
-          return { ...model.inspector, panel: requestedPanel(c.req.raw) as any };
+          const panel = requestedPanel(c.req.raw) || "overview";
+          let receipts;
+          let debugInfo;
+          let tasks;
+          
+          if (objectiveId) {
+            if (panel === "receipts") {
+              try {
+                receipts = await service.listObjectiveReceipts(objectiveId, 100);
+              } catch (e) {
+                // Ignore if not initialized
+              }
+            } else if (panel === "debug") {
+              try {
+                debugInfo = await service.getObjectiveState(objectiveId);
+              } catch (e) {
+                // Ignore if not initialized
+              }
+            } else if (panel === "execution") {
+              try {
+                const detail = await service.getObjective(objectiveId);
+                tasks = detail.tasks;
+              } catch (e) {
+                // Ignore if not initialized
+              }
+            }
+          }
+          
+          return { ...model.inspector, panel: panel as any, receipts, debugInfo, tasks };
         },
         (model) => html(factoryInspectorIsland(model))
       ));
@@ -1942,7 +1959,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         async () => buildChatLink({
           profileId: requestedProfileId(c.req.raw),
           objectiveId: requestedObjectiveId(c.req.raw),
-          chatId: requestedChatId(c.req.raw),
           runId: requestedRunId(c.req.raw),
           jobId: requestedJobId(c.req.raw),
         }),
@@ -1968,14 +1984,12 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
               service.git.repoRoot,
               resolved.root.id,
               requestedObjectiveId(c.req.raw),
-              requestedChatId(c.req.raw),
             ),
             objectiveId: requestedObjectiveId(c.req.raw),
             jobId: requestedJobId(c.req.raw),
             jobIds: await collectChatSubscriptionJobIds({
               profileId: requestedProfileId(c.req.raw),
               objectiveId: requestedObjectiveId(c.req.raw),
-              chatId: requestedChatId(c.req.raw),
               runId: requestedRunId(c.req.raw),
               jobId: requestedJobId(c.req.raw),
             }),
@@ -1994,7 +2008,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           const model = await buildChatShellModelCached({
             profileId: requestedProfileId(c.req.raw),
             objectiveId: requestedObjectiveId(c.req.raw),
-            chatId: requestedChatId(c.req.raw),
             runId: requestedRunId(c.req.raw),
             jobId: requestedJobId(c.req.raw),
           });
@@ -2008,13 +2021,12 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           const model = await buildChatShellModelCached({
             profileId: requestedProfileId(c.req.raw),
             objectiveId: requestedObjectiveId(c.req.raw),
-            chatId: requestedChatId(c.req.raw),
             runId: requestedRunId(c.req.raw),
             jobId: requestedJobId(c.req.raw),
           });
           return model;
         },
-        (model) => html(factorySidebarIsland(model.nav, model.inspector.selectedObjective, model.chatId))
+        (model) => html(factorySidebarIsland(model.nav, model.inspector.selectedObjective))
       ));
 
       app.get("/factory/chat/island/inspector", async (c) => wrap(
@@ -2022,7 +2034,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           const model = await buildChatShellModelCached({
             profileId: requestedProfileId(c.req.raw),
             objectiveId: requestedObjectiveId(c.req.raw),
-            chatId: requestedChatId(c.req.raw),
             runId: requestedRunId(c.req.raw),
             jobId: requestedJobId(c.req.raw),
           });

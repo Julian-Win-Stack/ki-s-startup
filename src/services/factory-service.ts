@@ -660,7 +660,7 @@ export class FactoryService {
         "source repository has uncommitted changes. Factory objectives only see committed Git history. Commit or stash changes first, or provide baseHash explicitly.",
       );
     }
-    const objectiveId = this.makeId("objective");
+    const objectiveId = input.objectiveId?.trim() || this.makeId("objective");
     const baseHash = await this.git.resolveBaseHash(input.baseHash);
     const createdAt = Date.now();
     await this.writeObjectiveProfileArtifacts(objectiveId, profile);
@@ -1186,6 +1186,9 @@ export class FactoryService {
   }
 
   private deriveNextAction(state: FactoryState, queuePosition?: number): string | undefined {
+    if (state.status === "completed") return "Objective is complete.";
+    if (state.status === "canceled") return "Objective was canceled.";
+    if (state.status === "failed") return "Objective failed.";
     if (state.status === "blocked") return "Review the blocking receipt and react or cancel the objective.";
     if (state.scheduler.slotState === "queued") {
       return queuePosition
@@ -1208,7 +1211,6 @@ export class FactoryService {
     if (state.integration.status === "queued" || state.integration.status === "merging" || state.integration.status === "validating") {
       return "Wait for integration validation to finish.";
     }
-    if (state.status === "completed") return "Objective is complete.";
     return undefined;
   }
 
@@ -1290,9 +1292,9 @@ export class FactoryService {
       throw new FactoryServiceError(400, "invalid factory control payload");
     }
     const objectiveId = requireNonEmpty(payload.objectiveId, "objectiveId required");
-    const reason = payload.reason === "admitted" ? "admitted" : "startup";
+    const reason = payload.reason === "admitted" ? "admitted" : (payload.reason === "reconcile" ? "reconcile" : "startup");
     await this.ensureBootstrap();
-    await this.processObjectiveStartup(objectiveId, reason);
+    await this.processObjectiveStartup(objectiveId, reason as FactoryObjectiveControlJobPayload["reason"]);
     return {
       objectiveId,
       status: "completed",
@@ -2919,7 +2921,7 @@ export class FactoryService {
     const projection = buildFactoryProjection(state);
     const latestCandidate = projection.candidates.at(-1);
     const resolvedReceipts = receipts ?? this.summarizedReceipts(await this.runtime.chain(objectiveStream(state.objectiveId)), 60);
-    const slotState = state.scheduler.slotState ?? "active";
+    const slotState = this.isTerminalObjectiveStatus(state.status) ? "released" : (state.scheduler.slotState ?? "active");
     const card = {
       objectiveId: state.objectiveId,
       title: state.title,

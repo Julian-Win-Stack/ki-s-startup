@@ -791,6 +791,7 @@ const createFactoryDispatchTool = (input: {
   readonly stream: string;
   readonly memoryTools: MemoryTools;
   readonly profileId: string;
+  readonly objectiveId?: string;
 }): AgentToolExecutor =>
   async (toolInput) => {
     const objectiveId = asString(toolInput.objectiveId);
@@ -809,6 +810,7 @@ const createFactoryDispatchTool = (input: {
         reused = true;
       } else {
         const payload: FactoryObjectiveInput = {
+          objectiveId,
           title: asString(toolInput.title) ?? deriveObjectiveTitle(prompt),
           prompt,
           baseHash: asString(toolInput.baseHash),
@@ -1255,6 +1257,7 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
       stream: input.stream,
       memoryTools: input.memoryTools,
       profileId: resolvedProfile.root.id,
+      objectiveId: input.objectiveId,
     }),
     "factory.status": createFactoryStatusTool({
       factoryService: input.factoryService,

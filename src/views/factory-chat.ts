@@ -100,7 +100,6 @@ import type {
 type FactoryChatRouteContext = {
   readonly profileId: string;
   readonly objectiveId?: string;
-  readonly chatId?: string;
   readonly runId?: string;
   readonly jobId?: string;
 };
@@ -109,7 +108,6 @@ const factoryChatQuery = (input: FactoryChatRouteContext): string => {
   const params = new URLSearchParams();
   params.set("profile", input.profileId);
   if (input.objectiveId) params.set("thread", input.objectiveId);
-  else if (input.chatId) params.set("chat", input.chatId);
   if (input.runId) params.set("run", input.runId);
   if (input.jobId) params.set("job", input.jobId);
   const query = params.toString();
@@ -145,7 +143,7 @@ const shellPill = (label: string, tone: Tone = "neutral"): string =>
 
 const shellHeaderTitle = (model: FactoryChatShellModel): string =>
   model.inspector.selectedObjective?.title
-    ?? (model.chatId ? "New chat" : model.activeProfileLabel);
+    ?? (!model.objectiveId ? "New chat" : model.activeProfileLabel);
 
 const renderShellStatusPills = (model: FactoryChatShellModel): string => {
   const pills: string[] = [];
@@ -182,7 +180,7 @@ const promptFillChip = (label: string, prompt: string): string =>
 const renderComposerPromptChips = (model: FactoryChatShellModel): string => {
   const chips = model.objectiveId
     ? [
-        promptFillChip("Status check", "What should happen next on this project?"),
+        promptFillChip("Status check", "What should happen next on this thread?"),
         promptFillChip("Focus plan", "Continue, but focus on the highest-risk open task first."),
         promptFillChip("React", "/react Continue with the latest context and keep the update concise."),
         promptFillChip("Steer", "/steer Retarget the current worker to the top priority issue."),
@@ -190,8 +188,8 @@ const renderComposerPromptChips = (model: FactoryChatShellModel): string => {
     : [
         promptFillChip("Start work", "Investigate the current repo state and tell me what should happen next."),
         promptFillChip("Quick status", "What can you infer about the current Factory state from the UI context?"),
-        promptFillChip("Tracked project", "/new Create a tracked Factory objective for this request."),
-        promptFillChip("Watch project", "/watch objective_demo"),
+        promptFillChip("Tracked thread", "/new Create a tracked Factory objective for this request."),
+        promptFillChip("Watch thread", "/watch objective_demo"),
       ];
   return chips.join("");
 };
@@ -259,7 +257,7 @@ const renderChatItem = (
         </div>
       </div>
       <div class="${panelClass} px-4 py-3">
-        <div class="factory-markdown text-sm leading-6 text-foreground">${renderMarkdown(item.body)}</div>
+        <div class="factory-markdown">${renderMarkdown(item.body)}</div>
       </div>
     </section>`;
   }
@@ -380,7 +378,7 @@ const renderCenterWorkbench = (model: FactoryChatIslandModel): string => {
     <section class="${softPanelClass} px-4 py-2.5">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div class="min-w-0 flex-1 flex items-center gap-2">
-          <div class="text-sm font-semibold text-foreground truncate">${esc(thread?.title ?? `${model.activeProfileLabel} project`)}</div>
+          <div class="text-sm font-semibold text-foreground truncate">${esc(thread?.title ?? `${model.activeProfileLabel} thread`)}</div>
           ${thread?.nextAction ? `<div class="hidden sm:block text-xs text-muted-foreground truncate">${esc(thread.nextAction)}</div>` : ""}
         </div>
         <div class="flex shrink-0 items-center gap-1.5">
@@ -465,26 +463,23 @@ const renderSidebarMetrics = (obj?: FactorySelectedObjectiveCard): string => {
   </section>`;
 };
 
-const factoryRailIsland = (model: FactoryNavModel, selectedObjective?: FactorySelectedObjectiveCard, chatId?: string): string => {
+const factoryRailIsland = (model: FactoryNavModel, selectedObjective?: FactorySelectedObjectiveCard): string => {
   const blankChat = !selectedObjective;
   const visibleObjectives = model.objectives.slice(0, 5);
   const hasMoreObjectives = model.objectives.length > visibleObjectives.length;
   const selectedObjectiveQuery = selectedObjective
     ? `&thread=${encodeURIComponent(selectedObjective.objectiveId)}`
     : "";
-  const selectedChatQuery = blankChat && chatId
-    ? `&chat=${encodeURIComponent(chatId)}`
-    : "";
   const objectiveCards = visibleObjectives.length > 0
     ? visibleObjectives.map((objective) => renderObjectiveLink(model, objective)).join("")
-    : `<div class="text-[11px] text-muted-foreground">${blankChat ? "No projects yet." : "No tracked projects."}</div>`;
+    : `<div class="text-[11px] text-muted-foreground">${blankChat ? "No threads yet." : "No tracked threads."}</div>`;
   const objectives = objectiveCards;
   const profileLinks = model.profiles.length > 0
     ? model.profiles.map((profile) => {
         const selectedClass = profile.selected
           ? "border-primary/30 bg-primary/10 text-primary"
           : "border-border bg-secondary text-muted-foreground hover:bg-accent hover:text-foreground";
-        return `<a class="rounded-lg border px-2 py-1 text-[11px] font-medium transition ${selectedClass}" href="/factory?profile=${encodeURIComponent(profile.id)}${selectedObjectiveQuery}${selectedChatQuery}">${esc(profile.label)}</a>`;
+        return `<a class="rounded-lg border px-2 py-1 text-[11px] font-medium transition ${selectedClass}" href="/factory?profile=${encodeURIComponent(profile.id)}${selectedObjectiveQuery}">${esc(profile.label)}</a>`;
       }).join("")
     : "";
   return `<div class="space-y-3 px-3 py-3 md:px-4">
@@ -498,7 +493,7 @@ const factoryRailIsland = (model: FactoryNavModel, selectedObjective?: FactorySe
     </div>
     <section class="${softPanelClass} px-3 py-2.5">
       <div class="flex items-center justify-between gap-2">
-        <div class="flex items-center gap-1.5 ${sectionLabelClass}">${iconProject("w-3.5 h-3.5")} ${blankChat ? "Recent" : "Projects"}</div>
+        <div class="flex items-center gap-1.5 ${sectionLabelClass}">${iconChat("w-3.5 h-3.5")} ${blankChat ? "Recent" : "Threads"}</div>
         <div class="text-[10px] text-muted-foreground">${esc(`${model.objectives.length}`)}</div>
       </div>
       <div class="mt-2 grid gap-2">
@@ -512,7 +507,7 @@ const factoryRailIsland = (model: FactoryNavModel, selectedObjective?: FactorySe
   </div>`;
 };
 
-export const factorySidebarIsland = (model: FactoryNavModel, selectedObjective?: FactorySelectedObjectiveCard, chatId?: string): string => factoryRailIsland(model, selectedObjective, chatId);
+export const factorySidebarIsland = (model: FactoryNavModel, selectedObjective?: FactorySelectedObjectiveCard): string => factoryRailIsland(model, selectedObjective);
 
 const renderLocalObjectiveActions = (objective: FactorySelectedObjectiveCard): string =>
   renderObjectiveActions(objective.objectiveId, "grid gap-2");
@@ -536,7 +531,6 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => {
   const routeContext: FactoryChatRouteContext = {
     profileId: model.activeProfileId,
     objectiveId: model.objectiveId,
-    chatId: model.chatId,
     runId: model.runId,
     jobId: model.jobId,
   };
@@ -561,23 +555,23 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => {
   <script src="/assets/htmx.min.js"></script>
   <script src="https://unpkg.com/htmx-ext-sse@2.2.1/sse.js"></script>
 </head>
-<body data-factory-chat class="overflow-x-hidden md:h-screen md:overflow-hidden" hx-ext="sse" sse-connect="/factory/events${shellQuery}">
+<body data-factory-chat class="font-sans antialiased overflow-x-hidden md:h-screen md:overflow-hidden" hx-ext="sse" sse-connect="/factory/events${shellQuery}">
   <div class="relative min-h-screen bg-background text-foreground md:h-screen">
-    <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,hsl(13_73%_55%_/_0.06),transparent_40%),radial-gradient(circle_at_top_right,hsl(210_38%_65%_/_0.08),transparent_40%)]"></div>
+    <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,hsl(13_73%_55%/0.06),transparent_40%),radial-gradient(circle_at_top_right,hsl(210_38%_65%/0.08),transparent_40%)]"></div>
     <div class="relative flex min-h-screen flex-col md:grid md:h-screen md:min-h-0 md:grid-cols-[220px_minmax(0,1fr)_280px] md:overflow-hidden">
-      <aside class="order-2 min-w-0 overflow-hidden border-t border-sidebar-border bg-sidebar text-sidebar-foreground md:order-none md:min-h-0 md:border-r md:border-t-0">
+      <aside class="order-2 min-w-0 overflow-hidden border-t border-sidebar-border bg-sidebar text-sidebar-foreground md:order-0 md:min-h-0 md:border-r md:border-t-0">
         <div class="factory-scrollbar max-h-[40vh] overflow-x-hidden overflow-y-auto md:h-full md:max-h-none">
           <div id="factory-sidebar" hx-get="/factory/island/sidebar${shellQuery}" hx-trigger="${sidebarTrigger}" hx-swap="innerHTML">
-            ${factoryRailIsland(model.nav, model.inspector.selectedObjective, model.chatId)}
+            ${factoryRailIsland(model.nav, model.inspector.selectedObjective)}
           </div>
         </div>
       </aside>
-      <main class="order-1 min-w-0 overflow-hidden bg-background md:order-none md:min-h-0">
+      <main class="order-1 min-w-0 overflow-hidden bg-background md:order-0 md:min-h-0">
         <div class="flex min-h-screen flex-col md:h-full md:min-h-0">
           <header class="shrink-0 border-b border-border bg-card/80 backdrop-blur-xl">
             <div class="flex items-center justify-between gap-2 px-4 py-2">
               <div class="min-w-0 flex flex-1 items-center gap-2">
-                <span class="flex items-center gap-1.5 ${sectionLabelClass}">${model.objectiveId ? iconProject("w-3.5 h-3.5") : iconChat("w-3.5 h-3.5")} ${model.objectiveId ? "Project" : "Chat"}</span>
+                <span class="flex items-center gap-1.5 ${sectionLabelClass}">${iconChat("w-3.5 h-3.5")} Thread</span>
                 <h1 class="min-w-0 truncate text-sm font-semibold text-foreground" data-profile-label>${esc(shellHeaderTitle(model))}</h1>
                 ${renderShellStatusPills(model)}
               </div>

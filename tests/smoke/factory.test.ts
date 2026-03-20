@@ -826,7 +826,7 @@ test("factory chat items: automatic slice continuations render as live thread pr
   ];
 
   const items = buildChatItemsForRun("run_slice_continue", chain, new Map());
-  const continued = items.find((item) => item.kind === "system" && item.title === "Project continues automatically");
+  const continued = items.find((item) => item.kind === "system" && item.title === "Thread continues automatically");
   expect(continued && continued.kind === "system" ? continued.body : "").toContain("run_next");
   expect(continued && continued.kind === "system" ? continued.body : "").toContain("job_next");
   expect(items.some((item) => item.kind === "assistant")).toBe(false);

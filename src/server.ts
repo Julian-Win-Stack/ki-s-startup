@@ -152,6 +152,26 @@ queue = jsonlQueue({
           }
         : undefined);
       if (objectiveId) sse.publish("factory", objectiveId);
+
+      // Structurally sound auto-recovery for crashed/expired factory jobs
+      // We enqueue a control job to reconcile the objective so the orchestrator
+      // naturally picks it up, avoiding mutable global state or direct side-effects.
+      if (queue && (job.status === "failed" || job.status === "canceled") && typeof job.payload === "object" && job.payload && job.payload.kind === "factory.task.run") {
+        if (objectiveId) {
+          queue.enqueue({
+            agentId: "factory-control",
+            lane: "collect",
+            sessionKey: `factory:objective:${objectiveId}`,
+            singletonMode: "allow",
+            maxAttempts: 1,
+            payload: {
+              kind: "factory.objective.control",
+              objectiveId,
+              reason: "reconcile",
+            },
+          }).catch(console.error);
+        }
+      }
     }
     sse.publish("receipt");
   },

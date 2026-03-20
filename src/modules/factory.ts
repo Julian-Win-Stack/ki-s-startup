@@ -98,7 +98,7 @@ export type FactoryObjectivePhase =
   | "completed"
   | "blocked";
 
-export type FactoryObjectiveSlotState = "queued" | "active";
+export type FactoryObjectiveSlotState = "queued" | "active" | "released";
 
 export type FactoryObjectivePolicy = {
   readonly concurrency?: {
