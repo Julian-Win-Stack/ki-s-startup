@@ -524,7 +524,7 @@ const renderCenterWorkbench = (model: FactoryChatIslandModel): string => {
   const thread = model.selectedThread;
   const jobs = model.jobs ?? [];
   const hasLiveWork = Boolean(model.activeRun || model.activeCodex || (model.liveChildren?.length ?? 0) > 0);
-  const running = jobs.filter((job) => isActiveJobStatusValue(job.status)).length;
+  const running = jobs.filter((job) => job.status === "running" || job.status === "leased").length;
   const queued = jobs.filter((job) => job.status === "queued").length;
   const blocked = jobs.filter((job) => job.status === "failed" || job.status === "canceled").length
     + (thread?.status === "blocked" || thread?.status === "failed" ? 1 : 0);
@@ -643,35 +643,10 @@ const renderObjectiveLink = (model: FactorySidebarModel, objective: FactoryChatO
 };
 
 const renderSidebarMetrics = (model: FactorySidebarModel): string => {
-  const running = model.jobs.filter((j) => isActiveJobStatusValue(j.status)).length;
-  const queued = model.jobs.filter((j) => j.status === "queued").length;
-  const failed = model.jobs.filter((j) => j.status === "failed").length;
-  const completed = model.jobs.filter((j) => j.status === "completed").length;
-  if (model.jobs.length === 0 && !model.selectedObjective) return "";
   const obj = model.selectedObjective;
-  const metricDot = (n: number, tone: Tone): string =>
-    n > 0 ? `<span class="inline-flex items-center gap-1.5 text-xs ${badgeToneClass(tone).replace(/border-\S+/g, "").trim()}">${n}</span>` : `<span class="text-xs text-muted-foreground">0</span>`;
+  if (!obj) return "";
   return `<section class="${railCardClass}">
-    <div class="flex items-center gap-1.5 ${sectionLabelClass}">${iconJob("w-3.5 h-3.5")} Jobs</div>
-    <div class="mt-3 grid grid-cols-4 gap-1.5">
-      <div class="rounded-xl border border-border bg-muted px-2 py-1.5 text-center">
-        <div class="flex items-center justify-center gap-1 text-[10px] uppercase tracking-widest text-muted-foreground">${iconRun("w-2.5 h-2.5")} Run</div>
-        <div class="mt-0.5">${metricDot(running, "info")}</div>
-      </div>
-      <div class="rounded-xl border border-border bg-muted px-2 py-1.5 text-center">
-        <div class="flex items-center justify-center gap-1 text-[10px] uppercase tracking-widest text-muted-foreground">Queue</div>
-        <div class="mt-0.5">${metricDot(queued, "warning")}</div>
-      </div>
-      <div class="rounded-xl border border-border bg-muted px-2 py-1.5 text-center">
-        <div class="text-[10px] uppercase tracking-widest text-muted-foreground">Fail</div>
-        <div class="mt-0.5">${metricDot(failed, "danger")}</div>
-      </div>
-      <div class="rounded-xl border border-border bg-muted px-2 py-1.5 text-center">
-        <div class="text-[10px] uppercase tracking-widest text-muted-foreground">Done</div>
-        <div class="mt-0.5">${metricDot(completed, "success")}</div>
-      </div>
-    </div>
-    ${obj ? `<div class="mt-3 grid grid-cols-3 gap-1.5">
+    <div class="grid grid-cols-3 gap-1.5">
       <div class="rounded-xl border border-border bg-muted px-2 py-1.5 text-center">
         <div class="text-[10px] uppercase tracking-widest text-muted-foreground">Active</div>
         <div class="mt-0.5 text-xs text-card-foreground">${obj.activeTaskCount ?? 0}</div>
@@ -684,20 +659,22 @@ const renderSidebarMetrics = (model: FactorySidebarModel): string => {
         <div class="text-[10px] uppercase tracking-widest text-muted-foreground">Total</div>
         <div class="mt-0.5 text-xs text-card-foreground">${obj.taskCount ?? 0}</div>
       </div>
-    </div>` : ""}
+    </div>
   </section>`;
 };
 
 export const factoryRailIsland = (model: FactorySidebarModel): string => {
   const blankChat = !model.selectedObjective;
+  const visibleObjectives = model.objectives.slice(0, 5);
+  const hasMoreObjectives = model.objectives.length > visibleObjectives.length;
   const selectedObjectiveQuery = model.selectedObjective
     ? `&thread=${encodeURIComponent(model.selectedObjective.objectiveId)}`
     : "";
   const selectedChatQuery = blankChat && model.chatId
     ? `&chat=${encodeURIComponent(model.chatId)}`
     : "";
-  const objectiveCards = model.objectives.length > 0
-    ? model.objectives.map((objective) => renderObjectiveLink(model, objective)).join("")
+  const objectiveCards = visibleObjectives.length > 0
+    ? visibleObjectives.map((objective) => renderObjectiveLink(model, objective)).join("")
     : `<div class="text-[11px] text-muted-foreground">${blankChat ? "No projects yet." : "No tracked projects."}</div>`;
   const objectives = objectiveCards;
   const profileLinks = model.profiles.length > 0
@@ -725,6 +702,9 @@ export const factoryRailIsland = (model: FactorySidebarModel): string => {
       <div class="mt-2 grid gap-2">
         ${objectives}
       </div>
+      ${hasMoreObjectives ? `<div class="mt-2">
+        <a class="text-[10px] font-medium text-primary hover:underline" href="/factory?profile=${encodeURIComponent(model.activeProfileId)}">View all</a>
+      </div>` : ""}
     </section>
     ${renderSidebarMetrics(model)}
   </div>`;
@@ -749,9 +729,6 @@ const renderJobRow = (job: FactoryChatJobNav): string => `<div class="factory-jo
 
 const isTerminalJobStatusValue = (status?: string): boolean =>
   status === "completed" || status === "failed" || status === "canceled";
-
-const isActiveJobStatusValue = (status?: string): boolean =>
-  status === "running" || status === "leased";
 
 type FactoryCodexTelemetryCard = {
   readonly jobId: string;
@@ -812,7 +789,7 @@ const collectCodexTelemetryCards = (model: FactorySidebarModel): ReadonlyArray<F
 };
 
 const renderOpsSummary = (model: FactorySidebarModel): string => {
-  const activeJobs = model.jobs.filter((job) => isActiveJobStatusValue(job.status)).length;
+  const activeJobs = model.jobs.filter((job) => job.status === "running" || job.status === "leased").length;
   const queuedJobs = model.jobs.filter((job) => job.status === "queued").length;
   const failedJobs = model.jobs.filter((job) => job.status === "failed").length;
   const codexCards = collectCodexTelemetryCards(model);

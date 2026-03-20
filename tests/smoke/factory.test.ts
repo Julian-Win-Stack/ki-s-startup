@@ -1304,7 +1304,45 @@ test("factory sidebar island: renders left rail navigation", () => {
   expect(markup).not.toMatch(/run_01/);
 });
 
-test("factory sidebar island: renders compact job metrics card with running, queued, failed, done counts", () => {
+test("factory sidebar island: limits projects to the top five and shows view all when truncated", () => {
+  const markup = factorySidebarIsland({
+    activeProfileId: "generalist",
+    activeProfileLabel: "Generalist",
+    activeProfileTools: [],
+    profiles: [{ id: "generalist", label: "Generalist", selected: true }],
+    objectives: Array.from({ length: 6 }, (_, index) => ({
+      objectiveId: `objective_${index + 1}`,
+      title: `Project ${index + 1}`,
+      status: "queued",
+      phase: "queued",
+      summary: `Summary ${index + 1}`,
+      updatedAt: 100 + index,
+      selected: index === 0,
+      slotState: "queued",
+      activeTaskCount: 0,
+      readyTaskCount: 0,
+      taskCount: 1,
+    })),
+    jobs: [],
+    selectedObjective: {
+      objectiveId: "objective_1",
+      title: "Project 1",
+      status: "queued",
+      phase: "queued",
+      summary: "Summary 1",
+      debugLink: "/debug",
+      receiptsLink: "/receipts",
+    },
+  });
+
+  expect(markup).toMatch(/Project 1/);
+  expect(markup).toMatch(/Project 5/);
+  expect(markup).not.toMatch(/Project 6/);
+  expect(markup).toMatch(/View all/);
+  expect(markup).not.toMatch(/Jobs/);
+});
+
+test("factory sidebar island: renders objective metrics without a jobs panel", () => {
   const markup = factorySidebarIsland({
     activeProfileId: "generalist",
     activeProfileLabel: "Generalist",
@@ -1344,11 +1382,7 @@ test("factory sidebar island: renders compact job metrics card with running, que
     },
   });
 
-  expect(markup).toMatch(/Jobs/);
-  expect(markup).toMatch(/Run/);
-  expect(markup).toMatch(/Queue/);
-  expect(markup).toMatch(/Fail/);
-  expect(markup).toMatch(/Done/);
+  expect(markup).not.toMatch(/Jobs/);
   expect(markup).toMatch(/>2</);
   expect(markup).toMatch(/>1</);
   expect(markup).toMatch(/>Active</);
