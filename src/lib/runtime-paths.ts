@@ -27,11 +27,7 @@ export const packageRoot = (importMetaUrl: string): string =>
 export const packagePath = (importMetaUrl: string, ...segments: ReadonlyArray<string>): string =>
   path.join(packageRoot(importMetaUrl), ...segments);
 
-export const siblingPath = (importMetaUrl: string, relativePath: string): string =>
-  fileURLToPath(new URL(relativePath, importMetaUrl));
 
-export const resolveDependencyPath = (importMetaUrl: string, specifier: string): string =>
-  createRequire(importMetaUrl).resolve(specifier);
 
 const BUN_EXECUTABLE_RE = /^bun(?:\.exe)?$/i;
 

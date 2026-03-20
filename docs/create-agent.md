@@ -14,14 +14,14 @@ The default flow is:
 From repo root:
 
 ```bash
-npm install
-npm run build
+bun install
+bun run build
 ```
 
 Use either command style:
 
 - `receipt ...` (if the `receipt` bin is available in your shell)
-- `npm run cli -- ...` (always works in this repo)
+- `bun run cli -- ...` (always works in this repo)
 
 ## 1) Scaffold an agent
 
@@ -163,7 +163,7 @@ Queue streams:
 ## Common issues
 
 - `receipt: command not found`
-  - Use `npm run cli -- <command>`.
+  - Use `bun run cli -- <command>`.
 
 - Agent runs but never completes
   - Check `goal(...)` and `when(...)` conditions with `receipt trace`.

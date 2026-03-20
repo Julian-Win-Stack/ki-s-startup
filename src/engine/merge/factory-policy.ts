@@ -46,17 +46,6 @@ export type FactoryDecisionSet = {
   readonly summary: string;
 };
 
-export type FactoryMergeView = {
-  readonly state: FactoryState;
-  readonly decisionSet: FactoryDecisionSet;
-  readonly headHash?: string;
-};
-
-export type FactoryMergeEvidence = {
-  readonly frontierTaskIds: ReadonlyArray<string>;
-  readonly actionIds: ReadonlyArray<string>;
-  readonly summary: string;
-};
 
 const DISCOVERY_ONLY_RE = /\b(search|locate|identify|inspect|find|trace|look\s+for|determine|record)\b/i;
 const DIFF_PRODUCING_RE = /\b(edit|change|update|remove|add|implement|write|modify|refactor|fix|test|verify|run|create)\b/i;
@@ -467,60 +456,11 @@ const scoreAction = (state: FactoryState, action: FactoryAction, now: number): F
   };
 };
 
-export const factoryActionScoreScalar = (score: FactoryScoreVector): number =>
-  Number(Object.values(score).reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0).toFixed(4));
 
-export const factoryActionConfidence = (
-  scored: ReadonlyArray<{ readonly candidate: { readonly id: string }; readonly score: FactoryScoreVector }>,
-  selectedActionId: string,
-): number => {
-  const ordered = sortedByScore(scored);
-  const best = ordered.find((entry) => entry.candidate.id === selectedActionId) ?? ordered[0];
-  const runnerUp = ordered.find((entry) => entry.candidate.id !== selectedActionId);
-  if (!best) return 0.5;
-  const bestScore = factoryActionScoreScalar(best.score);
-  const secondScore = runnerUp ? factoryActionScoreScalar(runnerUp.score) : bestScore - 2;
-  return Math.max(0.55, Math.min(0.99, Number((0.55 + Math.max(0, bestScore - secondScore) / 20).toFixed(2))));
-};
 
 export const summarizeFactoryAction = (action: FactoryAction): string =>
   action.summary?.trim()
   || action.label
   || `${action.type}:${action.taskId ?? action.candidateId ?? action.actionId}`;
 
-export const describeFactoryDecision = (
-  action: FactoryAction,
-  score: FactoryScoreVector,
-): string => {
-  const factors = Object.entries(score)
-    .filter(([, value]) => typeof value === "number" && value > 0)
-    .slice(0, 3)
-    .map(([key]) => key.replace(/^\d+_/, "").replace(/_/g, " "));
-  const tail = factors.length > 0 ? ` using ${factors.join(", ")}` : "";
-  return `Runtime selected ${action.type} for ${action.taskId ?? action.candidateId ?? action.actionId}${tail}.`;
-};
 
-export const factoryMergePolicy: MergePolicy<{ readonly view: FactoryMergeView; readonly chain: ReadonlyArray<unknown>; readonly runId: string }, FactoryMergeEvidence> = merge({
-  id: "factory-frontier",
-  version: "1.0.0",
-  shouldRecompute: ({ view }) => view.decisionSet.actions.length > 0,
-  candidates: ({ view }) => view.decisionSet.actions.map((action) => ({ id: action.actionId })),
-  evidence: ({ view }) => ({
-    frontierTaskIds: view.decisionSet.frontierTaskIds,
-    actionIds: [...view.decisionSet.actions.map((action) => action.actionId)] as ReadonlyArray<string>,
-    summary: view.decisionSet.summary,
-  }),
-  score: (candidate, _evidence, { view }) =>
-    scoreAction(view.state, actionById(view.decisionSet.actions, candidate.id) ?? {
-      actionId: candidate.id,
-      type: "block_objective",
-      label: candidate.id,
-    }, view.state.updatedAt || Date.now()),
-  choose: (scored) => {
-    const ordered = sortedByScore(scored);
-    return {
-      candidateId: ordered[0]?.candidate.id ?? "",
-      reason: "Selected the highest-scoring runtime frontier action.",
-    };
-  },
-});

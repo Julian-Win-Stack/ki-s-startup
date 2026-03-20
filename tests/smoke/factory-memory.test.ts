@@ -319,10 +319,10 @@ test("factory worker packets expose a layered memory script for bounded recall a
   expect(promptBody).toMatch(new RegExp(payload.contextPackPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   expect(promptBody).toMatch(new RegExp(`receipt factory inspect ${created.objectiveId} --json --panel debug`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   expect(promptBody).toMatch(/## Memory Access/);
-  expect(promptBody).toMatch(new RegExp(`node ${payload.memoryScriptPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} context`));
-  expect(promptBody).toMatch(new RegExp(`node ${payload.memoryScriptPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} objective`));
-  expect(promptBody).toMatch(new RegExp(`node ${payload.memoryScriptPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} scope task`));
-  expect(promptBody).toMatch(new RegExp(`node ${payload.memoryScriptPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} search repo`));
+  expect(promptBody).toMatch(new RegExp(`bun ${payload.memoryScriptPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} context`));
+  expect(promptBody).toMatch(new RegExp(`bun ${payload.memoryScriptPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} objective`));
+  expect(promptBody).toMatch(new RegExp(`bun ${payload.memoryScriptPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} scope task`));
+  expect(promptBody).toMatch(new RegExp(`bun ${payload.memoryScriptPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} search repo`));
 
   expect(captured.context).toMatch(/Objective: Scripted memory objective/);
   expect(captured.context).toMatch(/Dependencies:|Candidate lineage:|Recent receipts:/);

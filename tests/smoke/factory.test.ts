@@ -367,7 +367,7 @@ test("factory reducer: replay reconstructs task, candidate, and integration stat
       prompt: "Implement the task graph.",
       channel: "results",
       baseHash: "abc1234",
-      checks: ["npm run build"],
+      checks: ["bun run build"],
       checksSource: "explicit",
       profile: DEFAULT_FACTORY_OBJECTIVE_PROFILE,
       policy: DEFAULT_FACTORY_OBJECTIVE_POLICY,
@@ -435,7 +435,7 @@ test("factory reducer: replay reconstructs task, candidate, and integration stat
       summary: "Produced candidate.",
       handoff: "Ready for review.",
       checkResults: [{
-        command: "npm run build",
+        command: "bun run build",
         ok: true,
         exitCode: 0,
         stdout: "",

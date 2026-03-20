@@ -46,7 +46,7 @@ const createRepo = async (opts: {
     ...(opts.packageManager ? { packageManager: opts.packageManager } : {}),
     private: true,
     scripts: {
-      build: "node -e \"process.exit(0)\"",
+      build: "bun -e \"process.exit(0)\"",
     },
   }, null, 2), "utf-8");
   if (opts.withBunLock) {
@@ -167,7 +167,7 @@ test("factory cli: init writes config and board snapshot stays clean", async () 
     readonly repoProfile: { readonly summary: string };
   };
   expect(initPayload.repoProfile.summary.length).toBeGreaterThan(0);
-  expect(initPayload.config.defaultChecks).toContain("npm run build");
+  expect(initPayload.config.defaultChecks).toContain("bun run build");
   await fs.access(initPayload.config.configPath);
 
   const board = await runCli(["factory", "--json", "--repo-root", repoDir]);

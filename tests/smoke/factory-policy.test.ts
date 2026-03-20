@@ -460,7 +460,7 @@ test("factory mutation policy: aggressiveness and cooldown gate semantic mutatio
     prompt: "Mutate runtime tasks only within policy limits.",
     channel: "results",
     baseHash: "abc1234",
-    checks: ["npm run build"],
+    checks: ["bun run build"],
     checksSource: "explicit",
     profile: DEFAULT_FACTORY_OBJECTIVE_PROFILE,
     policy: normalizeFactoryObjectivePolicy(),
@@ -496,7 +496,7 @@ test("factory mutation policy: aggressiveness and cooldown gate semantic mutatio
       prompt: "Allow ready-task mutation.",
       channel: "results",
       baseHash: "abc1234",
-      checks: ["npm run build"],
+      checks: ["bun run build"],
       checksSource: "explicit",
       profile: DEFAULT_FACTORY_OBJECTIVE_PROFILE,
       policy: normalizeFactoryObjectivePolicy({

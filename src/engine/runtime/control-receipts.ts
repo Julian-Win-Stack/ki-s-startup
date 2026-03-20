@@ -100,5 +100,3 @@ export const CONTROL_RECEIPT_TYPES = new Set<ControlReceipt["type"]>([
   "merge.applied",
 ]);
 
-export const isControlReceiptType = (type: string): type is ControlReceipt["type"] =>
-  CONTROL_RECEIPT_TYPES.has(type as ControlReceipt["type"]);

@@ -14,8 +14,8 @@ A receipt-native framework for long-lived agents. Every message, tool call, and 
 ## Install
 
 ```bash
-npm install
-npm run build
+bun install
+bun run build
 ```
 
 ## CLI
@@ -115,8 +115,8 @@ In Receipt, rebracketing means dynamically changing merge parenthesization based
 ## Development
 
 ```bash
-npm run dev
-npm run test:smoke
+bun run dev
+bun run test:smoke
 ```
 
 The server auto-loads route modules from `src/agents/*.agent.ts`.

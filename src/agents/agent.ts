@@ -56,16 +56,7 @@ export const normalizeAgentConfig = (input: Partial<AgentRunConfig>): AgentRunCo
     : AGENT_DEFAULT_CONFIG.workspace,
 });
 
-export const parseAgentConfig = (form: Record<string, string>): AgentRunConfig =>
-  normalizeAgentConfig({
-    maxIterations: parseFormNum(form.maxIterations),
-    maxToolOutputChars: parseFormNum(form.maxToolOutputChars),
-    memoryScope: form.memoryScope,
-    workspace: form.workspace,
-  });
 
-export const getLatestAgentRunId = (chain: Chain<AgentEvent>): string | undefined =>
-  getLatestRunId(chain, "problem.set");
 
 export type { AgentRunResult } from "./agent.result.js";
 

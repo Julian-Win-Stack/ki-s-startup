@@ -35,8 +35,6 @@ export const getLatestRunId = <Event extends { readonly type: string; readonly r
 export const runStream = (base: string, runId: string): string =>
   `${base}/runs/${runId}`;
 
-export const branchStream = (base: string, branchId: string): string =>
-  `${base}/branches/${branchId}`;
 
 export type EmitFn<Event> = (event: Event) => Promise<void>;
 

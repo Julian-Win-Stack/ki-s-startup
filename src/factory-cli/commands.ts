@@ -373,7 +373,7 @@ const initFactoryConfig = async (cwd: string, flags: Flags): Promise<FactoryCliC
         defaultChecks = parseChecksInput(await ensurePromptValue({
           message: "Validation commands (comma or newline separated)",
           initialValue: defaultChecks.join("\n"),
-          placeholder: "npm run build",
+          placeholder: "bun run build",
         }));
       }
     }

@@ -66,7 +66,7 @@ import {
 const execFileAsync = promisify(execFile);
 
 const FACTORY_STREAM_PREFIX = "factory/objectives";
-const DEFAULT_CHECKS = ["npm run build"] as const;
+const DEFAULT_CHECKS = ["bun run build"] as const;
 const FACTORY_DATA_DIR = ".receipt/factory";
 const FACTORY_SHARED_REPO_PROFILE_DIR = path.join("factory", "repo-profile");
 const DEFAULT_FACTORY_PROFILE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -389,7 +389,7 @@ const decompositionSchema = z.object({
 
 const repoProfileSchema = z.object({
   summary: z.string().min(1),
-  inferredChecks: z.array(z.string().min(1)).min(1).max(6).default(["npm run build"]),
+  inferredChecks: z.array(z.string().min(1)).min(1).max(6).default(["bun run build"]),
   generatedSkills: z.array(z.object({
     slug: z.string().min(1).max(48),
     title: z.string().min(1).max(120),
@@ -4496,10 +4496,10 @@ export class FactoryService {
       `## Memory Access`,
       `Use the layered memory script at ${payload.memoryScriptPath} instead of raw memory dumps.`,
       `Recommended commands:`,
-      `- node ${payload.memoryScriptPath} context 2800`,
-      `- node ${payload.memoryScriptPath} objective 1800`,
-      `- node ${payload.memoryScriptPath} scope task "${task.title}" 1400`,
-      `- node ${payload.memoryScriptPath} search repo "${task.title}" 6`,
+      `- bun ${payload.memoryScriptPath} context 2800`,
+      `- bun ${payload.memoryScriptPath} objective 1800`,
+      `- bun ${payload.memoryScriptPath} scope task "${task.title}" 1400`,
+      `- bun ${payload.memoryScriptPath} search repo "${task.title}" 6`,
       `Only write a durable memory note after gathering evidence from the packet, receipts, or repo files.`,
       ``,
       `## Result Contract`,
@@ -4624,13 +4624,13 @@ export class FactoryService {
       `## Memory Access`,
       `Use the layered memory script at ${input.artifactPaths.memoryScriptPath} instead of pulling large raw memory dumps.`,
       `Recommended commands:`,
-      `- node ${input.artifactPaths.memoryScriptPath} context 2800`,
-      `- node ${input.artifactPaths.memoryScriptPath} objective 1800`,
-      `- node ${input.artifactPaths.memoryScriptPath} overview ${JSON.stringify(input.prompt)} 2400`,
-      `- node ${input.artifactPaths.memoryScriptPath} scope repo ${JSON.stringify(input.prompt)} 1400`,
-      `- node ${input.artifactPaths.memoryScriptPath} scope profile ${JSON.stringify(input.prompt)} 1400`,
-      `- node ${input.artifactPaths.memoryScriptPath} search repo ${JSON.stringify(input.prompt)} 6`,
-      ...(input.readOnly ? [] : [`- node ${input.artifactPaths.memoryScriptPath} commit worker "short durable note"`]),
+      `- bun ${input.artifactPaths.memoryScriptPath} context 2800`,
+      `- bun ${input.artifactPaths.memoryScriptPath} objective 1800`,
+      `- bun ${input.artifactPaths.memoryScriptPath} overview ${JSON.stringify(input.prompt)} 2400`,
+      `- bun ${input.artifactPaths.memoryScriptPath} scope repo ${JSON.stringify(input.prompt)} 1400`,
+      `- bun ${input.artifactPaths.memoryScriptPath} scope profile ${JSON.stringify(input.prompt)} 1400`,
+      `- bun ${input.artifactPaths.memoryScriptPath} search repo ${JSON.stringify(input.prompt)} 6`,
+      ...(input.readOnly ? [] : [`- bun ${input.artifactPaths.memoryScriptPath} commit worker "short durable note"`]),
       ``,
       `## Repo Skills`,
       input.repoSkillPaths.map((skill) => `- ${skill}`).join("\n") || "- none",

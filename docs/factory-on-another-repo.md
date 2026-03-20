@@ -95,7 +95,7 @@ cd /Users/kishore/receipt
 
 DATA_DIR=/tmp/receipt-my-other-repo \
 HUB_REPO_ROOT=/absolute/path/to/target-repo \
-npm run dev
+bun run dev
 ```
 
 Then open:
@@ -134,7 +134,7 @@ Good first examples:
 Recommended initial checks:
 
 ```text
-npm run build
+bun run build
 ```
 
 or repo-specific commands such as:
@@ -212,7 +212,7 @@ cd /Users/kishore/receipt
 DATA_DIR=/tmp/receipt-demo-nextjs \
 HUB_REPO_ROOT=/Users/kishore/code/my-nextjs-app \
 PORT=8788 \
-npm run dev
+bun run dev
 ```
 
 Open:
@@ -225,7 +225,7 @@ Create an objective such as:
 
 - title: `Add healthcheck endpoint`
 - checks:
-  - `npm run build`
+  - `bun run build`
   - `npm test -- --runInBand`
 
 Factory will then:

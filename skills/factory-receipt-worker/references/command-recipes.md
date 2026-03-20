@@ -13,12 +13,12 @@ Start in the current worktree:
 
 Then use the generated memory script:
 
-- `node .receipt/factory/<taskId>.memory.cjs context 2800`
-- `node .receipt/factory/<taskId>.memory.cjs objective 1800`
-- `node .receipt/factory/<taskId>.memory.cjs overview "<task title>" 2400`
-- `node .receipt/factory/<taskId>.memory.cjs scope task "<task title>" 1400`
-- `node .receipt/factory/<taskId>.memory.cjs scope objective "<objective title>" 1400`
-- `node .receipt/factory/<taskId>.memory.cjs search repo "<task title>" 6`
+- `bun .receipt/factory/<taskId>.memory.cjs context 2800`
+- `bun .receipt/factory/<taskId>.memory.cjs objective 1800`
+- `bun .receipt/factory/<taskId>.memory.cjs overview "<task title>" 2400`
+- `bun .receipt/factory/<taskId>.memory.cjs scope task "<task title>" 1400`
+- `bun .receipt/factory/<taskId>.memory.cjs scope objective "<objective title>" 1400`
+- `bun .receipt/factory/<taskId>.memory.cjs search repo "<task title>" 6`
 
 ## Current Objective Inspection
 
