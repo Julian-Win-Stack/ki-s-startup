@@ -61,38 +61,6 @@ type FactoryTerminalAppProps = {
   readonly onExit: (result: FactoryAppExit) => void;
 };
 
-export type FactoryBoardScreenState = {
-  readonly compose: FactoryComposeModel;
-  readonly board: FactoryBoardProjection;
-  readonly selected?: FactoryObjectiveDetail;
-  readonly live?: FactoryLiveProjection;
-};
-
-export type FactoryObjectiveScreenState = {
-  readonly detail: FactoryObjectiveDetail;
-  readonly live: FactoryLiveProjection;
-  readonly debug: FactoryDebugProjection;
-};
-
-type FactoryBoardScreenProps = {
-  readonly state: FactoryBoardScreenState;
-  readonly selectedObjectiveId?: string;
-  readonly compact: boolean;
-  readonly stacked: boolean;
-  readonly busy?: string;
-  readonly error?: string;
-  readonly message: string;
-};
-
-type FactoryObjectiveScreenProps = {
-  readonly state: FactoryObjectiveScreenState;
-  readonly panel: FactoryObjectivePanel;
-  readonly compact: boolean;
-  readonly stacked: boolean;
-  readonly busy?: string;
-  readonly error?: string;
-  readonly message: string;
-};
 
 type MissionControlSnapshot = {
   readonly compose: FactoryComposeModel;
@@ -802,88 +770,6 @@ const syntheticComposeForDetail = (detail: FactoryObjectiveDetail): FactoryCompo
   defaultValidationCommands: detail.checks,
 });
 
-export const FactoryBoardScreen = ({
-  state,
-  selectedObjectiveId,
-  compact,
-  stacked,
-  busy,
-  error,
-  message,
-}: FactoryBoardScreenProps): React.ReactElement => (
-  <MissionControlScreen
-    snapshot={{
-      compose: state.compose,
-      board: state.board,
-      detail: state.selected,
-      live: state.live,
-      debug: state.selected && state.live ? {
-        objectiveId: state.selected.objectiveId,
-        title: state.selected.title,
-        status: state.selected.status,
-        phase: state.selected.phase,
-        scheduler: state.selected.scheduler,
-        repoProfile: state.selected.repoProfile,
-        latestDecision: state.selected.latestDecision,
-        nextAction: state.selected.nextAction,
-        profile: state.selected.profile,
-        policy: state.selected.policy,
-        contextSources: state.selected.contextSources,
-        budgetState: state.selected.budgetState,
-        recentReceipts: state.selected.recentReceipts,
-        activeJobs: state.live.recentJobs,
-        lastJobs: state.live.recentJobs,
-        taskWorktrees: [],
-        latestContextPacks: [],
-        integrationWorktree: undefined,
-      } satisfies FactoryDebugProjection : undefined,
-    }}
-    selectedObjectiveId={selectedObjectiveId}
-    panel="overview"
-    draft=""
-    focusArea="timeline"
-    compact={compact}
-    stacked={stacked}
-    railVisible
-    showComposer={false}
-    busy={busy}
-    error={error}
-    message={message}
-    showHelp={false}
-  />
-);
-
-export const FactoryObjectiveScreen = ({
-  state,
-  panel,
-  compact,
-  stacked,
-  busy,
-  error,
-  message,
-}: FactoryObjectiveScreenProps): React.ReactElement => (
-  <MissionControlScreen
-    snapshot={{
-      compose: syntheticComposeForDetail(state.detail),
-      board: syntheticBoardForDetail(state.detail),
-      detail: state.detail,
-      live: state.live,
-      debug: state.debug,
-    }}
-    selectedObjectiveId={state.detail.objectiveId}
-    panel={panel}
-    draft=""
-    focusArea="timeline"
-    compact={compact}
-    stacked={stacked}
-    railVisible={false}
-    showComposer={false}
-    busy={busy}
-    error={error}
-    message={message}
-    showHelp={false}
-  />
-);
 
 export const FactoryTerminalApp = ({
   runtime,

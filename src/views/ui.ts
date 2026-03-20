@@ -146,23 +146,6 @@ export const iconFactory = (cls = ""): string =>
 export const iconChat = (cls = ""): string =>
   svg16(`<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>`, cls);
 
-export const iconInspect = (cls = ""): string =>
-  svg16(`<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>`, cls);
-
-export const iconArrowLeft = (cls = ""): string =>
-  svg16(`<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>`, cls);
-
-export const iconArrowRight = (cls = ""): string =>
-  svg16(`<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>`, cls);
-
-export const iconCheckCircle = (cls = ""): string =>
-  svg16(`<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>`, cls);
-
-export const iconAlertCircle = (cls = ""): string =>
-  svg16(`<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>`, cls);
-
-export const iconClock = (cls = ""): string =>
-  svg16(`<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>`, cls);
 
 export const iconWorker = (cls = ""): string =>
   svg16(`<rect x="2" y="6" width="20" height="12" rx="2"/><line x1="6" y1="10" x2="6" y2="14"/><line x1="10" y1="10" x2="10" y2="14"/><line x1="14" y1="10" x2="14" y2="14"/><line x1="18" y1="10" x2="18" y2="14"/>`, cls);
@@ -190,17 +173,6 @@ export const statPill = (label: string, value: string): string => `<div class="m
   <div class="mt-1 break-words text-sm font-medium text-foreground [overflow-wrap:anywhere]">${esc(value)}</div>
 </div>`;
 
-export const navPill = (input: {
-  readonly href: string;
-  readonly label: string;
-  readonly active?: boolean;
-  readonly dataFactoryNav?: string;
-}): string => {
-  const classes = input.active
-    ? "border-info/30 bg-info/10 text-info"
-    : "border-border bg-secondary text-muted-foreground hover:bg-accent";
-  return `<a class="${navPillClass} ${classes}" href="${esc(input.href)}"${input.dataFactoryNav ? ` data-factory-nav="${esc(input.dataFactoryNav)}"` : ""}>${esc(input.label)}</a>`;
-};
 
 export const renderCliActionCard = (input: {
   readonly label: string;
@@ -219,12 +191,6 @@ export const renderCliActionCard = (input: {
     <code class="mt-3 block overflow-x-auto rounded-lg border border-border bg-muted px-3 py-3 text-[12px] leading-5 text-foreground [overflow-wrap:anywhere]">${esc(input.command)}</code>
   </div>`;
 
-export const emptyState = (title: string, body: string): string => `<section class="${panelClass} px-6 py-6 text-center">
-  <div class="mx-auto max-w-2xl">
-    <div class="text-base font-semibold text-foreground">${esc(title)}</div>
-    <div class="mt-3 text-sm leading-6 text-muted-foreground">${esc(body)}</div>
-  </div>
-</section>`;
 
 // ── Shared objective action cards ───────────────────────────────────────────
 

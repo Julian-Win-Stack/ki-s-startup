@@ -1,6 +1,3 @@
-export const MONITOR_AGENT_IDS = [
-  "factory",
-] as const;
 
 const AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   factory: "Orchestrator",
@@ -24,14 +21,3 @@ export const getAgentDisplayName = (agentId?: string, agentName?: string): strin
   return AGENT_DISPLAY_NAMES[id] ?? prettifyAgentId(id);
 };
 
-export const getAgentDisplayMeta = (agentId?: string, agentName?: string): {
-  readonly label: string;
-  readonly rawId?: string;
-} => {
-  const rawId = typeof agentId === "string" && agentId.trim().length > 0 ? agentId.trim() : undefined;
-  const label = getAgentDisplayName(rawId, agentName);
-  return {
-    label,
-    ...(rawId && rawId !== label ? { rawId } : {}),
-  };
-};
