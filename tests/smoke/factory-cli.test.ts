@@ -570,6 +570,12 @@ test("factory cli: composer parser handles plain text and slash commands", () =>
       note: "keep the logs attached",
     },
   });
+  expect(parseComposerDraft("   /help   ", "obj_123")).toEqual({
+    ok: true,
+    command: {
+      type: "help",
+    },
+  });
   expect(parseComposerDraft("/abort-job stop the current worker", "obj_123")).toEqual({
     ok: true,
     command: {
