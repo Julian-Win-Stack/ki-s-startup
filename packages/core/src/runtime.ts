@@ -281,12 +281,12 @@ export const createRuntime = <Cmd, Event, State>(
               ? eventId
               : `${eventId}#${idx}`;
         const r = receipt(stream, prev, event, Date.now(), eventHint ? { eventId: eventHint } : undefined);
+        nextState = reducer(nextState, event, r.ts);
         await store.append(r, localPrev);
         localPrev = r.hash;
         prev = r.hash;
         appended.push(r);
         localChain.push(r);
-        nextState = reducer(nextState, event, r.ts);
       }
       if (events.length > 0) {
         snapshots.set(stream, {

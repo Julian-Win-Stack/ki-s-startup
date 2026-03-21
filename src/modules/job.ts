@@ -129,6 +129,12 @@ export const initial: JobState = { jobs: {} };
 
 export const decide: Decide<JobCmd, JobEvent> = (cmd) => [cmd.event];
 
+const isActiveLeaseStatus = (status: JobStatus): boolean =>
+  status === "leased" || status === "running";
+
+const isTerminalStatus = (status: JobStatus): boolean =>
+  status === "completed" || status === "failed" || status === "canceled";
+
 const upsert = (state: JobState, next: JobRecord): JobState => ({
   ...state,
   jobs: {
@@ -157,6 +163,7 @@ export const reduce: Reducer<JobState, JobEvent> = (state, event, ts) => {
     case "job.leased": {
       const prev = state.jobs[event.jobId];
       if (!prev) throw new Error(`Invariant: no job ${event.jobId} for ${event.type}`);
+      if (prev.status !== "queued") return state;
       return upsert(state, {
         ...prev,
         status: "leased",
@@ -169,9 +176,7 @@ export const reduce: Reducer<JobState, JobEvent> = (state, event, ts) => {
     case "job.heartbeat": {
       const prev = state.jobs[event.jobId];
       if (!prev) throw new Error(`Invariant: no job ${event.jobId} for ${event.type}`);
-      if (prev.status !== "leased" && prev.status !== "running") {
-        throw new Error(`Invariant: invalid heartbeat status ${prev.status} for ${event.jobId}`);
-      }
+      if (!isActiveLeaseStatus(prev.status)) return state;
       return upsert(state, {
         ...prev,
         status: "running",
@@ -183,9 +188,7 @@ export const reduce: Reducer<JobState, JobEvent> = (state, event, ts) => {
     case "job.progress": {
       const prev = state.jobs[event.jobId];
       if (!prev) throw new Error(`Invariant: no job ${event.jobId} for ${event.type}`);
-      if (prev.status !== "leased" && prev.status !== "running") {
-        throw new Error(`Invariant: invalid progress status ${prev.status} for ${event.jobId}`);
-      }
+      if (!isActiveLeaseStatus(prev.status)) return state;
       return upsert(state, {
         ...prev,
         status: "running",
@@ -197,6 +200,7 @@ export const reduce: Reducer<JobState, JobEvent> = (state, event, ts) => {
     case "job.completed": {
       const prev = state.jobs[event.jobId];
       if (!prev) throw new Error(`Invariant: no job ${event.jobId} for ${event.type}`);
+      if (!isActiveLeaseStatus(prev.status)) return state;
       return upsert(state, {
         ...prev,
         status: "completed",
@@ -209,6 +213,7 @@ export const reduce: Reducer<JobState, JobEvent> = (state, event, ts) => {
     case "job.failed": {
       const prev = state.jobs[event.jobId];
       if (!prev) throw new Error(`Invariant: no job ${event.jobId} for ${event.type}`);
+      if (!isActiveLeaseStatus(prev.status)) return state;
       return upsert(state, {
         ...prev,
         status: event.willRetry ? "queued" : "failed",
@@ -222,6 +227,7 @@ export const reduce: Reducer<JobState, JobEvent> = (state, event, ts) => {
     case "job.canceled": {
       const prev = state.jobs[event.jobId];
       if (!prev) throw new Error(`Invariant: no job ${event.jobId} for ${event.type}`);
+      if (isTerminalStatus(prev.status)) return state;
       return upsert(state, {
         ...prev,
         status: "canceled",
@@ -263,6 +269,7 @@ export const reduce: Reducer<JobState, JobEvent> = (state, event, ts) => {
     case "job.lease_expired": {
       const prev = state.jobs[event.jobId];
       if (!prev) throw new Error(`Invariant: no job ${event.jobId} for ${event.type}`);
+      if (!isActiveLeaseStatus(prev.status)) return state;
       return upsert(state, {
         ...prev,
         status: event.willRetry ? "queued" : "failed",

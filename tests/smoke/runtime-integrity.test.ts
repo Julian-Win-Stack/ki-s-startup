@@ -52,3 +52,36 @@ test("smoke: single-stream concurrent writes preserve integrity", async () => {
     await fs.rm(dataDir, { recursive: true, force: true });
   }
 }, 120_000);
+
+test("smoke: reducer rejections do not append invalid receipts", async () => {
+  const dataDir = await createTempDir("receipt-smoke-invalid-reducer");
+
+  try {
+    const store = jsonlStore<CounterEvent>(dataDir);
+    const branchStore = jsonBranchStore(dataDir);
+    const runtime = createRuntime<CounterCmd, CounterEvent, CounterState>(
+      store,
+      branchStore,
+      (cmd) => [cmd],
+      (state, event) => {
+        if (event.seq === 2) {
+          throw new Error("reject seq 2");
+        }
+        return { count: state.count + 1 };
+      },
+      { count: 0 }
+    );
+
+    await runtime.execute("integrity", { type: "counter.inc", seq: 1 });
+    await expect(runtime.execute("integrity", { type: "counter.inc", seq: 2 })).rejects.toThrow("reject seq 2");
+
+    const chain = await runtime.chain("integrity");
+    const state = await runtime.state("integrity");
+
+    expect(chain).toHaveLength(1);
+    expect(chain[0]?.body.seq).toBe(1);
+    expect(state.count).toBe(1);
+  } finally {
+    await fs.rm(dataDir, { recursive: true, force: true });
+  }
+});

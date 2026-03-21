@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { receipt } from "@receipt/core/chain";
 import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl";
 import { jsonlQueue } from "../../src/adapters/jsonl-queue";
 import { createRuntime } from "@receipt/core/runtime";
@@ -228,6 +229,109 @@ test("jsonl queue: getJob reads authoritative jobs/<jobId> stream", async () => 
 
     const fromAuthoritative = await queue.getJob("legacy_only");
     expect(fromAuthoritative).toBe(undefined);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("jsonl queue: cross-process stale heartbeat does not append after external completion", async () => {
+  const dir = await mkTmp("receipt-queue-stale-heartbeat");
+  try {
+    const runtimeA = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob
+    );
+    const runtimeB = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob
+    );
+    const queueA = jsonlQueue({ runtime: runtimeA, stream: "jobs" });
+    const queueB = jsonlQueue({ runtime: runtimeB, stream: "jobs" });
+
+    const job = await queueA.enqueue({
+      agentId: "writer",
+      payload: { kind: "writer.run", runId: "r_stale_heartbeat" },
+      maxAttempts: 1,
+    });
+
+    await queueA.leaseNext({ workerId: "w1", leaseMs: 5_000 });
+    await queueB.complete(job.id, "w1", { ok: true });
+    const afterComplete = await runtimeA.chain(`jobs/${job.id}`);
+
+    const settled = await queueA.heartbeat(job.id, "w1", 5_000);
+    const finalChain = await runtimeA.chain(`jobs/${job.id}`);
+    const finalState = await runtimeA.state(`jobs/${job.id}`);
+
+    expect(settled?.status).toBe("completed");
+    expect(finalChain).toHaveLength(afterComplete.length);
+    expect(finalChain.at(-1)?.body.type).toBe("job.completed");
+    expect(finalState.jobs[job.id]?.status).toBe("completed");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("jsonl queue: replay tolerates late heartbeat receipts after completion", async () => {
+  const dir = await mkTmp("receipt-queue-late-heartbeat-replay");
+  try {
+    const store = jsonlStore<JobEvent>(dir);
+    const runtime = createRuntime<JobCmd, JobEvent, JobState>(
+      store,
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob
+    );
+    const queue = jsonlQueue({ runtime, stream: "jobs" });
+    const stream = "jobs/job_replay_late_heartbeat";
+
+    const enqueued = receipt(stream, undefined, {
+      type: "job.enqueued",
+      jobId: "job_replay_late_heartbeat",
+      agentId: "writer",
+      lane: "collect",
+      payload: { kind: "writer.run", runId: "r_replay" },
+      maxAttempts: 1,
+    });
+    await store.append(enqueued);
+
+    const leased = receipt(stream, enqueued.hash, {
+      type: "job.leased",
+      jobId: "job_replay_late_heartbeat",
+      workerId: "w1",
+      leaseMs: 5_000,
+      attempt: 1,
+    });
+    await store.append(leased);
+
+    const completed = receipt(stream, leased.hash, {
+      type: "job.completed",
+      jobId: "job_replay_late_heartbeat",
+      workerId: "w1",
+      result: { ok: true },
+    });
+    await store.append(completed);
+
+    const lateHeartbeat = receipt(stream, completed.hash, {
+      type: "job.heartbeat",
+      jobId: "job_replay_late_heartbeat",
+      workerId: "w1",
+      leaseMs: 5_000,
+    });
+    await store.append(lateHeartbeat);
+
+    const state = await runtime.state(stream);
+    const job = await queue.getJob("job_replay_late_heartbeat");
+
+    expect(state.jobs.job_replay_late_heartbeat?.status).toBe("completed");
+    expect(job?.status).toBe("completed");
+    expect(job?.result?.ok).toBe(true);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

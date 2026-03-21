@@ -378,6 +378,23 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     return record ? toQueueJob(record) : undefined;
   };
 
+  const loadAuthoritativeJob = async (
+    jobId: string,
+    changedJobs?: Map<string, QueueJob>,
+  ): Promise<QueueJob | undefined> => {
+    const loaded = await loadQueueJob(jobId);
+    if (!loaded) {
+      const indexed = index.jobsById.get(jobId);
+      return indexed ? cloneJob(indexed) : undefined;
+    }
+    const indexed = index.jobsById.get(jobId);
+    if (!indexed || !sameJob(indexed, loaded)) {
+      upsertIndexedJob(loaded);
+      changedJobs?.set(loaded.id, cloneJob(loaded));
+    }
+    return cloneJob(loaded);
+  };
+
   const emitEvent = async (
     event: JobEvent,
     changedJobs: Map<string, QueueJob>,
@@ -504,28 +521,30 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
 
   const getIndexedJob = async (jobId: string): Promise<QueueJob | undefined> => {
     await ensureIndexLoaded();
-    const indexed = index.jobsById.get(jobId);
-    const loaded = await loadQueueJob(jobId);
-    if (!loaded) return indexed ? cloneJob(indexed) : undefined;
-    if (indexed && sameJob(indexed, loaded)) return cloneJob(indexed);
     const changed = new Map<string, QueueJob>();
-    await withWriteLock(async () => {
-      upsertIndexedJob(loaded);
-      knownJobIds = knownJobIds && knownJobIds.includes(jobId)
-        ? knownJobIds
-        : [...(knownJobIds ?? []), jobId];
-      changed.set(loaded.id, cloneJob(loaded));
+    const loaded = await withWriteLock(async () => {
+      const current = await loadAuthoritativeJob(jobId, changed);
+      if (current) {
+        knownJobIds = knownJobIds && knownJobIds.includes(jobId)
+          ? knownJobIds
+          : [...(knownJobIds ?? []), jobId];
+      }
+      return current;
     });
-    notifyWaiters();
-    await publishChangedJobs(changed);
-    return cloneJob(loaded);
+    if (changed.size > 0) {
+      notifyWaiters();
+      await publishChangedJobs(changed);
+    }
+    return loaded;
   };
 
   const handleExpiredLeases = async (
     timestamp: number,
     changedJobs: Map<string, QueueJob>,
   ): Promise<void> => {
-    for (const job of [...index.jobsById.values()]) {
+    for (const jobId of [...index.jobsById.keys()]) {
+      const job = await loadAuthoritativeJob(jobId, changedJobs);
+      if (!job) continue;
       if ((job.status !== "leased" && job.status !== "running") || !job.leaseUntil) continue;
       if (job.leaseUntil > timestamp) continue;
       const retryable = job.attempt < job.maxAttempts;
@@ -683,10 +702,14 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
         const ts = nowTs();
         await handleExpiredLeases(ts, changed);
         const agentIds = matchingAgentIds(lease);
-        const next = index.queuedJobIds
-          .map((jobId) => index.jobsById.get(jobId))
-          .find((job) => job
-            && (agentIds.size === 0 || agentIds.has(job.agentId)));
+        let next: QueueJob | undefined;
+        for (const jobId of [...index.queuedJobIds]) {
+          const current = await loadAuthoritativeJob(jobId, changed);
+          if (!current || !shouldQueueJob(current)) continue;
+          if (agentIds.size > 0 && !agentIds.has(current.agentId)) continue;
+          next = current;
+          break;
+        }
         if (!next) return undefined;
         const attempt = next.attempt + 1;
         await emitEvent({
@@ -708,7 +731,7 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const current = await withWriteLock(async () => {
-        const currentJob = index.jobsById.get(jobId) ?? await loadQueueJob(jobId);
+        const currentJob = await loadAuthoritativeJob(jobId, changed);
         if (!currentJob) return undefined;
         if (TERMINAL.has(currentJob.status)) return cloneJob(currentJob);
         if (currentJob.leaseOwner && currentJob.leaseOwner !== workerId) return undefined;
@@ -730,7 +753,7 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const current = await withWriteLock(async () => {
-        const currentJob = index.jobsById.get(jobId) ?? await loadQueueJob(jobId);
+        const currentJob = await loadAuthoritativeJob(jobId, changed);
         if (!currentJob) return undefined;
         if (TERMINAL.has(currentJob.status)) return cloneJob(currentJob);
         if (currentJob.leaseOwner && currentJob.leaseOwner !== workerId) return undefined;
@@ -752,7 +775,7 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const current = await withWriteLock(async () => {
-        const currentJob = index.jobsById.get(jobId) ?? await loadQueueJob(jobId);
+        const currentJob = await loadAuthoritativeJob(jobId, changed);
         if (!currentJob) return undefined;
         if (TERMINAL.has(currentJob.status)) return cloneJob(currentJob);
         if (currentJob.leaseOwner && currentJob.leaseOwner !== workerId) return undefined;
@@ -774,7 +797,7 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const current = await withWriteLock(async () => {
-        const currentJob = index.jobsById.get(jobId) ?? await loadQueueJob(jobId);
+        const currentJob = await loadAuthoritativeJob(jobId, changed);
         if (!currentJob) return undefined;
         if (TERMINAL.has(currentJob.status)) return cloneJob(currentJob);
         if (currentJob.leaseOwner && currentJob.leaseOwner !== workerId) return undefined;
@@ -800,7 +823,7 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const current = await withWriteLock(async () => {
-        const currentJob = index.jobsById.get(jobId) ?? await loadQueueJob(jobId);
+        const currentJob = await loadAuthoritativeJob(jobId, changed);
         if (!currentJob) return undefined;
         if (TERMINAL.has(currentJob.status)) return cloneJob(currentJob);
         await emitEvent({
@@ -821,7 +844,7 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const command = await withWriteLock(async () => {
-        const current = index.jobsById.get(input.jobId) ?? await loadQueueJob(input.jobId);
+        const current = await loadAuthoritativeJob(input.jobId, changed);
         if (!current) return undefined;
         const ts = nowTs();
         const queuedCommand: QueueCommandRecord = {
@@ -861,7 +884,7 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
       await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const consumed = await withWriteLock(async () => {
-        const current = index.jobsById.get(jobId) ?? await loadQueueJob(jobId);
+        const current = await loadAuthoritativeJob(jobId, changed);
         if (!current) return [];
         const wanted = new Set(filter ?? ["steer", "follow_up", "abort"]);
         const unconsumed = current.commands.filter((cmd) => !cmd.consumedAt && wanted.has(cmd.command));
