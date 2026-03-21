@@ -5,17 +5,17 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl.ts";
-import { jsonlQueue } from "../../src/adapters/jsonl-queue.ts";
-import type { DelegationTools } from "../../src/adapters/delegation.ts";
-import type { MemoryTools } from "../../src/adapters/memory-tools.ts";
-import { runCodexSupervisor } from "../../src/agents/codex-supervisor.ts";
-import { createRuntime } from "@receipt/core/runtime.js";
-import type { AgentCmd, AgentEvent, AgentState } from "../../src/modules/agent.ts";
-import { decide as decideAgent, reduce as reduceAgent, initial as initialAgent } from "../../src/modules/agent.ts";
-import type { JobCmd, JobEvent, JobState } from "../../src/modules/job.ts";
-import { decide as decideJob, reduce as reduceJob, initial as initialJob } from "../../src/modules/job.ts";
-import type { FactoryService } from "../../src/services/factory-service.ts";
+import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl";
+import { jsonlQueue } from "../../src/adapters/jsonl-queue";
+import type { DelegationTools } from "../../src/adapters/delegation";
+import type { MemoryTools } from "../../src/adapters/memory-tools";
+import { runCodexSupervisor } from "../../src/agents/codex-supervisor";
+import { createRuntime } from "@receipt/core/runtime";
+import type { AgentCmd, AgentEvent, AgentState } from "../../src/modules/agent";
+import { decide as decideAgent, reduce as reduceAgent, initial as initialAgent } from "../../src/modules/agent";
+import type { JobCmd, JobEvent, JobState } from "../../src/modules/job";
+import { decide as decideJob, reduce as reduceJob, initial as initialJob } from "../../src/modules/job";
+import type { FactoryService } from "../../src/services/factory-service";
 
 const execFileAsync = promisify(execFile);
 

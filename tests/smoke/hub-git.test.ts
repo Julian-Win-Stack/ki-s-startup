@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { HubGit } from "../../src/adapters/hub-git.ts";
+import { HubGit } from "../../src/adapters/hub-git";
 
 const execFileAsync = promisify(execFile);
 

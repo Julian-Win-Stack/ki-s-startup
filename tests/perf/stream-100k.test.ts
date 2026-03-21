@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 
-import { createRuntime } from "@receipt/core/runtime.js";
-import { receipt } from "@receipt/core/chain.js";
-import { createStreamLocator, jsonBranchStore } from "../../src/adapters/jsonl.ts";
-import { jsonlStore } from "../../src/adapters/jsonl.ts";
+import { createRuntime } from "@receipt/core/runtime";
+import { receipt } from "@receipt/core/chain";
+import { createStreamLocator, jsonBranchStore } from "../../src/adapters/jsonl";
+import { jsonlStore } from "../../src/adapters/jsonl";
 
 const createTempDir = async (label: string): Promise<string> =>
   fs.mkdtemp(path.join(os.tmpdir(), `${label}-`));

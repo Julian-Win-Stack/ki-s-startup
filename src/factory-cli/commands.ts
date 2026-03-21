@@ -4,10 +4,10 @@ import React from "react";
 import { cancel, confirm, intro, isCancel, outro, select, spinner, text } from "@clack/prompts";
 import { render } from "ink";
 
-import type { Flags } from "../cli.types.js";
-import type { FactoryObjectivePolicy } from "../modules/factory.js";
-import { DEFAULT_FACTORY_OBJECTIVE_POLICY } from "../modules/factory.js";
-import { bunWhich, resolveBunRuntime } from "../lib/runtime-paths.js";
+import type { Flags } from "../cli.types";
+import type { FactoryObjectivePolicy } from "../modules/factory";
+import { DEFAULT_FACTORY_OBJECTIVE_POLICY } from "../modules/factory";
+import { bunWhich, resolveBunRuntime } from "../lib/runtime-paths";
 import {
   abortJobMutation,
   archiveObjectiveMutation,
@@ -20,8 +20,8 @@ import {
   reactObjectiveMutation,
   steerJobMutation,
   type FactoryMutationResult,
-} from "./actions.js";
-import { FactoryTerminalApp, type FactoryAppExit } from "./app.js";
+} from "./actions";
+import { FactoryTerminalApp, type FactoryAppExit } from "./app";
 import {
   detectGitRoot,
   type FactoryCliConfig,
@@ -30,12 +30,12 @@ import {
   loadFactoryConfig,
   resolveFactoryRuntimeConfig,
   writeFactoryConfig,
-} from "./config.js";
-import { renderCodexProbeText, runFactoryCodexProbe, type CodexProbeMode } from "./codex-probe.js";
-import { renderBoardText, renderObjectiveHeader, renderObjectivePanelText } from "./format.js";
-import { createFactoryCliRuntime } from "./runtime.js";
-import { terminalTheme } from "./theme.js";
-import type { FactoryObjectivePanel } from "./view-model.js";
+} from "./config";
+import { renderCodexProbeText, runFactoryCodexProbe, type CodexProbeMode } from "./codex-probe";
+import { renderBoardText, renderObjectiveHeader, renderObjectivePanelText } from "./format";
+import { createFactoryCliRuntime } from "./runtime";
+import { terminalTheme } from "./theme";
+import type { FactoryObjectivePanel } from "./view-model";
 
 const parseBooleanFlag = (flags: Flags, key: string): boolean =>
   flags[key] === true || flags[key] === "true";

@@ -15,7 +15,7 @@ A receipt-native framework for long-lived agents. Every message, tool call, and 
 
 ```bash
 bun install
-bun run build
+bun run build # prepares web assets
 ```
 
 ## CLI
@@ -40,7 +40,7 @@ npm run eval:axiom:first
 ## Public SDK
 
 ```ts
-import { defineAgent, receipt, action, assistant, tool, human, goal, merge, rebracket } from "./src/sdk/index.js";
+import { defineAgent, receipt, action, assistant, tool, human, goal, merge, rebracket } from "./src/sdk/index";
 ```
 
 ## Stream model
@@ -118,6 +118,8 @@ In Receipt, rebracketing means dynamically changing merge parenthesization based
 bun run dev
 bun run test:smoke
 ```
+
+The canonical source entrypoints in this repo are `bun src/cli.ts` and `bun --watch src/server.ts`.
 
 The server auto-loads route modules from `src/agents/*.agent.ts`.
 

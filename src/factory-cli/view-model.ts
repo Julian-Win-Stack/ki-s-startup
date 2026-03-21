@@ -5,7 +5,7 @@ import type {
   FactoryLiveProjection,
   FactoryObjectiveDetail,
   FactoryTaskView,
-} from "../services/factory-service.js";
+} from "../services/factory-service";
 
 export type FactoryObjectivePanel =
   | "overview"

@@ -6,8 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-import type { Runtime } from "@receipt/core/runtime.js";
-import type { JobCmd, JobCommandRecord, JobEvent, JobLane, JobRecord, JobState, JobStatus, QueueCommandType } from "../modules/job.js";
+import type { Runtime } from "@receipt/core/runtime";
+import type { JobCmd, JobCommandRecord, JobEvent, JobLane, JobRecord, JobState, JobStatus, QueueCommandType } from "../modules/job";
 
 export type QueueCommandRecord = {
   readonly id: string;

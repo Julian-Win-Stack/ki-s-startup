@@ -15,13 +15,13 @@ From repo root:
 
 ```bash
 bun install
-bun run build
+bun run build # optional: prepares web assets
 ```
 
 Use either command style:
 
 - `receipt ...` (if the `receipt` bin is available in your shell)
-- `bun run cli -- ...` (always works in this repo)
+- `bun src/cli.ts ...` (always works in this repo)
 
 ## 1) Scaffold an agent
 
@@ -54,7 +54,7 @@ Every agent follows the same shape:
 Example:
 
 ```ts
-import { defineAgent, receipt, assistant, human } from "../sdk/index.js";
+import { defineAgent, receipt, assistant, human } from "../sdk/index";
 
 export default defineAgent({
   id: "my-agent",

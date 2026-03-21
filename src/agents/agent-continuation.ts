@@ -1,6 +1,6 @@
-import type { EnqueueJobInput } from "../adapters/jsonl-queue.js";
-import type { AgentIterationBudgetHandler } from "./agent.js";
-import { isStuckProgress } from "./agent.js";
+import type { EnqueueJobInput } from "../adapters/jsonl-queue";
+import type { AgentIterationBudgetHandler } from "./agent";
+import { isStuckProgress } from "./agent";
 
 export const AGENT_AUTO_CONTINUATION_LADDER = [10, 20, 40, 80] as const;
 

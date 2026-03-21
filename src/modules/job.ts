@@ -2,7 +2,7 @@
 // Job Module - queue/runtime receipts for background scheduling
 // ============================================================================
 
-import type { Decide, Reducer } from "@receipt/core/types.js";
+import type { Decide, Reducer } from "@receipt/core/types";
 
 export type JobLane = "collect" | "steer" | "follow_up";
 export type JobStatus = "queued" | "leased" | "running" | "completed" | "failed" | "canceled";

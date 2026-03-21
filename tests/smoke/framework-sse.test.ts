@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 
-import { SseHub } from "../../src/framework/sse-hub.ts";
+import { SseHub } from "../../src/framework/sse-hub";
 
 const readChunk = async (reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> => {
   const chunk = await reader.read();

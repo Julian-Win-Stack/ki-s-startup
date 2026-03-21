@@ -1,8 +1,8 @@
-import type { QueueJob } from "../adapters/jsonl-queue.js";
-import type { FactoryObjectivePolicy } from "../modules/factory.js";
-import { FactoryServiceError, type FactoryObjectiveDetail, type FactoryLiveProjection } from "../services/factory-service.js";
-import type { FactoryCliRuntime } from "./runtime.js";
-import { deriveObjectiveTitle } from "./composer.js";
+import type { QueueJob } from "../adapters/jsonl-queue";
+import type { FactoryObjectivePolicy } from "../modules/factory";
+import { FactoryServiceError, type FactoryObjectiveDetail, type FactoryLiveProjection } from "../services/factory-service";
+import type { FactoryCliRuntime } from "./runtime";
+import { deriveObjectiveTitle } from "./composer";
 
 export type FactoryObjectiveMutationAction =
   | "create"

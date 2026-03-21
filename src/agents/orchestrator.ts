@@ -1,8 +1,8 @@
-import type { AgentRunInput, AgentRunResult } from "./agent.js";
-import type { JsonlQueue } from "../adapters/jsonl-queue.js";
-import type { FactoryService } from "../services/factory-service.js";
-import type { CodexExecutor, CodexRunControl } from "../adapters/codex-executor.js";
-import type { MemoryTools } from "../adapters/memory-tools.js";
+import type { AgentRunInput, AgentRunResult } from "./agent";
+import type { JsonlQueue } from "../adapters/jsonl-queue";
+import type { FactoryService } from "../services/factory-service";
+import type { CodexExecutor, CodexRunControl } from "../adapters/codex-executor";
+import type { MemoryTools } from "../adapters/memory-tools";
 import type { ZodTypeAny, infer as ZodInfer } from "zod";
 import {
   runFactoryChat,
@@ -11,11 +11,11 @@ import {
   type FactoryChatRunInput,
   type FactoryChatRunConfig,
   FACTORY_CHAT_DEFAULT_CONFIG,
-} from "./factory-chat.js";
+} from "./factory-chat";
 import {
   runCodexSupervisor,
   type CodexSupervisorRunInput,
-} from "./codex-supervisor.js";
+} from "./codex-supervisor";
 
 export {
   runFactoryCodexJob,

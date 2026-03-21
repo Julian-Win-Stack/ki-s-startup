@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { stableStringify } from "../prompts/hash.js";
+import { stableStringify } from "../prompts/hash";
 
 const sha256 = (value: string): string =>
   createHash("sha256").update(value, "utf-8").digest("hex");

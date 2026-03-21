@@ -1,4 +1,4 @@
-import type { MergeCandidate, MergeDecision, MergePolicy, MergeScoreVector } from "../../sdk/merge.js";
+import type { MergeCandidate, MergeDecision, MergePolicy, MergeScoreVector } from "../../sdk/merge";
 
 export type ScoredCandidate = {
   readonly candidate: MergeCandidate;

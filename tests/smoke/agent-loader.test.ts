@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 
-import { loadAgentRoutes } from "../../src/framework/agent-loader.ts";
-import type { AgentLoaderContext } from "../../src/framework/agent-types.ts";
+import { loadAgentRoutes } from "../../src/framework/agent-loader";
+import type { AgentLoaderContext } from "../../src/framework/agent-types";
 
 const dummyRuntime = {
   execute: async () => [],

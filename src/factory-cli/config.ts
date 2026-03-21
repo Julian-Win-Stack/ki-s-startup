@@ -3,8 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import type { FactoryObjectivePolicy } from "../modules/factory.js";
-import { DEFAULT_FACTORY_OBJECTIVE_POLICY } from "../modules/factory.js";
+import type { FactoryObjectivePolicy } from "../modules/factory";
+import { DEFAULT_FACTORY_OBJECTIVE_POLICY } from "../modules/factory";
 
 const execFileAsync = promisify(execFile);
 

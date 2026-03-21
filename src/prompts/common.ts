@@ -1,6 +1,6 @@
 import fs from "node:fs";
 
-import { packagePath } from "../lib/runtime-paths.js";
+import { packagePath } from "../lib/runtime-paths";
 
 const readJson = <T>(file: string): T =>
   JSON.parse(fs.readFileSync(file, "utf-8")) as T;

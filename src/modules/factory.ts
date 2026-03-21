@@ -1,5 +1,5 @@
-import type { Decide, Reducer } from "@receipt/core/types.js";
-import { CONTROL_RECEIPT_TYPES } from "../engine/runtime/control-receipts.js";
+import type { Decide, Reducer } from "@receipt/core/types";
+import { CONTROL_RECEIPT_TYPES } from "../engine/runtime/control-receipts";
 import {
   activatableNodes,
   createGraphState,
@@ -11,7 +11,7 @@ import {
   type GraphRunStatus,
   type GraphState,
   type GraphNodeBase,
-} from "@receipt/core/graph.js";
+} from "@receipt/core/graph";
 
 export type FactoryObjectiveStatus =
   | "decomposing"

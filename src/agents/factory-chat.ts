@@ -16,27 +16,27 @@ import {
   type AgentRunResult,
   type AgentToolExecutor,
   type AgentToolResult,
-} from "./agent.js";
-import type { AgentEvent } from "../modules/agent.js";
-import type { JsonlQueue, QueueJob } from "../adapters/jsonl-queue.js";
+} from "./agent";
+import type { AgentEvent } from "../modules/agent";
+import type { JsonlQueue, QueueJob } from "../adapters/jsonl-queue";
 import type {
   FactoryService,
   FactoryObjectiveInput,
   FactoryObjectiveReceiptSummary,
-} from "../services/factory-service.js";
+} from "../services/factory-service";
 import {
   factoryChatStream,
   repoKeyForRoot,
   resolveFactoryChatProfile,
   type FactoryChatResolvedProfile,
-} from "../services/factory-chat-profiles.js";
-import type { CodexExecutor, CodexRunControl } from "../adapters/codex-executor.js";
-import type { MemoryTools } from "../adapters/memory-tools.js";
+} from "../services/factory-chat-profiles";
+import type { CodexExecutor, CodexRunControl } from "../adapters/codex-executor";
+import type { MemoryTools } from "../adapters/memory-tools";
 import {
   factoryChatCodexArtifactPaths,
   readTextTail,
-} from "../services/factory-codex-artifacts.js";
-import { readRepoStatus } from "../lib/repo-status.js";
+} from "../services/factory-codex-artifacts";
+import { readRepoStatus } from "../lib/repo-status";
 
 const execFileAsync = promisify(execFile);
 

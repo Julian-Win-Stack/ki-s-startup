@@ -7,17 +7,20 @@
     "packages/*"
   ],
   "bin": {
-    "receipt": "dist/cli.js"
+    "receipt": "src/cli.ts"
   },
   "files": [
+    "src",
     "dist",
+    "prompts",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
+    "assets:prepare": "bun scripts/copy-runtime-assets.mjs",
     "css:build": "tailwindcss -i src/styles/factory.css -o dist/assets/factory.css --minify",
     "css:watch": "tailwindcss -i src/styles/factory.css -o dist/assets/factory.css --watch",
-    "dev": "bun run css:build && bun --watch src/server.ts",
+    "dev": "bun run assets:prepare && bun run css:build && bun --watch src/server.ts",
     "cli": "bun src/cli.ts",
     "receipt": "bun src/cli.ts",
     "factory": "bun src/cli.ts factory",
@@ -25,9 +28,9 @@
     "video:preview": "cd video && bun run preview",
     "video:render": "cd video && bun run render",
     "video:render:vertical": "cd video && bun run render:vertical",
-    "start": "bun dist/server.js",
+    "start": "bun run assets:prepare && bun run css:build && bun src/server.ts",
     "clean": "bun -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "bun run clean && tsc -b tsconfig.json && bun scripts/copy-runtime-assets.mjs && bun run css:build",
+    "build": "bun run clean && bun run assets:prepare && bun run css:build",
     "new:agent": "bun src/cli.ts new",
     "test:smoke": "bun test ./tests/smoke",
     "test:perf": "bun test ./tests/perf",

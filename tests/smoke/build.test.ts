@@ -48,6 +48,7 @@ test("smoke: project builds", async () => {
   ).toBe(
     0,
   );
-  expect(fs.existsSync(path.join(ROOT, "dist", "prompts", "agent.prompts.json"))).toBe(true);
-  expect(fs.existsSync(path.join(ROOT, "dist", "prompts", "factory", "orchestrator.md"))).toBe(true);
+  expect(fs.existsSync(path.join(ROOT, "dist", "assets", "factory.css"))).toBe(true);
+  expect(fs.existsSync(path.join(ROOT, "dist", "assets", "factory-client.js"))).toBe(true);
+  expect(fs.existsSync(path.join(ROOT, "dist", "assets", "htmx.min.js"))).toBe(true);
 }, 180_000);

@@ -7,11 +7,11 @@ import { fileURLToPath } from "node:url";
 
 import { z } from "zod";
 
-import { jsonBranchStore, jsonlStore } from "../adapters/jsonl.js";
-import type { JsonlQueue, QueueCommandRecord, QueueJob } from "../adapters/jsonl-queue.js";
-import { type CodexExecutor, type CodexRunControl } from "../adapters/codex-executor.js";
-import { HubGit, HubGitError } from "../adapters/hub-git.js";
-import type { MemoryTools } from "../adapters/memory-tools.js";
+import { jsonBranchStore, jsonlStore } from "../adapters/jsonl";
+import type { JsonlQueue, QueueCommandRecord, QueueJob } from "../adapters/jsonl-queue";
+import { type CodexExecutor, type CodexRunControl } from "../adapters/codex-executor";
+import { HubGit, HubGitError } from "../adapters/hub-git";
+import type { MemoryTools } from "../adapters/memory-tools";
 import {
   DEFAULT_FACTORY_OBJECTIVE_POLICY,
   DEFAULT_FACTORY_OBJECTIVE_PROFILE,
@@ -42,27 +42,27 @@ import {
   type FactoryTaskStatus,
   type FactoryWorkerType,
   type FactoryCandidateStatus,
-} from "../modules/factory.js";
-import { repoKeyForRoot, resolveFactoryChatProfile } from "./factory-chat-profiles.js";
+} from "../modules/factory";
+import { repoKeyForRoot, resolveFactoryChatProfile } from "./factory-chat-profiles";
 import {
   buildFactoryMemoryScriptSource,
   factoryChatCodexArtifactPaths,
   type FactoryChatCodexArtifactPaths,
-} from "./factory-codex-artifacts.js";
-import { createRuntime, type Runtime } from "@receipt/core/runtime.js";
-import { type GraphRef } from "@receipt/core/graph.js";
-import { CONTROL_RECEIPT_TYPES } from "../engine/runtime/control-receipts.js";
-import { makeEventId, optionalTrimmedString, requireTrimmedString, trimmedString } from "../framework/http.js";
-import type { SseHub } from "../framework/sse-hub.js";
-import { resolveCliInvocation } from "../lib/runtime-paths.js";
-import type { JobCmd, JobEvent, JobRecord, JobState, JobStatus } from "../modules/job.js";
+} from "./factory-codex-artifacts";
+import { createRuntime, type Runtime } from "@receipt/core/runtime";
+import { type GraphRef } from "@receipt/core/graph";
+import { CONTROL_RECEIPT_TYPES } from "../engine/runtime/control-receipts";
+import { makeEventId, optionalTrimmedString, requireTrimmedString, trimmedString } from "../framework/http";
+import type { SseHub } from "../framework/sse-hub";
+import { resolveCliInvocation } from "../lib/runtime-paths";
+import type { JobCmd, JobEvent, JobRecord, JobState, JobStatus } from "../modules/job";
 import {
   type FactoryAction,
   type FactoryActionTaskDraft,
   MAX_CONSECUTIVE_TASK_FAILURES,
   buildFactoryDecisionSet,
   summarizeFactoryAction,
-} from "../engine/merge/factory-policy.js";
+} from "../engine/merge/factory-policy";
 
 const execFileAsync = promisify(execFile);
 
@@ -119,10 +119,15 @@ const fileExists = async (targetPath: string): Promise<boolean> => {
 
 const repoUsesBun = async (
   repoRoot: string,
-  packageJson: { readonly packageManager?: string } | undefined,
+  packageJson: {
+    readonly packageManager?: string;
+    readonly scripts?: Record<string, string>;
+  } | undefined,
 ): Promise<boolean> => {
   const packageManager = packageJson?.packageManager?.trim().toLowerCase();
   if (packageManager?.startsWith("bun@")) return true;
+  const scripts = Object.values(packageJson?.scripts ?? {});
+  if (scripts.some((script) => /\bbun(?:x)?\b/i.test(script))) return true;
   return await fileExists(path.join(repoRoot, "bun.lock"))
     || await fileExists(path.join(repoRoot, "bun.lockb"));
 };
@@ -216,7 +221,7 @@ export {
   type FactoryObjectiveReceiptSummary,
   type FactoryObjectiveReceiptQuery,
   type FactoryRepoProfileProgress,
-} from "./factory-types.js";
+} from "./factory-types";
 import {
   FactoryServiceError,
   type FactoryServiceOptions,
@@ -241,7 +246,7 @@ import {
   type FactoryObjectiveReceiptSummary,
   type FactoryObjectiveReceiptQuery,
   type FactoryRepoProfileProgress,
-} from "./factory-types.js";
+} from "./factory-types";
 
 class FactoryStaleObjectiveError extends Error {
   readonly objectiveId: string;

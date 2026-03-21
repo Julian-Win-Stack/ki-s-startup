@@ -1,11 +1,11 @@
-export { receipt } from "./receipt.js";
-export type { ReceiptDeclaration, ReceiptBody } from "./receipt.js";
+export { receipt } from "./receipt";
+export type { ReceiptDeclaration, ReceiptBody } from "./receipt";
 
-export { defineAgent, runDefinedAgent, goal } from "./agent.js";
-export type { ModernAgentSpec, RunAgentInput } from "./agent.js";
+export { defineAgent, runDefinedAgent, goal } from "./agent";
+export type { ModernAgentSpec, RunAgentInput } from "./agent";
 
-export { action, assistant, tool, human } from "./actions.js";
-export type { AgentAction, ActionKind } from "./actions.js";
+export { action, assistant, tool, human } from "./actions";
+export type { AgentAction, ActionKind } from "./actions";
 
-export { merge, rebracket } from "./merge.js";
-export type { MergePolicy, MergeCandidate, MergeDecision, MergeScoreVector } from "./merge.js";
+export { merge, rebracket } from "./merge";
+export type { MergePolicy, MergeCandidate, MergeDecision, MergeScoreVector } from "./merge";

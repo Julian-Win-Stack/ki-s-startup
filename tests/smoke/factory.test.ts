@@ -8,14 +8,14 @@ import { promisify } from "node:util";
 import { Hono } from "hono";
 import type { ZodTypeAny, infer as ZodInfer } from "zod";
 
-import { fold } from "@receipt/core/chain.js";
-import { receipt } from "@receipt/core/chain.js";
-import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl.ts";
-import { jsonlQueue, type QueueJob } from "../../src/adapters/jsonl-queue.ts";
-import { createRuntime } from "@receipt/core/runtime.js";
-import { SseHub } from "../../src/framework/sse-hub.ts";
-import type { AgentLoaderContext } from "../../src/framework/agent-types.ts";
-import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../../src/modules/job.ts";
+import { fold } from "@receipt/core/chain";
+import { receipt } from "@receipt/core/chain";
+import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl";
+import { jsonlQueue, type QueueJob } from "../../src/adapters/jsonl-queue";
+import { createRuntime } from "@receipt/core/runtime";
+import { SseHub } from "../../src/framework/sse-hub";
+import type { AgentLoaderContext } from "../../src/framework/agent-types";
+import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../../src/modules/job";
 import {
   buildFactoryProjection,
   DEFAULT_FACTORY_OBJECTIVE_PROFILE,
@@ -23,18 +23,18 @@ import {
   reduceFactory,
   initialFactoryState,
   type FactoryEvent,
-} from "../../src/modules/factory.ts";
-import type { AgentEvent } from "../../src/modules/agent.ts";
-import createFactoryRoute, { buildActiveCodexCard, buildChatItemsForRun } from "../../src/agents/factory.agent.ts";
-import { FactoryService } from "../../src/services/factory-service.ts";
-import { factoryChatStream } from "../../src/services/factory-chat-profiles.ts";
-import { factoryChatIsland, factoryChatShell, factoryInspectorIsland, factorySidebarIsland } from "../../src/views/factory-chat.ts";
+} from "../../src/modules/factory";
+import type { AgentEvent } from "../../src/modules/agent";
+import createFactoryRoute, { buildActiveCodexCard, buildChatItemsForRun } from "../../src/agents/factory.agent";
+import { FactoryService } from "../../src/services/factory-service";
+import { factoryChatStream } from "../../src/services/factory-chat-profiles";
+import { factoryChatIsland, factoryChatShell, factoryInspectorIsland, factorySidebarIsland } from "../../src/views/factory-chat";
 import {
   factoryMissionControlShell,
   factoryMissionMainIsland,
   type FactoryMissionShellModel,
-} from "../../src/views/factory-mission-control.ts";
-import type { BranchStore, Receipt, Store } from "@receipt/core/types.js";
+} from "../../src/views/factory-mission-control";
+import type { BranchStore, Receipt, Store } from "@receipt/core/types";
 
 const stream = "factory/objectives/demo";
 const execFileAsync = promisify(execFile);
@@ -59,6 +59,8 @@ const git = async (cwd: string, args: ReadonlyArray<string>): Promise<string> =>
   });
   return stdout.trim();
 };
+
+const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
 
 const createSourceRepo = async (): Promise<string> => {
   const repoDir = await createTempDir("receipt-factory-source");
@@ -356,6 +358,68 @@ test("factory service: objective control jobs use a dedicated worker id so /fact
   const jobs = await queue.listJobs({ limit: 10 });
   expect(jobs[0]?.agentId).toBe("factory-control");
   expect(jobs[0]?.payload.kind).toBe("factory.objective.control");
+});
+
+test("factory service: check runner resolves source-backed workspace packages without dist outputs", async () => {
+  const dataDir = await createTempDir("receipt-factory-source-backed-core");
+  const repoRoot = await createSourceRepo();
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime,
+    sse: new SseHub(),
+    codexExecutor: { run: async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "" }) },
+    repoRoot,
+  });
+  const workspaceDir = await createTempDir("receipt-factory-source-backed-core-workspace");
+  const bunBin = shellQuote(process.env.BUN_BIN?.trim() || "bun");
+
+  await fs.mkdir(path.join(workspaceDir, "packages", "core", "src"), { recursive: true });
+  await fs.mkdir(path.join(workspaceDir, "node_modules", "@receipt"), { recursive: true });
+  await fs.writeFile(path.join(workspaceDir, "package.json"), JSON.stringify({
+    name: "source-backed-workspace",
+    private: true,
+    type: "module",
+  }, null, 2), "utf-8");
+  await fs.writeFile(path.join(workspaceDir, "packages", "core", "package.json"), JSON.stringify({
+    name: "@receipt/core",
+    version: "0.1.0",
+    type: "module",
+    exports: {
+      "./runtime": "./src/runtime.ts",
+    },
+  }, null, 2), "utf-8");
+  await fs.writeFile(
+    path.join(workspaceDir, "packages", "core", "src", "runtime.ts"),
+    "export const runtimeValue = 1;\n",
+    "utf-8",
+  );
+  await fs.writeFile(
+    path.join(workspaceDir, "smoke.ts"),
+    [
+      'import { runtimeValue } from "@receipt/core/runtime";',
+      'if (runtimeValue !== 1) throw new Error(`unexpected runtime value: ${runtimeValue}`);',
+      'console.log("source-backed workspace import ok");',
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+  await fs.symlink(
+    path.join(workspaceDir, "packages", "core"),
+    path.join(workspaceDir, "node_modules", "@receipt", "core"),
+    "dir",
+  );
+
+  const runChecks = (service as unknown as {
+    runChecks: (commands: ReadonlyArray<string>, workspacePath: string) => Promise<ReadonlyArray<{ readonly ok: boolean }>>;
+  }).runChecks.bind(service);
+  const results = await runChecks([`${bunBin} smoke.ts`], workspaceDir);
+
+  expect(results.map((result) => result.ok)).toEqual([true]);
+  expect(results[0]?.stdout).toContain("source-backed workspace import ok");
+  await expect(fs.access(path.join(workspaceDir, "packages", "core", "dist"))).rejects.toThrow();
 });
 
 test("factory reducer: replay reconstructs task, candidate, and integration state deterministically", () => {

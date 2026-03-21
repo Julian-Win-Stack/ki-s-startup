@@ -10,8 +10,8 @@
 // 6. Supports branching (forking chains at any point)
 // ============================================================================
 
-import type { Chain, Decide, Reducer, Branch, Receipt, Store, BranchStore } from "./types.js";
-import { computeHash, fold, receipt, verify } from "./chain.js";
+import type { Chain, Decide, Reducer, Branch, Receipt, Store, BranchStore } from "./types";
+import { computeHash, fold, receipt, verify } from "./chain";
 
 // ============================================================================
 // Runtime Type

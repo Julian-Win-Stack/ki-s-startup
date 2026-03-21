@@ -2,8 +2,8 @@
 // Shared UI primitives — design system for all Receipt views
 // ============================================================================
 
-export { esc, truncate } from "./agent-framework.js";
-import { esc } from "./agent-framework.js";
+export { esc, truncate } from "./agent-framework";
+import { esc } from "./agent-framework";
 
 export const CSS_VERSION = Date.now();
 

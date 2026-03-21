@@ -9,9 +9,9 @@ import React from "react";
 import { renderToString } from "ink";
 
 import { FactoryBoardScreen, FactoryObjectiveScreen } from "../../src/factory-cli/app.tsx";
-import { parseComposerDraft } from "../../src/factory-cli/composer.ts";
-import { loadFactoryConfig, resolveFactoryRuntimeConfig } from "../../src/factory-cli/config.ts";
-import { createFactoryCliRuntime } from "../../src/factory-cli/runtime.ts";
+import { parseComposerDraft } from "../../src/factory-cli/composer";
+import { loadFactoryConfig, resolveFactoryRuntimeConfig } from "../../src/factory-cli/config";
+import { createFactoryCliRuntime } from "../../src/factory-cli/runtime";
 import { FactoryThemeProvider } from "../../src/factory-cli/theme.tsx";
 
 const ROOT = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));

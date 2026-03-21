@@ -6,14 +6,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { type CodexExecutor } from "../../src/adapters/codex-executor.ts";
-import { createMemoryTools, decideMemory, initialMemoryState, reduceMemory, type MemoryCmd, type MemoryEvent, type MemoryTools, type MemoryState } from "../../src/adapters/memory-tools.ts";
-import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl.ts";
-import { jsonlQueue } from "../../src/adapters/jsonl-queue.ts";
-import { createRuntime } from "@receipt/core/runtime.js";
-import { SseHub } from "../../src/framework/sse-hub.ts";
-import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../../src/modules/job.ts";
-import { FactoryService, type FactoryTaskJobPayload } from "../../src/services/factory-service.ts";
+import { type CodexExecutor } from "../../src/adapters/codex-executor";
+import { createMemoryTools, decideMemory, initialMemoryState, reduceMemory, type MemoryCmd, type MemoryEvent, type MemoryTools, type MemoryState } from "../../src/adapters/memory-tools";
+import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl";
+import { jsonlQueue } from "../../src/adapters/jsonl-queue";
+import { createRuntime } from "@receipt/core/runtime";
+import { SseHub } from "../../src/framework/sse-hub";
+import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../../src/modules/job";
+import { FactoryService, type FactoryTaskJobPayload } from "../../src/services/factory-service";
 
 const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));

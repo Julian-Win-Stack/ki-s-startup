@@ -1,16 +1,16 @@
 import path from "node:path";
 
-import type { JsonlQueue, QueueJob } from "../adapters/jsonl-queue.js";
-import { readRepoStatus } from "../lib/repo-status.js";
-import type { FactoryObjectiveInput, FactoryService } from "../services/factory-service.js";
-import { factoryChatCodexArtifactPaths, readTextTail } from "../services/factory-codex-artifacts.js";
+import type { JsonlQueue, QueueJob } from "../adapters/jsonl-queue";
+import { readRepoStatus } from "../lib/repo-status";
+import type { FactoryObjectiveInput, FactoryService } from "../services/factory-service";
+import { factoryChatCodexArtifactPaths, readTextTail } from "../services/factory-codex-artifacts";
 import {
   runAgent,
   type AgentFinalizer,
   type AgentRunInput,
   type AgentRunResult,
   type AgentToolExecutor,
-} from "./agent.js";
+} from "./agent";
 
 export const CODEX_SUPERVISOR_WORKFLOW_ID = "agent-codex-supervisor-v1";
 export const CODEX_SUPERVISOR_WORKFLOW_VERSION = "1.0.0";

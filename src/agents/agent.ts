@@ -8,17 +8,17 @@ import { spawn } from "node:child_process";
 
 import { z } from "zod";
 
-import type { Chain } from "@receipt/core/types.js";
-import type { Runtime } from "@receipt/core/runtime.js";
-import { clampNumber, parseFormNum, type AgentRunControl, createQueuedEmitter, getLatestRunId } from "../engine/runtime/workflow.js";
-import type { MemoryTools } from "../adapters/memory-tools.js";
-import type { AgentCmd, AgentEvent, AgentState, AgentToolName } from "../modules/agent.js";
-import type { FailureRecord } from "../modules/failure.js";
-import { agentRunStream } from "./agent.streams.js";
-import type { DelegationTools } from "../adapters/delegation.js";
-import type { AgentPromptConfig } from "../prompts/agent.js";
-import { renderPrompt } from "../prompts/agent.js";
-import { buildAgentRunResult, type AgentRunResult } from "./agent.result.js";
+import type { Chain } from "@receipt/core/types";
+import type { Runtime } from "@receipt/core/runtime";
+import { clampNumber, parseFormNum, type AgentRunControl, createQueuedEmitter, getLatestRunId } from "../engine/runtime/workflow";
+import type { MemoryTools } from "../adapters/memory-tools";
+import type { AgentCmd, AgentEvent, AgentState, AgentToolName } from "../modules/agent";
+import type { FailureRecord } from "../modules/failure";
+import { agentRunStream } from "./agent.streams";
+import type { DelegationTools } from "../adapters/delegation";
+import type { AgentPromptConfig } from "../prompts/agent";
+import { renderPrompt } from "../prompts/agent";
+import { buildAgentRunResult, type AgentRunResult } from "./agent.result";
 
 export const AGENT_WORKFLOW_ID = "agent-v1";
 export const AGENT_WORKFLOW_VERSION = "1.0.0";
@@ -58,7 +58,7 @@ export const normalizeAgentConfig = (input: Partial<AgentRunConfig>): AgentRunCo
 
 
 
-export type { AgentRunResult } from "./agent.result.js";
+export type { AgentRunResult } from "./agent.result";
 
 export type AgentRunInput = {
   readonly stream: string;

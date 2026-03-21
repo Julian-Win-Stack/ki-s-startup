@@ -2,14 +2,14 @@
 // Receipt Browser UI — browse JSONL receipt streams
 // ============================================================================
 
-import type { ReceiptFileInfo, ReceiptRecord } from "../adapters/receipt-tools.js";
+import type { ReceiptFileInfo, ReceiptRecord } from "../adapters/receipt-tools";
 import {
   esc,
   softPanelClass,
   sectionLabelClass,
   navPillClass,
   CSS_VERSION,
-} from "./ui.js";
+} from "./ui";
 
 const formatBytes = (n: number): string => {
   if (n < 1024) return `${n} B`;

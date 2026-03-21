@@ -7,8 +7,8 @@ import path from "node:path";
 
 import { Hono } from "hono";
 
-import { jsonlStore, jsonBranchStore } from "./adapters/jsonl.js";
-import { jsonlQueue, type EnqueueJobInput } from "./adapters/jsonl-queue.js";
+import { jsonlStore, jsonBranchStore } from "./adapters/jsonl";
+import { jsonlQueue, type EnqueueJobInput } from "./adapters/jsonl-queue";
 import {
   createMemoryTools,
   decideMemory,
@@ -17,28 +17,28 @@ import {
   type MemoryCmd,
   type MemoryEvent,
   type MemoryState,
-} from "./adapters/memory-tools.js";
-import { createDelegationTools } from "./adapters/delegation.js";
-import { createHeartbeat, type HeartbeatSpec } from "./adapters/heartbeat.js";
-import { createRuntime } from "@receipt/core/runtime.js";
-import type { JobCmd, JobEvent, JobState } from "./modules/job.js";
-import { decide as decideJob, reduce as reduceJob, initial as initialJob } from "./modules/job.js";
-import type { AgentEvent } from "./modules/agent.js";
-import { decide as decideAgent, reduce as reduceAgent, initial as initialAgent } from "./modules/agent.js";
-import { llmStructured, llmText, embed } from "./adapters/openai.js";
-import { loadAgentPrompts, hashAgentPrompts } from "./prompts/agent.js";
-import { normalizeAgentConfig } from "./agents/agent.js";
-import { createQueuedBudgetContinuation, parseContinuationDepth } from "./agents/agent-continuation.js";
-import { runOrchestrator, normalizeFactoryChatConfig, runFactoryCodexJob } from "./agents/orchestrator.js";
-import { agentRunStream } from "./agents/agent.streams.js";
-import { createFactoryServiceRuntime, createFactoryWorkerHandlers } from "./services/factory-runtime.js";
-import { FACTORY_CONTROL_AGENT_ID } from "./services/factory-service.js";
-import { loadAgentRoutes } from "./framework/agent-loader.js";
-import { SseHub } from "./framework/sse-hub.js";
-import { makeEventId, text } from "./framework/http.js";
-import { JobWorker, type JobHandler } from "./engine/runtime/job-worker.js";
-import { deriveJobFailureDecision } from "./engine/runtime/job-failure-policy.js";
-import { resolveFactoryRuntimeConfig } from "./factory-cli/config.js";
+} from "./adapters/memory-tools";
+import { createDelegationTools } from "./adapters/delegation";
+import { createHeartbeat, type HeartbeatSpec } from "./adapters/heartbeat";
+import { createRuntime } from "@receipt/core/runtime";
+import type { JobCmd, JobEvent, JobState } from "./modules/job";
+import { decide as decideJob, reduce as reduceJob, initial as initialJob } from "./modules/job";
+import type { AgentEvent } from "./modules/agent";
+import { decide as decideAgent, reduce as reduceAgent, initial as initialAgent } from "./modules/agent";
+import { llmStructured, llmText, embed } from "./adapters/openai";
+import { loadAgentPrompts, hashAgentPrompts } from "./prompts/agent";
+import { normalizeAgentConfig } from "./agents/agent";
+import { createQueuedBudgetContinuation, parseContinuationDepth } from "./agents/agent-continuation";
+import { runOrchestrator, normalizeFactoryChatConfig, runFactoryCodexJob } from "./agents/orchestrator";
+import { agentRunStream } from "./agents/agent.streams";
+import { createFactoryServiceRuntime, createFactoryWorkerHandlers } from "./services/factory-runtime";
+import { FACTORY_CONTROL_AGENT_ID } from "./services/factory-service";
+import { loadAgentRoutes } from "./framework/agent-loader";
+import { SseHub } from "./framework/sse-hub";
+import { makeEventId, text } from "./framework/http";
+import { JobWorker, type JobHandler } from "./engine/runtime/job-worker";
+import { deriveJobFailureDecision } from "./engine/runtime/job-failure-policy";
+import { resolveFactoryRuntimeConfig } from "./factory-cli/config";
 
 // ============================================================================
 // Config

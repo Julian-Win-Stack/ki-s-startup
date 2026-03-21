@@ -1,16 +1,16 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { LocalCodexExecutor } from "../adapters/codex-executor.js";
-import { jsonBranchStore, jsonlStore } from "../adapters/jsonl.js";
-import { jsonlQueue, type QueueJob } from "../adapters/jsonl-queue.js";
-import { runFactoryCodexJob } from "../agents/factory-chat.js";
-import { createRuntime } from "@receipt/core/runtime.js";
-import { JobWorker } from "../engine/runtime/job-worker.js";
-import { SseHub } from "../framework/sse-hub.js";
-import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../modules/job.js";
-import { createFactoryServiceRuntime, createFactoryWorkerHandlers } from "../services/factory-runtime.js";
-import type { FactoryCliConfig } from "./config.js";
+import { LocalCodexExecutor } from "../adapters/codex-executor";
+import { jsonBranchStore, jsonlStore } from "../adapters/jsonl";
+import { jsonlQueue, type QueueJob } from "../adapters/jsonl-queue";
+import { runFactoryCodexJob } from "../agents/factory-chat";
+import { createRuntime } from "@receipt/core/runtime";
+import { JobWorker } from "../engine/runtime/job-worker";
+import { SseHub } from "../framework/sse-hub";
+import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../modules/job";
+import { createFactoryServiceRuntime, createFactoryWorkerHandlers } from "../services/factory-runtime";
+import type { FactoryCliConfig } from "./config";
 
 export type CodexProbeMode = "direct" | "queue" | "both";
 

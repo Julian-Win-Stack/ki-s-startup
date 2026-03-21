@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 
-import { createQueuedBudgetContinuation, nextIterationBudget, parseContinuationDepth } from "../../src/agents/agent-continuation.ts";
-import { buildAgentRunResult } from "../../src/agents/agent.result.ts";
-import { AGENT_DEFAULT_CONFIG, isStuckProgress, type AgentRunProgress } from "../../src/agents/agent.ts";
-import { initial as initialAgent, reduce as reduceAgent, type AgentEvent } from "../../src/modules/agent.ts";
+import { createQueuedBudgetContinuation, nextIterationBudget, parseContinuationDepth } from "../../src/agents/agent-continuation";
+import { buildAgentRunResult } from "../../src/agents/agent.result";
+import { AGENT_DEFAULT_CONFIG, isStuckProgress, type AgentRunProgress } from "../../src/agents/agent";
+import { initial as initialAgent, reduce as reduceAgent, type AgentEvent } from "../../src/modules/agent";
 
 test("queued budget continuation enqueues a follow-up run with a larger budget", async () => {
   let enqueued: Record<string, unknown> | undefined;

@@ -7,11 +7,11 @@ import { promisify } from "node:util";
 
 import type { ZodTypeAny, infer as ZodInfer } from "zod";
 
-import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl.ts";
-import { jsonlQueue, type QueueJob } from "../../src/adapters/jsonl-queue.ts";
-import { createRuntime } from "@receipt/core/runtime.js";
-import { buildFactoryDecisionSet } from "../../src/engine/merge/factory-policy.ts";
-import { SseHub } from "../../src/framework/sse-hub.ts";
+import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl";
+import { jsonlQueue, type QueueJob } from "../../src/adapters/jsonl-queue";
+import { createRuntime } from "@receipt/core/runtime";
+import { buildFactoryDecisionSet } from "../../src/engine/merge/factory-policy";
+import { SseHub } from "../../src/framework/sse-hub";
 import {
   DEFAULT_FACTORY_OBJECTIVE_PROFILE,
   initialFactoryState,
@@ -19,9 +19,9 @@ import {
   reduceFactory,
   type FactoryEvent,
   type FactoryState,
-} from "../../src/modules/factory.ts";
-import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../../src/modules/job.ts";
-import { FactoryService, type FactoryIntegrationJobPayload, type FactoryTaskJobPayload } from "../../src/services/factory-service.ts";
+} from "../../src/modules/factory";
+import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../../src/modules/job";
+import { FactoryService, type FactoryIntegrationJobPayload, type FactoryTaskJobPayload } from "../../src/services/factory-service";
 
 const execFileAsync = promisify(execFile);
 

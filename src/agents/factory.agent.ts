@@ -2,40 +2,40 @@ import path from "node:path";
 
 import type { Hono } from "hono";
 
-import { LocalCodexExecutor } from "../adapters/codex-executor.js";
-import type { MemoryTools } from "../adapters/memory-tools.js";
-import { fold } from "@receipt/core/chain.js";
-import type { Runtime } from "@receipt/core/runtime.js";
+import { LocalCodexExecutor } from "../adapters/codex-executor";
+import type { MemoryTools } from "../adapters/memory-tools";
+import { fold } from "@receipt/core/chain";
+import type { Runtime } from "@receipt/core/runtime";
 import {
   html,
   json,
   optionalTrimmedString,
   readRecordBody,
   text,
-} from "../framework/http.js";
-import type { AgentLoaderContext, AgentRouteModule } from "../framework/agent-types.js";
-import { agentRunStream } from "./agent.streams.js";
-import type { AgentCmd, AgentEvent, AgentState } from "../modules/agent.js";
-import { initial as initialAgent, reduce as reduceAgent } from "../modules/agent.js";
+} from "../framework/http";
+import type { AgentLoaderContext, AgentRouteModule } from "../framework/agent-types";
+import { agentRunStream } from "./agent.streams";
+import type { AgentCmd, AgentEvent, AgentState } from "../modules/agent";
+import { initial as initialAgent, reduce as reduceAgent } from "../modules/agent";
 import {
   factoryChatStream,
   factoryChatSessionStream,
   discoverFactoryChatProfiles,
   resolveFactoryChatProfile,
-} from "../services/factory-chat-profiles.js";
+} from "../services/factory-chat-profiles";
 import {
   FactoryService,
   FactoryServiceError,
   type FactoryLiveOutputTargetKind,
   type FactoryObjectiveDetail,
   type FactoryTaskView,
-} from "../services/factory-service.js";
+} from "../services/factory-service";
 import {
   factoryChatIsland,
   factoryChatShell,
   factorySidebarIsland,
-} from "../views/factory-chat.js";
-import { factoryInspectorIsland } from "../views/factory-inspector.js";
+} from "../views/factory-chat";
+import { factoryInspectorIsland } from "../views/factory-inspector";
 import type {
   FactoryChatIslandModel,
   FactoryChatItem,
@@ -50,22 +50,22 @@ import type {
   FactoryWorkCard,
   FactoryNavModel,
   FactoryInspectorModel,
-} from "../views/factory-models.js";
-import type { QueueJob } from "../adapters/jsonl-queue.js";
-import { parseComposerDraft } from "../factory-cli/composer.js";
+} from "../views/factory-models";
+import type { QueueJob } from "../adapters/jsonl-queue";
+import { parseComposerDraft } from "../factory-cli/composer";
 import {
   listReceiptFiles,
   readReceiptFile,
   sliceReceiptRecords,
   buildReceiptTimeline,
-} from "../adapters/receipt-tools.js";
+} from "../adapters/receipt-tools";
 import {
   receiptShell,
   receiptFoldsHtml,
   receiptRecordsHtml,
   receiptSideHtml,
-} from "../views/receipt.js";
-import { parseOrder, parseLimit, parseInspectorDepth } from "../framework/http.js";
+} from "../views/receipt";
+import { parseOrder, parseLimit, parseInspectorDepth } from "../framework/http";
 
 const isActiveJobStatus = (status?: string): boolean =>
   status === "queued" || status === "leased" || status === "running";

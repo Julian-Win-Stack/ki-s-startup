@@ -10,7 +10,7 @@ import {
   factoryProfileStream,
   repoKeyForRoot,
   resolveFactoryChatProfile,
-} from "../../src/services/factory-chat-profiles.ts";
+} from "../../src/services/factory-chat-profiles";
 
 const createTempDir = async (label: string): Promise<string> =>
   fs.mkdtemp(path.join(os.tmpdir(), `${label}-`));

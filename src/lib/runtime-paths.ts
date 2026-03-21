@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const PACKAGE_MARKER = "package.json";
@@ -45,23 +44,12 @@ export const bunWhich = (command: string): string | undefined => {
   return resolved?.trim() || undefined;
 };
 
-export const resolveCliEntry = (importMetaUrl: string): {
-  readonly entryPath: string;
-} => {
-  const root = packageRoot(importMetaUrl);
-  const compiledCli = path.join(root, "dist", "cli.js");
-  if (fs.existsSync(compiledCli)) {
-    return { entryPath: compiledCli };
-  }
-  return { entryPath: path.join(root, "src", "cli.ts") };
-};
-
 export const resolveCliInvocation = (importMetaUrl: string): {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly entryPath: string;
 } => {
-  const { entryPath } = resolveCliEntry(importMetaUrl);
+  const entryPath = packagePath(importMetaUrl, "src", "cli.ts");
   return {
     command: resolveBunRuntime(),
     args: [entryPath],

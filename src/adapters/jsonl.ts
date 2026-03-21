@@ -7,13 +7,13 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 
-import type { Branch, BranchStore, Chain, Receipt, Store } from "@receipt/core/types.js";
-import { fold, receipt } from "@receipt/core/chain.js";
+import type { Branch, BranchStore, Chain, Receipt, Store } from "@receipt/core/types";
+import { fold, receipt } from "@receipt/core/chain";
 import {
   initial as initialBranchMeta,
   reduce as reduceBranchMeta,
   type BranchMetaEvent,
-} from "../modules/branch-meta.js";
+} from "../modules/branch-meta";
 
 type StreamManifest = {
   readonly version: 1;

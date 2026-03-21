@@ -32,8 +32,8 @@
 
 ```typescript
 // tests/temp_model_test.ts
-import { type FactoryNavModel, type FactoryInspectorModel, type FactoryChatShellModel } from "../src/views/factory-models.js";
-import { type FactoryChatProfileNav, type FactoryChatObjectiveNav, type FactorySelectedObjectiveCard, type FactoryLiveCodexCard, type FactoryLiveChildCard, type FactoryLiveRunCard, type FactoryChatJobNav, type FactoryChatIslandModel } from "../src/views/factory-chat.js";
+import { type FactoryNavModel, type FactoryInspectorModel, type FactoryChatShellModel } from "../src/views/factory-models";
+import { type FactoryChatProfileNav, type FactoryChatObjectiveNav, type FactorySelectedObjectiveCard, type FactoryLiveCodexCard, type FactoryLiveChildCard, type FactoryLiveRunCard, type FactoryChatJobNav, type FactoryChatIslandModel } from "../src/views/factory-chat";
 
 const nav: FactoryNavModel = { profiles: [], objectives: [], activeProfileId: "1", activeProfileLabel: "Gen" };
 const inspector: FactoryInspectorModel = { panel: "overview", jobs: [] };
@@ -49,7 +49,7 @@ Expected: FAIL due to missing `src/views/factory-models.ts`.
 
 Create `src/views/factory-models.ts` and move the exact types from `factory-chat.ts`:
 ```typescript
-import type { FactoryChatProfileNav, FactoryChatObjectiveNav, FactorySelectedObjectiveCard, FactoryLiveCodexCard, FactoryLiveChildCard, FactoryLiveRunCard, FactoryChatJobNav, FactoryChatIslandModel } from "./factory-chat.js"; // Note: move these types to models too during actual execution.
+import type { FactoryChatProfileNav, FactoryChatObjectiveNav, FactorySelectedObjectiveCard, FactoryLiveCodexCard, FactoryLiveChildCard, FactoryLiveRunCard, FactoryChatJobNav, FactoryChatIslandModel } from "./factory-chat"; // Note: move these types to models too during actual execution.
 
 export type FactoryNavModel = {
   readonly activeProfileId: string;
@@ -111,7 +111,7 @@ git commit -m "refactor: Extract and split shell models into factory-models.ts"
 
 ```typescript
 // tests/temp_card_test.ts
-import { type FactoryChatItem } from "../src/views/factory-models.js";
+import { type FactoryChatItem } from "../src/views/factory-models";
 
 const item: FactoryChatItem = {
   key: "test",
@@ -132,7 +132,7 @@ Expected: FAIL due to missing `objective_event` kind.
 In `src/views/factory-models.ts`, expand `FactoryChatItem`:
 
 ```typescript
-import type { FactoryWorkCard } from "./factory-chat.js"; // Move to models too
+import type { FactoryWorkCard } from "./factory-chat"; // Move to models too
 
 export type FactoryChatItem =
   // ... existing kinds
@@ -192,7 +192,7 @@ git commit -m "feat: Render objective lifecycle events as rich interactive cards
 
 ```typescript
 // tests/temp_inspector_test.ts
-import { factoryInspectorIsland } from "../src/views/factory-inspector.js";
+import { factoryInspectorIsland } from "../src/views/factory-inspector";
 
 try {
   // Pass an invalid panel type by casting to any to test the fail-fast switch
@@ -213,8 +213,8 @@ Expected: FAIL because file is missing or doesn't throw.
 Create `src/views/factory-inspector.ts` and separate view functions from control flow. Use exhaustive switch.
 
 ```typescript
-import { esc, sectionLabelClass, softPanelClass } from "./ui.js";
-import type { FactoryInspectorModel } from "./factory-models.js";
+import { esc, sectionLabelClass, softPanelClass } from "./ui";
+import type { FactoryInspectorModel } from "./factory-models";
 
 const renderOverviewPanel = (model: FactoryInspectorModel): string => {
   return `<div class="space-y-3 px-3 py-3 md:px-4">Overview Panel</div>`;

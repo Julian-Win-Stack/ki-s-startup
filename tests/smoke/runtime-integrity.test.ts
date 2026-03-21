@@ -3,8 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 
-import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl.ts";
-import { createRuntime } from "@receipt/core/runtime.js";
+import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl";
+import { createRuntime } from "@receipt/core/runtime";
 
 type CounterCmd = {
   readonly type: "counter.inc";

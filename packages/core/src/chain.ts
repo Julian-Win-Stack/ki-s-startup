@@ -5,7 +5,7 @@
 // ============================================================================
 
 import { createHash } from "node:crypto";
-import type { Receipt, Chain, Reducer } from "./types.js";
+import type { Receipt, Chain, Reducer } from "./types";
 
 // ============================================================================
 // Hashing (content-addressable)

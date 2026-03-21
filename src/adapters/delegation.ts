@@ -4,8 +4,8 @@
 
 import path from "node:path";
 
-import { createStreamLocator } from "./jsonl.js";
-import { assertReceiptFileName, buildReceiptContext, readReceiptFile } from "./receipt-tools.js";
+import { createStreamLocator } from "./jsonl";
+import { assertReceiptFileName, buildReceiptContext, readReceiptFile } from "./receipt-tools";
 
 export type DelegationDeps = {
   readonly enqueue: (opts: {

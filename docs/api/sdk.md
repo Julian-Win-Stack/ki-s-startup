@@ -14,7 +14,7 @@ import {
   human,
   merge,
   rebracket,
-} from "../src/sdk/index.js";
+} from "../src/sdk/index";
 ```
 
 ## Exports
@@ -59,7 +59,7 @@ import {
 ## Minimal End-to-End Example
 
 ```ts
-import { defineAgent, receipt, action, goal } from "../src/sdk/index.js";
+import { defineAgent, receipt, action, goal } from "../src/sdk/index";
 
 export default defineAgent({
   id: "hello-agent",

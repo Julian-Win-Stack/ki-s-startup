@@ -1,5 +1,5 @@
-import type { GraphRef } from "@receipt/core/graph.js";
-import type { QueueCommandRecord, QueueJob } from "../adapters/jsonl-queue.js";
+import type { GraphRef } from "@receipt/core/graph";
+import type { QueueCommandRecord, QueueJob } from "../adapters/jsonl-queue";
 import type {
   FactoryBudgetState,
   FactoryCandidateRecord,
@@ -16,8 +16,8 @@ import type {
   FactoryTaskRecord,
   FactoryTaskStatus,
   FactoryWorkerType,
-} from "../modules/factory.js";
-import type { JobRecord, JobStatus } from "../modules/job.js";
+} from "../modules/factory";
+import type { JobRecord, JobStatus } from "../modules/job";
 
 export class FactoryServiceError extends Error {
   readonly status: number;
@@ -30,15 +30,15 @@ export class FactoryServiceError extends Error {
 
 export type FactoryServiceOptions = {
   readonly dataDir: string;
-  readonly queue: import("../adapters/jsonl-queue.js").JsonlQueue;
-  readonly jobRuntime: import("@receipt/core/runtime.js").Runtime<
-    import("../modules/job.js").JobCmd,
-    import("../modules/job.js").JobEvent,
-    import("../modules/job.js").JobState
+  readonly queue: import("../adapters/jsonl-queue").JsonlQueue;
+  readonly jobRuntime: import("@receipt/core/runtime").Runtime<
+    import("../modules/job").JobCmd,
+    import("../modules/job").JobEvent,
+    import("../modules/job").JobState
   >;
-  readonly sse: import("../framework/sse-hub.js").SseHub;
-  readonly codexExecutor: import("../adapters/codex-executor.js").CodexExecutor;
-  readonly memoryTools?: import("../adapters/memory-tools.js").MemoryTools;
+  readonly sse: import("../framework/sse-hub").SseHub;
+  readonly codexExecutor: import("../adapters/codex-executor").CodexExecutor;
+  readonly memoryTools?: import("../adapters/memory-tools").MemoryTools;
   readonly repoRoot?: string;
   readonly profileRoot?: string;
   readonly llmStructured?: <Schema extends import("zod").ZodTypeAny>(opts: {

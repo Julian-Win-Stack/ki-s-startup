@@ -1,4 +1,4 @@
-import { LocalCodexExecutor } from "../adapters/codex-executor.js";
+import { LocalCodexExecutor } from "../adapters/codex-executor";
 import {
   createMemoryTools,
   decideMemory,
@@ -8,16 +8,16 @@ import {
   type MemoryEvent,
   type MemoryState,
   type MemoryTools,
-} from "../adapters/memory-tools.js";
-import { jsonBranchStore, jsonlStore } from "../adapters/jsonl.js";
-import { jsonlQueue } from "../adapters/jsonl-queue.js";
-import { embed, llmStructured } from "../adapters/openai.js";
-import { createRuntime } from "@receipt/core/runtime.js";
-import type { JobHandler } from "../engine/runtime/job-worker.js";
-import type { SseHub } from "../framework/sse-hub.js";
-import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../modules/job.js";
-import { FACTORY_CONTROL_AGENT_ID, FactoryService } from "./factory-service.js";
-import { runFactoryCodexJob } from "../agents/factory-chat.js";
+} from "../adapters/memory-tools";
+import { jsonBranchStore, jsonlStore } from "../adapters/jsonl";
+import { jsonlQueue } from "../adapters/jsonl-queue";
+import { embed, llmStructured } from "../adapters/openai";
+import { createRuntime } from "@receipt/core/runtime";
+import type { JobHandler } from "../engine/runtime/job-worker";
+import type { SseHub } from "../framework/sse-hub";
+import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../modules/job";
+import { FACTORY_CONTROL_AGENT_ID, FactoryService } from "./factory-service";
+import { runFactoryCodexJob } from "../agents/factory-chat";
 
 export type FactoryQueue = ReturnType<typeof jsonlQueue>;
 export type FactoryJobRuntime = ReturnType<typeof createRuntime<JobCmd, JobEvent, JobState>>;

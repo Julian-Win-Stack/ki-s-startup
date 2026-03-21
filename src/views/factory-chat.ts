@@ -35,9 +35,9 @@ import {
   toneForValue,
   truncate,
   CSS_VERSION,
-} from "./ui.js";
+} from "./ui";
 
-import { factoryInspectorIsland } from "./factory-inspector.js";
+import { factoryInspectorIsland } from "./factory-inspector";
 
 const md = new MiniGFM();
 
@@ -95,7 +95,7 @@ import type {
   FactoryChatShellModel,
   FactoryNavModel,
   FactoryInspectorModel
-} from "./factory-models.js";
+} from "./factory-models";
 
 type FactoryChatRouteContext = {
   readonly profileId: string;

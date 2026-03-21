@@ -1,5 +1,5 @@
-import type { AgentState } from "../modules/agent.js";
-import type { FailureRecord } from "../modules/failure.js";
+import type { AgentState } from "../modules/agent";
+import type { FailureRecord } from "../modules/failure";
 
 const withoutUpdatedAt = (failure: AgentState["failure"] | undefined): FailureRecord | undefined => {
   if (!failure) return undefined;

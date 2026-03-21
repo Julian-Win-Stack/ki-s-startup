@@ -1,4 +1,4 @@
-import type { AgentAction } from "../../sdk/actions.js";
+import type { AgentAction } from "../../sdk/actions";
 
 export type SelectionReason =
   | "declaration-order"

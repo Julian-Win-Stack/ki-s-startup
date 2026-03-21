@@ -13,10 +13,10 @@ import {
   reactObjectiveMutation,
   requireActiveObjectiveJob,
   steerJobMutation,
-} from "./actions.js";
-import type { FactoryCliRuntime } from "./runtime.js";
-import { deriveObjectiveTitle, parseComposerDraft } from "./composer.js";
-import { FactoryThemeProvider, InlineAlert, statusColor, terminalTheme, tone } from "./theme.js";
+} from "./actions";
+import type { FactoryCliRuntime } from "./runtime";
+import { deriveObjectiveTitle, parseComposerDraft } from "./composer";
+import { FactoryThemeProvider, InlineAlert, statusColor, terminalTheme, tone } from "./theme";
 import {
   BOARD_SECTION_META,
   buildMissionControlViewModel,
@@ -33,7 +33,7 @@ import {
   truncate,
   type FactoryObjectivePanel,
   type MissionControlFocusArea,
-} from "./view-model.js";
+} from "./view-model";
 import type {
   FactoryBoardProjection,
   FactoryComposeModel,
@@ -41,8 +41,8 @@ import type {
   FactoryLiveProjection,
   FactoryObjectiveDetail,
   FactoryTaskView,
-} from "../services/factory-service.js";
-import { DEFAULT_FACTORY_OBJECTIVE_POLICY } from "../modules/factory.js";
+} from "../services/factory-service";
+import { DEFAULT_FACTORY_OBJECTIVE_POLICY } from "../modules/factory";
 
 type FactoryAppMode = "board" | "objective";
 

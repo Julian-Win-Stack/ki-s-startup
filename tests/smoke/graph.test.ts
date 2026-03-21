@@ -8,7 +8,7 @@ import {
   type GraphBuckets,
   type GraphNodeBase,
   type GraphState,
-} from "@receipt/core/graph.js";
+} from "@receipt/core/graph";
 
 type TestStatus = "pending" | "ready" | "running" | "completed" | "blocked";
 

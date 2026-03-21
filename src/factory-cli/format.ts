@@ -4,8 +4,8 @@ import type {
   FactoryDebugProjection,
   FactoryLiveProjection,
   FactoryObjectiveDetail,
-} from "../services/factory-service.js";
-import { BOARD_SECTION_META, type FactoryObjectivePanel, formatList, formatTime, shortHash, truncate } from "./view-model.js";
+} from "../services/factory-service";
+import { BOARD_SECTION_META, type FactoryObjectivePanel, formatList, formatTime, shortHash, truncate } from "./view-model";
 
 const section = (title: string, lines: ReadonlyArray<string>): string =>
   [`== ${title} ==`, ...lines].join("\n");

@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 
-import type { AgentLoaderContext, AgentModule, AgentRouteModule } from "./agent-types.js";
+import { packagePath } from "../lib/runtime-paths";
+import type { AgentLoaderContext, AgentModule, AgentRouteModule } from "./agent-types";
 
 const exists = async (target: string): Promise<boolean> => {
   try {
@@ -14,18 +15,11 @@ const exists = async (target: string): Promise<boolean> => {
 };
 
 const inferAgentsDir = async (): Promise<{ readonly dir: string; readonly suffix: string }> => {
-  const here = fileURLToPath(import.meta.url);
-  const srcDir = fileURLToPath(new URL("../agents", import.meta.url));
-  const distDir = fileURLToPath(new URL("../../dist/agents", import.meta.url));
-  const runningFromDist = here.includes(`${path.sep}dist${path.sep}`);
-
-  if (runningFromDist && await exists(distDir)) {
-    return { dir: distDir, suffix: ".agent.js" };
-  }
+  const srcDir = packagePath(import.meta.url, "src", "agents");
   if (await exists(srcDir)) {
     return { dir: srcDir, suffix: ".agent.ts" };
   }
-  return { dir: distDir, suffix: ".agent.js" };
+  throw new Error(`Unable to locate agent source directory at ${srcDir}`);
 };
 
 const asRouteModule = (value: unknown): AgentRouteModule | undefined => {

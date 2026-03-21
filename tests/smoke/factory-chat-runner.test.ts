@@ -3,21 +3,21 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl.ts";
-import { jsonlQueue } from "../../src/adapters/jsonl-queue.ts";
-import type { MemoryTools } from "../../src/adapters/memory-tools.ts";
-import { createRuntime } from "@receipt/core/runtime.js";
-import type { JobCmd, JobEvent, JobState } from "../../src/modules/job.ts";
-import { decide as decideJob, initial as initialJob, reduce as reduceJob } from "../../src/modules/job.ts";
-import type { AgentCmd, AgentEvent, AgentState } from "../../src/modules/agent.ts";
-import { decide as decideAgent, initial as initialAgent, reduce as reduceAgent } from "../../src/modules/agent.ts";
-import { agentRunStream } from "../../src/agents/agent.streams.ts";
+import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl";
+import { jsonlQueue } from "../../src/adapters/jsonl-queue";
+import type { MemoryTools } from "../../src/adapters/memory-tools";
+import { createRuntime } from "@receipt/core/runtime";
+import type { JobCmd, JobEvent, JobState } from "../../src/modules/job";
+import { decide as decideJob, initial as initialJob, reduce as reduceJob } from "../../src/modules/job";
+import type { AgentCmd, AgentEvent, AgentState } from "../../src/modules/agent";
+import { decide as decideAgent, initial as initialAgent, reduce as reduceAgent } from "../../src/modules/agent";
+import { agentRunStream } from "../../src/agents/agent.streams";
 import {
   FACTORY_CHAT_DEFAULT_CONFIG,
   runFactoryChat,
   runFactoryCodexJob,
-} from "../../src/agents/factory-chat.ts";
-import type { QueueJob } from "../../src/adapters/jsonl-queue.ts";
+} from "../../src/agents/factory-chat";
+import type { QueueJob } from "../../src/adapters/jsonl-queue";
 
 const createTempDir = async (label: string): Promise<string> =>
   fs.mkdtemp(path.join(os.tmpdir(), `${label}-`));

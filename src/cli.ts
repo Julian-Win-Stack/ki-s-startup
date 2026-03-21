@@ -5,16 +5,16 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-import { createMemoryTools, decideMemory, initialMemoryState, reduceMemory, type MemoryCmd, type MemoryEvent, type MemoryState } from "./adapters/memory-tools.js";
-import { jsonBranchStore, jsonlStore } from "./adapters/jsonl.js";
-import { jsonlQueue } from "./adapters/jsonl-queue.js";
-import type { Flags } from "./cli.types.js";
-import { createRuntime } from "@receipt/core/runtime.js";
-import { runAgentLoop } from "./engine/runtime/agent-loop.js";
-import { handleFactoryCommand } from "./factory-cli/commands.js";
-import { resolveFactoryRuntimeConfig } from "./factory-cli/config.js";
-import { resolveBunRuntime } from "./lib/runtime-paths.js";
-import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "./modules/job.js";
+import { createMemoryTools, decideMemory, initialMemoryState, reduceMemory, type MemoryCmd, type MemoryEvent, type MemoryState } from "./adapters/memory-tools";
+import { jsonBranchStore, jsonlStore } from "./adapters/jsonl";
+import { jsonlQueue } from "./adapters/jsonl-queue";
+import type { Flags } from "./cli.types";
+import { createRuntime } from "@receipt/core/runtime";
+import { runAgentLoop } from "./engine/runtime/agent-loop";
+import { handleFactoryCommand } from "./factory-cli/commands";
+import { resolveFactoryRuntimeConfig } from "./factory-cli/config";
+import { resolveBunRuntime } from "./lib/runtime-paths";
+import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "./modules/job";
 
 type ParsedArgs = {
   readonly command?: string;
@@ -177,12 +177,6 @@ const loadAgentDefault = async (agentId: string): Promise<unknown | undefined> =
     return mod.default;
   }
 
-  const distFile = path.join(ROOT, "dist", "agents", `${agentId}.agent.js`);
-  if (fs.existsSync(distFile)) {
-    const mod = await import(pathToFileURL(distFile).href);
-    return mod.default;
-  }
-
   return undefined;
 };
 
@@ -256,7 +250,7 @@ const commandNew = async (id: string, template: string): Promise<void> => {
       },
     })`;
 
-  const body = `import { defineAgent, receipt, action, assistant, human } from "../sdk/index.js";
+  const body = `import { defineAgent, receipt, action, assistant, human } from "../sdk/index";
 
 export default defineAgent({
   id: "${id}",

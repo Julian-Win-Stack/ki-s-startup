@@ -1,11 +1,11 @@
-import type { Runtime } from "@receipt/core/runtime.js";
-import type { Chain } from "@receipt/core/types.js";
-import type { AgentAction } from "../../sdk/actions.js";
-import type { MergePolicy } from "../../sdk/merge.js";
-import type { ReceiptBody, ReceiptDeclaration } from "../../sdk/receipt.js";
-import { runMergePolicy } from "../merge/policy.js";
-import { CONTROL_POLICY_VERSION, type ControlReceipt } from "./control-receipts.js";
-import { SCHEDULER_POLICY_VERSION, selectDeterministicActions } from "./scheduler-policy.js";
+import type { Runtime } from "@receipt/core/runtime";
+import type { Chain } from "@receipt/core/types";
+import type { AgentAction } from "../../sdk/actions";
+import type { MergePolicy } from "../../sdk/merge";
+import type { ReceiptBody, ReceiptDeclaration } from "../../sdk/receipt";
+import { runMergePolicy } from "../merge/policy";
+import { CONTROL_POLICY_VERSION, type ControlReceipt } from "./control-receipts";
+import { SCHEDULER_POLICY_VERSION, selectDeterministicActions } from "./scheduler-policy";
 
 type AnyEvent = {
   readonly type: string;

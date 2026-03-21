@@ -36,7 +36,7 @@ Control receipts include:
 
 ## Discovery
 
-Agents are auto-discovered from `src/agents/*.agent.ts` (dev) and `dist/agents/*.agent.js` (prod).
+Agents are auto-discovered from `src/agents/*.agent.ts`.
 
 No central registry edits are required.
 

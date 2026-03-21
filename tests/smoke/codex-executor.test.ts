@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { LocalCodexExecutor } from "../../src/adapters/codex-executor.ts";
+import { LocalCodexExecutor } from "../../src/adapters/codex-executor";
 
 const mkTmp = async (label: string): Promise<string> =>
   fs.mkdtemp(path.join(os.tmpdir(), `${label}-`));

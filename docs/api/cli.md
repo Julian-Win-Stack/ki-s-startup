@@ -1,10 +1,10 @@
 # CLI API (`receipt`)
 
-Binary entrypoint: `receipt` (maps to `dist/cli.js`).
+Binary entrypoint: `receipt` (runs `src/cli.ts` through Bun).
 
 If not installed globally, run through Bun:
 ```bash
-bun run cli -- <command> [args]
+bun src/cli.ts <command> [args]
 ```
 
 ## Commands

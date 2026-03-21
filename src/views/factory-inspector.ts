@@ -1,5 +1,5 @@
-import { esc, sectionLabelClass, softPanelClass, badge, statPill, formatTs, shortHash, ghostButtonClass, dangerButtonClass } from "./ui.js";
-import type { FactoryInspectorModel } from "./factory-models.js";
+import { esc, sectionLabelClass, softPanelClass, badge, statPill, formatTs, shortHash, ghostButtonClass, dangerButtonClass } from "./ui";
+import type { FactoryInspectorModel } from "./factory-models";
 
 const renderOverviewPanel = (model: FactoryInspectorModel): string => {
   const obj = model.selectedObjective;

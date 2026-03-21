@@ -3,12 +3,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl.ts";
-import { createRuntime } from "@receipt/core/runtime.js";
-import { runAgentLoop } from "../../src/engine/runtime/agent-loop.ts";
-import { action } from "../../src/sdk/actions.ts";
-import { receipt } from "../../src/sdk/receipt.ts";
-import { defineAgent } from "../../src/sdk/agent.ts";
+import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl";
+import { createRuntime } from "@receipt/core/runtime";
+import { runAgentLoop } from "../../src/engine/runtime/agent-loop";
+import { action } from "../../src/sdk/actions";
+import { receipt } from "../../src/sdk/receipt";
+import { defineAgent } from "../../src/sdk/agent";
 
 type Event = {
   readonly type: string;

@@ -3,9 +3,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { createDelegationTools } from "../../src/adapters/delegation.ts";
-import { jsonlStore } from "../../src/adapters/jsonl.ts";
-import { receipt } from "@receipt/core/chain.js";
+import { createDelegationTools } from "../../src/adapters/delegation";
+import { jsonlStore } from "../../src/adapters/jsonl";
+import { receipt } from "@receipt/core/chain";
 
 const createTempDir = async (label: string): Promise<string> =>
   fs.mkdtemp(path.join(os.tmpdir(), `${label}-`));

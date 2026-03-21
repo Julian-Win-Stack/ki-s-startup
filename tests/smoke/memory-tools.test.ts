@@ -11,9 +11,9 @@ import {
   type MemoryCmd,
   type MemoryEvent,
   type MemoryState,
-} from "../../src/adapters/memory-tools.ts";
-import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl.ts";
-import { createRuntime } from "@receipt/core/runtime.js";
+} from "../../src/adapters/memory-tools";
+import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl";
+import { createRuntime } from "@receipt/core/runtime";
 
 const mkTmp = async (label: string): Promise<string> =>
   fs.mkdtemp(path.join(os.tmpdir(), `${label}-`));

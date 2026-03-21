@@ -1,5 +1,5 @@
-import type { Runtime } from "@receipt/core/runtime.js";
-import type { Chain } from "@receipt/core/types.js";
+import type { Runtime } from "@receipt/core/runtime";
+import type { Chain } from "@receipt/core/types";
 
 export const clampNumber = (value: number, min: number, max: number): number =>
   Math.max(min, Math.min(max, value));

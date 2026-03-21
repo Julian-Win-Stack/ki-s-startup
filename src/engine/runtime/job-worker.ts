@@ -2,7 +2,7 @@
 // Background Job Worker - queue wakeups + leased execution + retries
 // ============================================================================
 
-import type { QueueCommandRecord, QueueJob, JsonlQueue } from "../../adapters/jsonl-queue.js";
+import type { QueueCommandRecord, QueueJob, JsonlQueue } from "../../adapters/jsonl-queue";
 
 export type JobExecutionContext = {
   readonly workerId: string;

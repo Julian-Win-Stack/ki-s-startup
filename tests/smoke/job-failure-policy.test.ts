@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { deriveJobFailureDecision } from "../../src/engine/runtime/job-failure-policy.ts";
+import { deriveJobFailureDecision } from "../../src/engine/runtime/job-failure-policy";
 
 test("job failure policy: retryable failure receipts keep queue retries enabled", () => {
   // Mirrors the observed run_mmwngtcm_rphm failure payload shape.

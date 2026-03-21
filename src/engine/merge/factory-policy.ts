@@ -1,5 +1,5 @@
-import { compareScoreVectors } from "./policy.js";
-import { merge, type MergePolicy } from "../../sdk/merge.js";
+import { compareScoreVectors } from "./policy";
+import { merge, type MergePolicy } from "../../sdk/merge";
 import {
   buildFactoryProjection,
   factoryReadyTasks,
@@ -9,7 +9,7 @@ import {
   type FactoryState,
   type FactoryTaskRecord,
   type FactoryWorkerType,
-} from "../../modules/factory.js";
+} from "../../modules/factory";
 
 export type FactoryActionType =
   | "dispatch_child"

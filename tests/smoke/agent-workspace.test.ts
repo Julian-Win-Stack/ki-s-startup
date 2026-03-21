@@ -5,13 +5,13 @@ import path from "node:path";
 
 import { zodTextFormat } from "openai/helpers/zod";
 
-import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl.ts";
-import type { DelegationTools } from "../../src/adapters/delegation.ts";
-import type { MemoryTools } from "../../src/adapters/memory-tools.ts";
-import { runAgent, type AgentRunInput } from "../../src/agents/agent.ts";
-import { createRuntime } from "@receipt/core/runtime.js";
-import type { AgentCmd, AgentEvent, AgentState } from "../../src/modules/agent.ts";
-import { decide as decideAgent, reduce as reduceAgent, initial as initialAgent } from "../../src/modules/agent.ts";
+import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl";
+import type { DelegationTools } from "../../src/adapters/delegation";
+import type { MemoryTools } from "../../src/adapters/memory-tools";
+import { runAgent, type AgentRunInput } from "../../src/agents/agent";
+import { createRuntime } from "@receipt/core/runtime";
+import type { AgentCmd, AgentEvent, AgentState } from "../../src/modules/agent";
+import { decide as decideAgent, reduce as reduceAgent, initial as initialAgent } from "../../src/modules/agent";
 
 const mkTmp = async (label: string): Promise<string> =>
   fs.mkdtemp(path.join(os.tmpdir(), `${label}-`));
