@@ -85,21 +85,6 @@
       shouldStickToBottom = true;
     };
 
-    document.addEventListener("click", function (event) {
-      var target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      var chip = target.closest("[data-prompt-fill]");
-      if (!(chip instanceof HTMLElement)) return;
-      var prompt = chip.getAttribute("data-prompt-fill");
-      var input = chatInput();
-      if (!input || !prompt) return;
-      input.value = prompt;
-      autoResizeInput();
-      input.focus();
-      input.selectionStart = input.value.length;
-      input.selectionEnd = input.value.length;
-    });
-
     var input = chatInput();
     if (input) {
       input.addEventListener("input", autoResizeInput, { passive: true });
