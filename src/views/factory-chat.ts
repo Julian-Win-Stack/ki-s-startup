@@ -166,8 +166,7 @@ const renderShellStatusPills = (model: FactoryChatShellModel): string => {
   return pills.join("");
 };
 
-const composerChipClass = "inline-flex items-center rounded-full border border-border bg-secondary px-3 py-1.5 text-xs font-medium text-card-foreground transition hover:bg-accent";
-const composerTextareaClass = "min-h-[56px] w-full resize-none rounded-xl border border-border bg-muted px-3 py-2.5 text-sm leading-6 text-foreground outline-none transition placeholder:text-muted-foreground focus:border-primary/30 focus:bg-muted";
+const composerTextareaClass = "min-h-[76px] w-full flex-[1_1_0%] resize-none rounded-xl border border-border bg-muted px-4 py-3 text-sm leading-6 text-foreground outline-none transition placeholder:text-muted-foreground focus:border-primary/30 focus:bg-muted focus-visible:ring-2 focus-visible:ring-ring/40";
 
 const composerJobId = (model: FactoryChatShellModel): string | undefined => {
   if (model.jobId) return model.jobId;
@@ -177,26 +176,6 @@ const composerJobId = (model: FactoryChatShellModel): string | undefined => {
   return model.inspector.jobs.find((job) =>
     job.status === "queued" || job.status === "leased" || job.status === "running"
   )?.jobId;
-};
-
-const promptFillChip = (label: string, prompt: string): string =>
-  `<button class="${composerChipClass}" type="button" data-prompt-fill="${esc(prompt)}">${esc(label)}</button>`;
-
-const renderComposerPromptChips = (model: FactoryChatShellModel): string => {
-  const chips = model.objectiveId
-    ? [
-        promptFillChip("Status check", "What should happen next on this thread?"),
-        promptFillChip("Focus plan", "Continue, but focus on the highest-risk open task first."),
-        promptFillChip("React", "/react Continue with the latest context and keep the update concise."),
-        promptFillChip("Steer", "/steer Retarget the current worker to the top priority issue."),
-      ]
-    : [
-        promptFillChip("Start work", "Investigate the current repo state and tell me what should happen next."),
-        promptFillChip("Quick status", "What can you infer about the current Factory state from the UI context?"),
-        promptFillChip("Tracked thread", "/new Create a tracked Factory objective for this request."),
-        promptFillChip("Watch thread", "/watch objective_demo"),
-      ];
-  return chips.join("");
 };
 
 const compactStatusText = (value: string, maxChars = 160): string => {
@@ -592,24 +571,17 @@ export const factoryChatShell = (model: FactoryChatShellModel): string => {
               ${factoryChatIsland(model.chat)}
             </div>
           </section>
-          <section class="shrink-0 border-t border-border bg-background px-3 py-2">
-            <div class="mx-auto w-full max-w-3xl">
+          <section class="shrink-0 border-t border-border bg-background px-2 py-2 sm:px-3">
+            <div class="mx-auto w-full max-w-5xl">
               <form id="factory-composer" action="/factory/compose${shellQuery}" method="post">
                 ${currentJobId ? `<input type="hidden" name="currentJobId" value="${esc(currentJobId)}" />` : ""}
                 <label class="sr-only" for="factory-prompt">Factory prompt</label>
-                <div class="flex items-end gap-2">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-stretch sm:gap-3">
                   <textarea id="factory-prompt" name="prompt" class="${composerTextareaClass}" rows="2" placeholder="${esc(composerPlaceholder)}" autofocus></textarea>
-                  <button id="factory-composer-submit" class="shrink-0 rounded-lg border border-primary/40 bg-primary px-4 py-2.5 text-xs font-semibold text-primary-foreground transition hover:bg-primary/90" type="submit">Send</button>
+                  <button id="factory-composer-submit" class="inline-flex min-h-[76px] w-full shrink-0 items-center justify-center rounded-xl border border-primary/40 bg-primary px-6 py-4 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:border-border disabled:bg-secondary disabled:text-muted-foreground sm:w-[8.5rem]" type="submit">Send</button>
                 </div>
                 <div id="factory-composer-status" class="mt-2 hidden rounded-lg border border-border bg-muted px-3 py-1.5 text-xs leading-5 text-card-foreground" aria-live="polite"></div>
               </form>
-              <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
-                ${renderComposerPromptChips(model)}
-                <details id="factory-command-help" class="inline">
-                  <summary class="cursor-pointer text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground">/ Commands</summary>
-                  <div class="mt-1 text-xs leading-5 text-muted-foreground"><code>/new</code> <code>/react</code> <code>/steer</code> <code>/follow-up</code> <code>/abort-job</code> <code>/promote</code> <code>/cancel</code></div>
-                </details>
-              </div>
             </div>
           </section>
         </div>

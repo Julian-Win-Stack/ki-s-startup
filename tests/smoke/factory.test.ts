@@ -999,6 +999,9 @@ test("factory chat shell: sidebar and inspector avoid agent-refresh churn", () =
   expect(markup).toMatch(/id="factory-inspector"[^>]+sse:factory-refresh throttle:450ms[^"]+sse:job-refresh throttle:450ms/);
   expect(markup).not.toMatch(/id="factory-sidebar"[^>]+sse:agent-refresh/);
   expect(markup).not.toMatch(/id="factory-inspector"[^>]+sse:agent-refresh/);
+  expect(markup).not.toMatch(/data-prompt-fill/);
+  expect(markup).not.toMatch(/\/ Commands/);
+  expect(markup).toMatch(/id="factory-composer-submit"[^>]+min-h-\[76px\]/);
 });
 
 test("factory chat items: structured supervisor snapshots render as live child state instead of raw JSON", () => {
