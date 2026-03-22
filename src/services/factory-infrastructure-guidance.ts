@@ -56,6 +56,7 @@ export const renderInfrastructureTaskExecutionGuidance = (input: {
     `For infrastructure CLI investigations, prefer a deterministic shell script over ad hoc one-off commands.`,
     `Write the script under .receipt/factory/ when practical, make it emit machine-readable output, and fail fast on CLI, auth, or network errors.`,
     `Run the script from the worktree before interpreting the result, and base the report on the script output rather than memory or speculation.`,
+    `After reading AGENTS.md, the task packet, the memory context/objective summaries, and the mounted AWS skill, stop bootstrap and immediately write and run the script. Do not keep exploring unrelated repo files for a simple AWS inventory task.`,
     `Record the script path and invocation in report.scriptsRun so the operator can rerun the exact evidence path.`,
     ...(provider === "aws"
       ? [

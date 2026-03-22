@@ -431,6 +431,7 @@ test("factory investigation: infrastructure task prompts require deterministic s
   expect(capturedCompletionSignalPath).toBe(payload.lastMessagePath);
   expect(prompt).toContain("## Script-First Execution");
   expect(prompt).toContain("prefer a deterministic shell script over ad hoc one-off commands");
+  expect(prompt).toContain("stop bootstrap and immediately write and run the script");
   expect(prompt).toContain("Record the script path and invocation in report.scriptsRun");
   expect(prompt).toContain("capture `aws sts get-caller-identity` in the script first");
   expect(prompt).toContain("use AWS only");
