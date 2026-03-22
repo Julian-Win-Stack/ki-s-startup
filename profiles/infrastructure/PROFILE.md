@@ -66,6 +66,7 @@ Operate like the infrastructure lead for this repo: keep the user in a conversat
 - For now, treat ambiguous cloud questions as AWS-first. If the prompt says `buckets`, interpret that as S3 unless it explicitly says another provider.
 - Prefer `factory.dispatch` into investigation objectives over direct `codex.run` whenever the work needs repeated commands, helper scripts, multi-service correlation, or durable evidence.
 - Treat the parent chat as the supervising CLI-native control plane: dispatch, inspect, watch, reconcile, and summarize.
+- For CLI-native infra work, prefer one Codex worker that writes a deterministic script, runs it, and interprets the output before expanding into a larger task graph.
 - Let Codex workers write small scripts or helpers when that makes the investigation more reproducible or less lossy.
 - Expect objective work to preserve evidence in the worktree when needed, but never imply those artifacts will be promoted automatically.
 - Keep the user-facing answer conversational and concise while still exposing the important evidence.

@@ -45,6 +45,7 @@ import type {
   FactoryChatIslandModel,
   FactoryChatShellModel,
   FactoryNavModel,
+  FactoryLiveCodexCard,
 } from "./factory-models";
 
 type FactoryChatRouteContext = {
@@ -283,19 +284,61 @@ const renderWorkGroup = (
   </div>`;
 };
 
+const renderLiveExecutionCard = (
+  title: string,
+  card: Pick<FactoryLiveCodexCard, "jobId" | "status" | "summary" | "latestNote" | "stderrTail" | "stdoutTail" | "task" | "updatedAt" | "rawLink">,
+): string => {
+  const note = compactStatusText(card.latestNote ?? card.summary, 220) || card.summary;
+  return `<section class="${softPanelClass} px-4 py-3">
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2">
+          <div class="${sectionLabelClass}">${esc(title)}</div>
+          ${badge(displayLabel(card.status), toneForValue(card.status))}
+        </div>
+        ${card.task ? `<div class="mt-1 text-sm font-semibold text-foreground">${esc(card.task)}</div>` : ""}
+        <div class="mt-1 text-xs leading-5 text-muted-foreground">${esc(note)}</div>
+      </div>
+      <a class="shrink-0 text-[11px] font-medium text-primary transition hover:text-primary/80" href="${esc(card.rawLink)}">Logs</a>
+    </div>
+    <div class="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+      <span>Job ${esc(card.jobId)}</span>
+      ${card.updatedAt ? `<span>${esc(formatTs(card.updatedAt))}</span>` : ""}
+    </div>
+    ${card.stdoutTail ? `<div class="mt-3">
+      <div class="${sectionLabelClass}">Stdout</div>
+      <pre class="mt-1 max-h-40 overflow-auto rounded-lg border border-border bg-muted px-2.5 py-2 text-[11px] leading-5 text-card-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">${esc(card.stdoutTail)}</pre>
+    </div>` : ""}
+    ${card.stderrTail ? `<div class="mt-3">
+      <div class="${sectionLabelClass}">Stderr</div>
+      <pre class="mt-1 max-h-40 overflow-auto rounded-lg border border-destructive/20 bg-destructive/5 px-2.5 py-2 text-[11px] leading-5 text-destructive whitespace-pre-wrap [overflow-wrap:anywhere]">${esc(card.stderrTail)}</pre>
+    </div>` : ""}
+  </section>`;
+};
+
+const renderLiveCodexExecution = (model: FactoryChatIslandModel): string => {
+  const codexCards: Array<Pick<FactoryLiveCodexCard, "jobId" | "status" | "summary" | "latestNote" | "stderrTail" | "stdoutTail" | "task" | "updatedAt" | "rawLink">> = [];
+  if (model.activeCodex) codexCards.push(model.activeCodex);
+  const childCodex = (model.liveChildren ?? [])
+    .filter((child) => child.worker === "codex" || child.agentId === "codex")
+    .filter((child) => child.jobId !== model.activeCodex?.jobId);
+  codexCards.push(...childCodex);
+  if (codexCards.length === 0) return "";
+  return `<section class="space-y-2">
+    <div class="flex items-center justify-between gap-2">
+      <div class="${sectionLabelClass}">Live Codex Execution</div>
+      <div class="text-[11px] text-muted-foreground">${esc(`${codexCards.length}`)}</div>
+    </div>
+    ${codexCards.map((card, index) => renderLiveExecutionCard(index === 0 ? "Active Codex" : `Codex Worker ${index + 1}`, card)).join("")}
+  </section>`;
+};
+
 const renderCenterWorkbench = (model: FactoryChatIslandModel): string => {
   const thread = model.selectedThread;
   const jobs = model.jobs ?? [];
   const hasLiveWork = Boolean(model.activeRun || model.activeCodex || (model.liveChildren?.length ?? 0) > 0);
-  const logSource = model.activeCodex ?? model.liveChildren?.find((child) => child.running) ?? model.liveChildren?.[0];
-  const logText = logSource
-    ? [
-        "latestNote" in logSource ? logSource.latestNote : undefined,
-        "stderrTail" in logSource ? logSource.stderrTail : undefined,
-        "stdoutTail" in logSource && logSource.stdoutTail !== logSource.stderrTail ? logSource.stdoutTail : undefined,
-      ].filter(Boolean).join("\n\n")
-    : "";
-  if (!thread && !hasLiveWork && jobs.length === 0 && !logText) return "";
+  const liveCodexSection = renderLiveCodexExecution(model);
+  if (!thread && !hasLiveWork && jobs.length === 0 && !liveCodexSection) return "";
   return `<section class="space-y-2">
     <section class="${softPanelClass} px-4 py-2.5">
       <div class="flex flex-wrap items-center justify-between gap-2">
@@ -308,13 +351,7 @@ const renderCenterWorkbench = (model: FactoryChatIslandModel): string => {
         </div>
       </div>
     </section>
-    ${logText ? `<section class="${softPanelClass} px-4 py-2.5">
-      <div class="flex items-center justify-between gap-2">
-        <div class="${sectionLabelClass} truncate">${esc(logSource?.task ?? logSource?.summary ?? "Live log")}</div>
-        ${logSource?.status ? badge(displayLabel(logSource.status), toneForValue(logSource.status)) : ""}
-      </div>
-      <pre class="mt-2 max-h-40 overflow-auto rounded-lg border border-border bg-muted px-2.5 py-2 text-[11px] leading-5 text-card-foreground whitespace-pre-wrap [overflow-wrap:anywhere]">${esc(logText)}</pre>
-    </section>` : ""}
+    ${liveCodexSection}
   </section>`;
 };
 

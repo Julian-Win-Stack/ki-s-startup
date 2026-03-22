@@ -367,3 +367,59 @@ test("factory cloud context: infrastructure packets mount AWS-first context and 
   expect(packet.renderedPrompt).toContain("AWS CLI is available via profile default");
   expect(packet.renderedPrompt).toContain("Infrastructure profile currently defaults to AWS");
 }, 120_000);
+
+test("factory investigation: infrastructure task prompts require deterministic scripts for AWS CLI work", async () => {
+  const mixedContext: FactoryCloudExecutionContext = {
+    summary: "AWS CLI is available via profile default; active identity arn:aws:iam::445567089271:user/csagent-api-service in account 445567089271 with region us-west-2.",
+    availableProviders: ["aws"],
+    activeProviders: ["aws"],
+    guidance: ["One provider is clearly usable from the local CLI context (aws). Use it by default instead of asking the user to restate provider or scope."],
+    aws: {
+      cliPath: "/opt/homebrew/bin/aws",
+      version: "aws-cli/2.34.14",
+      profiles: ["default"],
+      selectedProfile: "default",
+      defaultRegion: "us-west-2",
+      callerIdentity: {
+        accountId: "445567089271",
+        arn: "arn:aws:iam::445567089271:user/csagent-api-service",
+        userId: "AIDATEST",
+      },
+    },
+  };
+  const { service, queue } = await createFactoryService({
+    llmStructured: async <Schema extends ZodTypeAny>(input: { readonly schema: Schema }) => ({
+      parsed: input.schema.parse({
+        tasks: [
+          { title: "List buckets", prompt: "Use AWS CLI to list S3 buckets.", workerType: "codex", dependsOn: [] },
+        ],
+      }),
+      raw: "",
+    }),
+    codexRun: async () => {
+      const raw = JSON.stringify({ outcome: "approved", summary: "noop", handoff: "noop", report: { conclusion: "noop", evidence: [], scriptsRun: [], disagreements: [], nextSteps: [] } });
+      return { stdout: raw, stderr: "", lastMessage: raw };
+    },
+    cloudExecutionContextProvider: async () => mixedContext,
+  });
+
+  const created = await service.createObjective({
+    title: "Count buckets",
+    prompt: "how many buckets do i have",
+    objectiveMode: "investigation",
+    severity: 2,
+    checks: ["true"],
+    profileId: "infrastructure",
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const [taskJob] = await objectiveTaskJobs(queue, created.objectiveId);
+  expect(taskJob).toBeTruthy();
+  const payload = taskJob!.payload as FactoryTaskJobPayload;
+  await service.runTask(payload);
+  const prompt = await fs.readFile(payload.promptPath, "utf-8");
+  expect(prompt).toContain("## Script-First Execution");
+  expect(prompt).toContain("prefer a deterministic script over ad hoc one-off commands");
+  expect(prompt).toContain("Record the script path and invocation in report.scriptsRun");
+  expect(prompt).toContain("capture `aws sts get-caller-identity` in the script first");
+}, 120_000);

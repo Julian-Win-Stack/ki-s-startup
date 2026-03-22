@@ -57,6 +57,11 @@ import {
 } from "./factory-cloud-context";
 import { resolveFactoryCloudExecutionContext } from "./factory-cloud-targeting";
 import {
+  buildInfrastructureDecompositionGuidance,
+  normalizeInfrastructureInvestigationTasks,
+  renderInfrastructureTaskExecutionGuidance,
+} from "./factory-infrastructure-guidance";
+import {
   renderFactoryRepoExecutionLandscapeSkill,
   scanFactoryRepoExecutionLandscape,
   type FactoryRepoExecutionLandscape,
@@ -3722,6 +3727,12 @@ export class FactoryService {
             investigationMode
               ? "Prefer parallel evidence-gathering tasks only when they answer distinct subquestions."
               : "Fold discovery work into the implementation task prompt unless the objective is explicitly investigation-only.",
+            ...buildInfrastructureDecompositionGuidance({
+              profileId: profile.rootProfileId,
+              objectiveMode: state.objectiveMode,
+              objectivePrompt: prompt,
+              preferredProvider: cloudExecutionContext.preferredProvider,
+            }),
             investigationMode
               ? "At least one task should synthesize or reconcile sibling findings when the investigation spans multiple services or signals."
               : "Each non-validation task should be expected to produce a tracked repository diff.",
@@ -3740,6 +3751,7 @@ export class FactoryService {
           profile,
           state.objectiveMode,
           cloudExecutionContext.preferredProvider,
+          state.prompt,
         );
         if (normalized.length > 0) {
           return {
@@ -3773,6 +3785,7 @@ export class FactoryService {
     profile: FactoryObjectiveProfileSnapshot,
     objectiveMode: FactoryObjectiveMode,
     preferredProvider?: FactoryCloudProvider,
+    objectivePrompt = "",
   ): ReadonlyArray<DecomposedTaskSpec> {
     const normalized: DecomposedTaskSpec[] = [];
     for (const [index, task] of tasks.entries()) {
@@ -3789,9 +3802,14 @@ export class FactoryService {
         dependsOn,
       });
     }
-    return objectiveMode === "investigation"
-      ? this.normalizeInvestigationDecomposition(normalized, preferredProvider)
-      : this.collapseDiscoveryOnlyTasks(normalized);
+    if (objectiveMode !== "investigation") return this.collapseDiscoveryOnlyTasks(normalized);
+    return normalizeInfrastructureInvestigationTasks({
+      profileId: profile.rootProfileId,
+      objectiveMode,
+      objectivePrompt,
+      preferredProvider,
+      tasks: this.normalizeInvestigationDecomposition(normalized, preferredProvider),
+    });
   }
 
   private normalizeInvestigationDecomposition(
@@ -5268,6 +5286,11 @@ export class FactoryService {
     payload: FactoryTaskJobPayload,
   ): Promise<string> {
     const cloudExecutionContext = await this.loadObjectiveCloudExecutionContext(payload.profile.rootProfileId);
+    const infrastructureTaskGuidance = renderInfrastructureTaskExecutionGuidance({
+      profileId: payload.profile.rootProfileId,
+      objectiveMode: state.objectiveMode,
+      cloudExecutionContext,
+    });
     const dependencySummaries = task.dependsOn
       .map((depId) => state.graph.nodes[depId])
       .filter((dep): dep is FactoryTaskRecord => Boolean(dep))
@@ -5322,6 +5345,7 @@ export class FactoryService {
         ? `Local execution context already indicates ${cloudExecutionContext.preferredProvider}. Use that provider and its mounted scope by default unless the objective explicitly contradicts it.`
         : `If the local execution context clearly indicates one provider/profile/account, use it instead of asking the user to restate it.`,
       ``,
+      ...(infrastructureTaskGuidance.length > 0 ? [...infrastructureTaskGuidance, ``] : []),
       `## Live Cloud Context`,
       cloudExecutionContext.summary,
       ...cloudExecutionContext.guidance.map((item) => `- ${item}`),

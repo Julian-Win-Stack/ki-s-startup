@@ -16,7 +16,8 @@ Keep infrastructure investigations AWS-first. If the prompt is ambiguous and AWS
 1. Read the task packet and the mounted live cloud context.
 2. Treat the mounted AWS account/profile as the default execution target.
 3. Read the checked-in worker context skill before using receipt or memory commands.
-4. Run AWS CLI commands from the current worktree and summarize what they mean.
+4. For CLI investigations, write a small deterministic script in the current worktree before you start chaining one-off AWS commands.
+5. Run the script from the current worktree and summarize what its output means.
 
 ## AWS Defaults
 
@@ -29,6 +30,8 @@ Keep infrastructure investigations AWS-first. If the prompt is ambiguous and AWS
 ## Investigation Rules
 
 - Prefer AWS CLI evidence over speculation.
-- It is fine to write a small helper script when repeated CLI parsing would be lossy or error-prone.
+- Default to a small deterministic script for provider-sensitive or repeated AWS CLI work. The script should fail fast, emit machine-readable output when practical, and make the exact evidence path reproducible.
+- Capture `aws sts get-caller-identity` in the script before resource queries so the account scope is explicit in the evidence.
+- Record the script path and invocation in `report.scriptsRun`, then explain the output in plain language.
 - Summarize findings in plain language. Do not return raw command output without interpretation.
 - Do not run the broad repo validation suite for a no-code AWS investigation unless the task explicitly owns validation or you changed repo files.

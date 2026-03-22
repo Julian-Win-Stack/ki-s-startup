@@ -817,11 +817,7 @@ test("factory investigation decomposition: provider-gated tasks depend on contex
   const planned = await service.getObjective(created.objectiveId);
   const tasks = planned.tasks.map((task) => ({ title: task.title, dependsOn: task.dependsOn }));
   expect(tasks).toEqual([
-    { title: "Identify which cloud/storage system and credentials context applies", dependsOn: [] },
-    { title: "Gather bucket list via provider CLI/API (AWS S3)", dependsOn: ["task_01"] },
-    { title: "Gather bucket list via provider CLI/API (GCP GCS)", dependsOn: ["task_01"] },
-    { title: "Gather bucket list via provider CLI/API (Azure)", dependsOn: ["task_01"] },
-    { title: "Synthesize results and produce final bucket count report", dependsOn: ["task_01", "task_02", "task_03", "task_04"] },
+    { title: "Inventory S3 buckets and report the authoritative bucket count", dependsOn: [] },
   ]);
 });
 
@@ -914,9 +910,7 @@ test("factory investigation decomposition: infrastructure defaults to AWS even w
   const planned = await service.getObjective(created.objectiveId);
   const tasks = planned.tasks.map((task) => ({ title: task.title, dependsOn: task.dependsOn }));
   expect(tasks).toEqual([
-    { title: "Identify which cloud/storage system and credentials context applies", dependsOn: [] },
-    { title: "Gather bucket list via provider CLI/API (AWS S3)", dependsOn: ["task_01"] },
-    { title: "Synthesize results and produce final bucket count report", dependsOn: ["task_01", "task_02"] },
+    { title: "Inventory S3 buckets and report the authoritative bucket count", dependsOn: [] },
   ]);
 });
 
@@ -967,6 +961,44 @@ test("factory chat island: renders chat rows and work cards", () => {
   expect(markup).toMatch(/Generalist/);
   expect(markup).not.toMatch(/Selected profile/);
   expect(markup).toMatch(/replaced the old <code>\/factory<\/code> dashboard/);
+});
+
+test("factory chat island: renders a dedicated live codex execution section", () => {
+  const markup = factoryChatIsland({
+    activeProfileId: "infrastructure",
+    activeProfileLabel: "Infrastructure",
+    selectedThread: {
+      objectiveId: "objective_live",
+      title: "Count buckets",
+      status: "executing",
+      phase: "executing",
+      summary: "Running AWS inventory.",
+      debugLink: "/debug",
+      receiptsLink: "/receipts",
+    },
+    activeCodex: {
+      jobId: "job_codex_live",
+      status: "running",
+      summary: "Listing S3 buckets from the mounted AWS account.",
+      latestNote: "Running the deterministic bucket inventory script.",
+      stdoutTail: "{\"count\":5}",
+      stderrTail: "",
+      task: "Inventory S3 buckets and report the authoritative bucket count",
+      updatedAt: 1_710_000_000_000,
+      rawLink: "/jobs/job_codex_live",
+      running: true,
+    },
+    items: [],
+  });
+
+  expect(markup).toContain("Live Codex Execution");
+  expect(markup).toContain("Active Codex");
+  expect(markup).toContain("job_codex_live");
+  expect(markup).toContain("Running the deterministic bucket inventory script.");
+  expect(markup).toContain("Inventory S3 buckets and report the authoritative bucket count");
+  expect(markup).toContain("Stdout");
+  expect(markup).toContain("{&quot;count&quot;:5}");
+  expect(markup).toContain("/jobs/job_codex_live");
 });
 
 test("factory chat items: budget stops show the codex child state instead of a stale generic stop message", () => {
