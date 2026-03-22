@@ -5373,6 +5373,7 @@ export class FactoryService {
         : cloudExecutionContext.preferredProvider
           ? `Local execution context already indicates ${cloudExecutionContext.preferredProvider}. Use that provider and its mounted scope by default unless the objective explicitly contradicts it.`
           : `If the local execution context clearly indicates one provider/profile/account, use it instead of asking the user to restate it.`,
+      `Do not emit commentary-style progress updates in this child session. Use shell commands only for real commands, and keep all explanation for the final JSON response.`,
       ``,
       ...(infrastructureTaskGuidance.length > 0 ? [...infrastructureTaskGuidance, ``] : []),
       `## Live Cloud Context`,
