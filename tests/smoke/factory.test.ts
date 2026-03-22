@@ -29,12 +29,7 @@ import createFactoryRoute, { buildActiveCodexCard, buildChatItemsForRun } from "
 import { agentRunStream } from "../../src/agents/agent.streams";
 import { FactoryService } from "../../src/services/factory-service";
 import { factoryChatSessionStream, factoryChatStream } from "../../src/services/factory-chat-profiles";
-import { factoryChatIsland, factoryChatShell, factoryInspectorIsland, factorySidebarIsland } from "../../src/views/factory-chat";
-import {
-  factoryMissionControlShell,
-  factoryMissionMainIsland,
-  type FactoryMissionShellModel,
-} from "../../src/views/factory-mission-control";
+import { factoryChatIsland, factoryChatShell, factorySidebarIsland } from "../../src/views/factory-chat";
 import type { BranchStore, Receipt, Store } from "@receipt/core/types";
 
 const stream = "factory/objectives/demo";
@@ -800,6 +795,12 @@ test("factory investigation decomposition: provider-gated tasks depend on contex
     llmStructured,
     repoRoot,
     profileRoot: process.cwd(),
+    cloudExecutionContextProvider: async () => ({
+      summary: "No live cloud execution context could be detected from this machine.",
+      availableProviders: [],
+      activeProviders: [],
+      guidance: ["If provider context is unclear, probe the local CLI before asking the user to restate it."],
+    }),
   });
 
   const created = await service.createObjective({
@@ -824,7 +825,7 @@ test("factory investigation decomposition: provider-gated tasks depend on contex
   ]);
 });
 
-test("factory investigation decomposition: active AWS context filters speculative cross-cloud tasks", async () => {
+test("factory investigation decomposition: infrastructure defaults to AWS even when other cloud CLIs are active locally", async () => {
   const dataDir = await createTempDir("receipt-factory-investigation-provider-filter");
   const repoRoot = await createSourceRepo();
   const queue = jsonlQueue({ runtime: createJobRuntime(dataDir), stream: "jobs" });
@@ -881,11 +882,10 @@ test("factory investigation decomposition: active AWS context filters speculativ
     repoRoot,
     profileRoot: process.cwd(),
     cloudExecutionContextProvider: async () => ({
-      summary: "AWS CLI is available and active for account 445567089271.",
-      availableProviders: ["aws"],
-      activeProviders: ["aws"],
-      preferredProvider: "aws",
-      guidance: ["One provider is clearly usable from the local CLI context (aws). Use it by default instead of asking the user to restate provider or scope."],
+      summary: "AWS CLI is available and active for account 445567089271. gcloud is available with account kishore@comfy.org and project comfy-cloud-dev. Multiple cloud providers are active locally. Confirm the intended provider before using high-confidence counts.",
+      availableProviders: ["aws", "gcp"],
+      activeProviders: ["aws", "gcp"],
+      guidance: ["Multiple cloud providers are active locally. Confirm the intended provider before using high-confidence counts."],
       aws: {
         profiles: ["default"],
         selectedProfile: "default",
@@ -893,6 +893,10 @@ test("factory investigation decomposition: active AWS context filters speculativ
           accountId: "445567089271",
           arn: "arn:aws:iam::445567089271:user/csagent-api-service",
         },
+      },
+      gcp: {
+        activeAccount: "kishore@comfy.org",
+        activeProject: "comfy-cloud-dev",
       },
     }),
   });

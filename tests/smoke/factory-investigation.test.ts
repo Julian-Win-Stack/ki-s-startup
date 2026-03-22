@@ -306,13 +306,12 @@ test("factory repo profile: init emits an execution landscape skill and mounts i
   expect(packet.renderedPrompt).toContain("execution landscape, permissions, or infrastructure guardrails");
 }, 120_000);
 
-test("factory cloud context: mounted AWS identity is surfaced to packets and prompts", async () => {
-  const awsContext: FactoryCloudExecutionContext = {
-    summary: "AWS CLI is available via profile default; active identity arn:aws:iam::445567089271:user/csagent-api-service in account 445567089271 with region us-west-2.",
-    availableProviders: ["aws"],
-    activeProviders: ["aws"],
-    preferredProvider: "aws",
-    guidance: ["One provider is clearly usable from the local CLI context (aws). Use it by default instead of asking the user to restate provider or scope."],
+test("factory cloud context: infrastructure packets mount AWS-first context and skills even when multiple providers are active locally", async () => {
+  const mixedContext: FactoryCloudExecutionContext = {
+    summary: "AWS CLI is available via profile default; active identity arn:aws:iam::445567089271:user/csagent-api-service in account 445567089271 with region us-west-2. gcloud is available with account kishore@comfy.org and project comfy-cloud-dev. Multiple cloud providers are active locally. Confirm the intended provider before using high-confidence counts.",
+    availableProviders: ["aws", "gcp"],
+    activeProviders: ["aws", "gcp"],
+    guidance: ["Multiple cloud providers are active locally. Confirm the intended provider before using high-confidence counts."],
     aws: {
       cliPath: "/opt/homebrew/bin/aws",
       version: "aws-cli/2.34.14",
@@ -324,6 +323,12 @@ test("factory cloud context: mounted AWS identity is surfaced to packets and pro
         arn: "arn:aws:iam::445567089271:user/csagent-api-service",
         userId: "AIDATEST",
       },
+    },
+    gcp: {
+      cliPath: "/opt/homebrew/bin/gcloud",
+      version: "Google Cloud SDK 559.0.0",
+      activeAccount: "kishore@comfy.org",
+      activeProject: "comfy-cloud-dev",
     },
   };
   const { service } = await createFactoryService({
@@ -339,7 +344,7 @@ test("factory cloud context: mounted AWS identity is surfaced to packets and pro
       const raw = JSON.stringify({ outcome: "approved", summary: "noop", handoff: "noop", report: { conclusion: "noop", evidence: [], scriptsRun: [], disagreements: [], nextSteps: [] } });
       return { stdout: raw, stderr: "", lastMessage: raw };
     },
-    cloudExecutionContextProvider: async () => awsContext,
+    cloudExecutionContextProvider: async () => mixedContext,
   });
 
   const packet = await service.prepareDirectCodexProbePacket({
@@ -352,10 +357,13 @@ test("factory cloud context: mounted AWS identity is surfaced to packets and pro
     stream: "agents/factory/infrastructure",
     supervisorSessionId: "session_cloud_context_probe",
   });
+  const manifest = await fs.readFile(packet.artifactPaths.manifestPath, "utf-8");
   const contextPack = await fs.readFile(packet.artifactPaths.contextPackPath, "utf-8");
   expect(contextPack).toContain("\"cloudExecutionContext\"");
   expect(contextPack).toContain("\"preferredProvider\": \"aws\"");
   expect(contextPack).toContain("\"accountId\": \"445567089271\"");
+  expect(contextPack).toContain("Infrastructure profile currently defaults to AWS");
+  expect(manifest).toContain("skills/factory-infrastructure-aws/SKILL.md");
   expect(packet.renderedPrompt).toContain("AWS CLI is available via profile default");
-  expect(packet.renderedPrompt).toContain("Use it by default instead of asking the user to restate provider or scope");
+  expect(packet.renderedPrompt).toContain("Infrastructure profile currently defaults to AWS");
 }, 120_000);

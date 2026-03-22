@@ -55,6 +55,7 @@ import {
   type FactoryCloudExecutionContext,
   type FactoryCloudProvider,
 } from "./factory-cloud-context";
+import { resolveFactoryCloudExecutionContext } from "./factory-cloud-targeting";
 import {
   renderFactoryRepoExecutionLandscapeSkill,
   scanFactoryRepoExecutionLandscape,
@@ -697,6 +698,10 @@ export class FactoryService {
       }));
     }
     return this.cloudExecutionContextPromise;
+  }
+
+  private async loadObjectiveCloudExecutionContext(profileId: string | undefined): Promise<FactoryCloudExecutionContext> {
+    return resolveFactoryCloudExecutionContext(profileId, await this.loadCloudExecutionContext());
   }
 
   projectionVersion(): number {
@@ -3697,7 +3702,7 @@ export class FactoryService {
     const prompt = state.prompt;
     const profile = this.objectiveProfileForState(state);
     const investigationMode = state.objectiveMode === "investigation";
-    const cloudExecutionContext = await this.loadCloudExecutionContext();
+    const cloudExecutionContext = await this.loadObjectiveCloudExecutionContext(profile.rootProfileId);
     if (this.llmStructured) {
       try {
         const { parsed } = await this.llmStructured({
@@ -4446,12 +4451,13 @@ export class FactoryService {
       .filter((receipt) => !focusedReceiptKeys.has(`${receipt.type}:${receipt.at}:${receipt.summary}`))
       .slice(0, 20)
       .reverse();
+    const profile = this.objectiveProfileForState(state);
     const [overview, objectiveMemory, integrationMemory, sharedProfile, cloudExecutionContext] = await Promise.all([
       this.summarizeScope(`factory/objectives/${state.objectiveId}`, `${state.title}\n${task.title}`, 520),
       this.summarizeScope(`factory/objectives/${state.objectiveId}`, state.title, 360),
       this.summarizeScope(`factory/objectives/${state.objectiveId}/integration`, `${state.title}\nintegration`, 360),
       this.loadSharedRepoProfileArtifact(),
-      this.loadCloudExecutionContext(),
+      this.loadObjectiveCloudExecutionContext(profile.rootProfileId),
     ]);
     const repoSkillPaths = await this.collectRepoSkillPaths();
     const sharedArtifactRefs = [
@@ -4472,7 +4478,7 @@ export class FactoryService {
       severity: state.severity,
       repoExecutionLandscape: sharedProfile?.permissionsLandscape,
       cloudExecutionContext,
-      profile: this.objectiveProfileForState(state),
+      profile,
       task: {
         taskId: task.taskId,
         title: task.title,
@@ -4964,7 +4970,7 @@ export class FactoryService {
     const includeFactoryObjectiveSkills = Boolean(input.objectiveId);
     const [sharedProfile, cloudExecutionContext, allRepoSkillPaths] = await Promise.all([
       this.loadSharedRepoProfileArtifact(),
-      this.loadCloudExecutionContext(),
+      this.loadObjectiveCloudExecutionContext(profile.rootProfileId),
       this.collectRepoSkillPaths(),
     ]);
     const repoSkillPaths = allRepoSkillPaths.filter((skillPath) =>
@@ -5261,7 +5267,7 @@ export class FactoryService {
     task: FactoryTaskRecord,
     payload: FactoryTaskJobPayload,
   ): Promise<string> {
-    const cloudExecutionContext = await this.loadCloudExecutionContext();
+    const cloudExecutionContext = await this.loadObjectiveCloudExecutionContext(payload.profile.rootProfileId);
     const dependencySummaries = task.dependsOn
       .map((depId) => state.graph.nodes[depId])
       .filter((dep): dep is FactoryTaskRecord => Boolean(dep))
@@ -5330,6 +5336,9 @@ export class FactoryService {
       `3. Context Pack: ${payload.contextPackPath}`,
       `4. Memory Script: ${payload.memoryScriptPath}`,
       `5. Repo skills from the manifest, especially any execution or permissions landscape notes`,
+      `Mounted profile skills for this task:`,
+      payload.profile.selectedSkills.map((skillPath) => `- ${skillPath}`).join("\n") || "- none",
+      `Read any mounted infrastructure or cloud profile skill before provider-sensitive commands.`,
       `Use current-objective inspection only if the packet or memory script is insufficient, and run these sequentially, not in parallel:`,
       `- ${FACTORY_CLI_PREFIX} factory inspect ${shellQuote(state.objectiveId)} --json --panel receipts`,
       `- ${FACTORY_CLI_PREFIX} factory inspect ${shellQuote(state.objectiveId)} --json --panel debug`,
@@ -5360,6 +5369,18 @@ export class FactoryService {
   }
 
   private renderTaskValidationSection(state: FactoryState, task: FactoryTaskRecord): string[] {
+    if (state.objectiveMode === "investigation" && !this.taskOwnsBroadValidation(task)) {
+      return [
+        `## Validation Guidance`,
+        `This is a CLI investigation task. Do not run the broad repo validation suite unless you changed repo files or this task explicitly owns validation.`,
+        ...(state.checks.length > 0
+          ? [
+              `Reserved full-suite commands if later evidence requires them:`,
+              state.checks.map((check) => `- ${check}`).join("\n"),
+            ]
+          : []),
+      ];
+    }
     if (!this.shouldDeferBroadValidation(state, task)) {
       return [
         `## Checks`,
@@ -5416,6 +5437,9 @@ export class FactoryService {
     readonly recentReceipts: ReadonlyArray<FactoryObjectiveReceiptSummary>;
   }): string {
     const objectiveStreamRef = input.objective ? objectiveStream(input.objective.objectiveId) : undefined;
+    const profileSkills = isRecord(input.manifest.profile) && Array.isArray(input.manifest.profile.selectedSkills)
+      ? input.manifest.profile.selectedSkills.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : [];
     return [
       `# Factory Direct Codex Probe`,
       ``,
@@ -5484,6 +5508,9 @@ export class FactoryService {
       ...(input.readOnly ? [] : [`- bun ${input.artifactPaths.memoryScriptPath} commit worker "short durable note"`]),
       ``,
       `## Repo Skills`,
+      `Profile-selected skills:`,
+      profileSkills.map((skill) => `- ${skill}`).join("\n") || "- none",
+      `Repo skill artifacts:`,
       input.repoSkillPaths.map((skill) => `- ${skill}`).join("\n") || "- none",
       `If a repo skill covers execution landscape, permissions, or infrastructure guardrails, read it before issuing AWS, IaC, or fleet-wide commands.`,
       ``,

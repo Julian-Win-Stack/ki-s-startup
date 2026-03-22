@@ -167,7 +167,7 @@ test("factory policy: direct codex probes without an objective stay repo-scoped 
   expect(parsedManifest.repoSkillPaths ?? []).not.toContain("skills/factory-run-orchestrator/SKILL.md");
   expect(parsedManifest.profile?.selectedSkills ?? []).toContain("skills/factory-run-orchestrator/SKILL.md");
   expect(packet.renderedPrompt).toContain("This direct probe is not a Factory task worktree");
-  expect(packet.renderedPrompt).toContain("should not call receipt factory inspect");
+  expect(packet.renderedPrompt).toContain("should not call the objective inspect commands");
   expect(packet.renderedPrompt).toContain("Do not assume skills/factory-receipt-worker/SKILL.md applies unless a real objectiveId is present.");
 });
 
@@ -198,8 +198,8 @@ test("factory policy: task packets tell workers to inspect objective receipts se
   const prompt = await fs.readFile(promptPath, "utf-8");
 
   expect(prompt).toContain("run these sequentially, not in parallel");
-  expect(prompt).toContain(`receipt factory inspect ${created.objectiveId} --json --panel receipts`);
-  expect(prompt).toContain(`receipt factory inspect ${created.objectiveId} --json --panel debug`);
+  expect(prompt).toContain(`factory inspect '${created.objectiveId}' --json --panel receipts`);
+  expect(prompt).toContain(`factory inspect '${created.objectiveId}' --json --panel debug`);
   expect(prompt).toContain("Do not absorb downstream work");
   expect(prompt).toContain("Do not write this file yourself.");
   expect(prompt).toContain("A later task in this objective owns the broad repo validation suite.");

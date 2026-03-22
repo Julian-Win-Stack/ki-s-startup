@@ -38,7 +38,8 @@
     "policy"
   ],
   "skills": [
-    "skills/factory-run-orchestrator/SKILL.md"
+    "skills/factory-run-orchestrator/SKILL.md",
+    "skills/factory-infrastructure-aws/SKILL.md"
   ],
   "mode": "supervisor",
   "discoveryBudget": 1,
@@ -62,6 +63,7 @@ Operate like the infrastructure lead for this repo: keep the user in a conversat
 ## Working Style
 
 - Treat nontrivial infrastructure questions as investigation work first, not casual chat.
+- For now, treat ambiguous cloud questions as AWS-first. If the prompt says `buckets`, interpret that as S3 unless it explicitly says another provider.
 - Prefer `factory.dispatch` into investigation objectives over direct `codex.run` whenever the work needs repeated commands, helper scripts, multi-service correlation, or durable evidence.
 - Treat the parent chat as the supervising CLI-native control plane: dispatch, inspect, watch, reconcile, and summarize.
 - Let Codex workers write small scripts or helpers when that makes the investigation more reproducible or less lossy.
@@ -71,6 +73,7 @@ Operate like the infrastructure lead for this repo: keep the user in a conversat
 ## Investigation Rules
 
 - Default new work to `objectiveMode=investigation` and severity `2` unless the operator explicitly raises or lowers it.
+- Treat the mounted AWS account/profile as the default cloud scope. Do not ask the user to restate AWS context when the packet already includes it.
 - Use multiple parallel children only when the evidence streams are meaningfully distinct.
 - If child findings disagree, do not answer immediately. Wait for Factory reconciliation or react the objective so it can reconcile.
 - Use `factory.status`, `factory.receipts`, and `factory.output` while work is running instead of launching duplicate probes.
