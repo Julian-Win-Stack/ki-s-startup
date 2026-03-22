@@ -841,6 +841,110 @@ test("factory chat runner: software profile rejects a third discovery step befor
   expect(errorCall && "error" in errorCall ? errorCall.error : "").toContain("Profile discovery budget exhausted");
 });
 
+test("factory chat runner: blocking monitor polls do not consume discovery budget while a child is running", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-monitor-budget");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  await writeProfile(profileRoot, {
+    id: "software",
+    label: "Software",
+    default: true,
+    toolAllowlist: ["codex.run", "factory.status", "factory.output"],
+    orchestration: {
+      executionMode: "supervisor",
+      discoveryBudget: 1,
+      suspendOnAsyncChild: false,
+      allowPollingWhileChildRunning: true,
+      finalWhileChildRunning: "allow",
+      childDedupe: "by_run_and_prompt",
+    },
+  });
+
+  const actions = [
+    {
+      thought: "queue codex work",
+      action: {
+        type: "tool",
+        name: "codex.run",
+        input: JSON.stringify({ prompt: "Inspect the current repo state only." }),
+        text: null,
+      },
+    },
+    {
+      thought: "wait on objective status without spending more discovery budget",
+      action: {
+        type: "tool",
+        name: "factory.status",
+        input: JSON.stringify({ waitForChangeMs: 60 }),
+        text: null,
+      },
+    },
+    {
+      thought: "wait on live output without spending more discovery budget",
+      action: {
+        type: "tool",
+        name: "factory.output",
+        input: JSON.stringify({ focusKind: "job", focusId: "job_live_demo", waitForChangeMs: 60 }),
+        text: null,
+      },
+    },
+    {
+      thought: "respond",
+      action: {
+        type: "final",
+        name: null,
+        input: "{}",
+        text: "I kept watching the live child output without tripping the discovery guard.",
+      },
+    },
+  ];
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_software_monitor_budget",
+    problem: "Inspect the current objective evidence.",
+    profileId: "software",
+    objectiveId: "objective_demo",
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    dataDir,
+    factoryService: createFactoryServiceStub() as never,
+    repoRoot,
+    profileRoot,
+  });
+
+  expect(result.status).toBe("completed");
+  expect(result.finalResponse).toContain("without tripping the discovery guard");
+
+  const chain = await agentRuntime.chain(agentRunStream("agents/factory/demo", "run_software_monitor_budget"));
+  const budgetError = chain.find((receipt) =>
+    receipt.body.type === "tool.called"
+    && typeof receipt.body.error === "string"
+    && receipt.body.error.includes("Profile discovery budget exhausted")
+  )?.body;
+  expect(budgetError).toBeUndefined();
+
+  const observations = chain.filter((receipt) => receipt.body.type === "tool.observed").map((receipt) => receipt.body);
+  expect(observations.find((event) => event.tool === "factory.status" && "output" in event)?.output ?? "").toContain('"waitedMs"');
+  expect(observations.find((event) => event.tool === "factory.output" && "output" in event)?.output ?? "").toContain('"waitedMs"');
+});
+
 test("factory chat runner: software profile rejects follow-up polling while a codex child is still active", async () => {
   const dataDir = await createTempDir("receipt-factory-chat-child-poll-guard");
   const repoRoot = await createTempDir("receipt-factory-chat-repo");

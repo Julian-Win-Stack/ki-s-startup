@@ -1060,6 +1060,11 @@ const monitorWhileChildRunningTools = new Set([
   "job.control",
 ]);
 
+const hasPositiveWaitForChangeMs = (toolInput: Record<string, unknown>): boolean =>
+  typeof toolInput.waitForChangeMs === "number"
+  && Number.isFinite(toolInput.waitForChangeMs)
+  && toolInput.waitForChangeMs > 0;
+
 const withProfileOrchestrationPolicy = (
   input: {
     readonly profile: FactoryChatResolvedProfile;
@@ -1073,6 +1078,9 @@ const withProfileOrchestrationPolicy = (
   let deliveryStarted = false;
   const activeAsyncChildJobs = new Set<string>();
   return Object.fromEntries(Object.entries(tools).map(([name, executor]) => [name, async (toolInput) => {
+    const blockingMonitorPoll = policy.allowPollingWhileChildRunning
+      && monitorWhileChildRunningTools.has(name)
+      && hasPositiveWaitForChangeMs(toolInput);
     if (activeAsyncChildJobs.size > 0 && policy.suspendOnAsyncChild) {
       const activeJobs = (await Promise.all(
         [...activeAsyncChildJobs].map(async (jobId) => ({ jobId, job: await input.queue.getJob(jobId) })),
@@ -1096,6 +1104,7 @@ const withProfileOrchestrationPolicy = (
       !deliveryStarted
       && typeof policy.discoveryBudget === "number"
       && discoveryTools.has(name)
+      && !blockingMonitorPoll
     ) {
       discoverySteps += 1;
       if (discoverySteps > policy.discoveryBudget) {
