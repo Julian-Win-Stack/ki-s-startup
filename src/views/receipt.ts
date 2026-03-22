@@ -7,7 +7,6 @@ import {
   esc,
   softPanelClass,
   sectionLabelClass,
-  navPillClass,
   CSS_VERSION,
 } from "./ui";
 

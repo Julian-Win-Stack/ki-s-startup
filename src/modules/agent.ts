@@ -149,6 +149,15 @@ export type AgentEvent =
       readonly summary: string;
     }
   | {
+      readonly type: "thread.bound";
+      readonly runId: string;
+      readonly agentId?: string;
+      readonly objectiveId: string;
+      readonly chatId?: string;
+      readonly reason: "startup" | "dispatch_create" | "dispatch_reuse" | "dispatch_update";
+      readonly created?: boolean;
+    }
+  | {
       readonly type: "context.pruned";
       readonly runId: string;
       readonly iteration: number;
@@ -278,6 +287,13 @@ export type AgentState = {
     readonly summary: string;
     readonly updatedAt: number;
   };
+  readonly thread?: {
+    readonly objectiveId: string;
+    readonly chatId?: string;
+    readonly reason: "startup" | "dispatch_create" | "dispatch_reuse" | "dispatch_update";
+    readonly created?: boolean;
+    readonly updatedAt: number;
+  };
 };
 
 export const initial: AgentState = {
@@ -381,6 +397,17 @@ export const reduce: Reducer<AgentState, AgentEvent> = (state, event, ts) => {
           updatedAt: ts,
         },
       };
+    case "thread.bound":
+      return {
+        ...state,
+        thread: {
+          objectiveId: event.objectiveId,
+          chatId: event.chatId,
+          reason: event.reason,
+          created: event.created,
+          updatedAt: ts,
+        },
+      };
     case "profile.selected":
       return {
         ...state,
@@ -418,6 +445,7 @@ export const reduce: Reducer<AgentState, AgentEvent> = (state, event, ts) => {
     case "tool.observed":
     case "memory.slice":
     case "validation.report":
+    case "thread.bound":
     case "context.pruned":
     case "context.compacted":
     case "overflow.recovered":

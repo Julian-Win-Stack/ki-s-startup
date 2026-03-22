@@ -103,6 +103,14 @@ const createFactoryServiceStub = (overrides: Partial<Record<string, unknown>> = 
     latestSummary: prompt,
     integration: { status: "idle", queuedCandidateIds: [] },
   }),
+  reactObjectiveWithNote: async (objectiveId: string, message?: string) => ({
+    objectiveId,
+    title: "Objective demo",
+    status: "active",
+    phase: "executing",
+    latestSummary: message ?? "Reused current objective.",
+    integration: { status: "idle", queuedCandidateIds: [] },
+  }),
   reactObjective: async () => undefined,
   promoteObjective: async (objectiveId: string) => ({
     objectiveId,
@@ -1220,6 +1228,163 @@ test("factory chat runner: retries once when the model emits malformed tool-inpu
   expect(result.finalResponse).toContain("Recovered from the malformed tool input.");
 });
 
+test("factory chat runner: startup binds the current objective to the chat session", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-thread-bind");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  await writeProfile(profileRoot, {
+    id: "generalist",
+    label: "Generalist",
+    default: true,
+    toolAllowlist: [],
+  });
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_thread_bind",
+    problem: "Keep this thread bound to the current objective.",
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => ({
+      parsed: schema.parse({
+        thought: "reply",
+        action: {
+          type: "final",
+          name: null,
+          input: "{}",
+          text: "Thread stays bound.",
+        },
+      }),
+      raw: "{\"thought\":\"reply\",\"action\":{\"type\":\"final\",\"name\":null,\"input\":\"{}\",\"text\":\"Thread stays bound.\"}}",
+    }),
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: createFactoryServiceStub() as never,
+    repoRoot,
+    profileRoot,
+    chatId: "chat_demo",
+    objectiveId: "objective_demo",
+  });
+
+  expect(result.status).toBe("completed");
+  const chain = await agentRuntime.chain(agentRunStream("agents/factory/demo", "run_thread_bind"));
+  const bound = chain.find((receipt) => receipt.body.type === "thread.bound")?.body;
+  expect(bound && "objectiveId" in bound ? bound.objectiveId : "").toBe("objective_demo");
+  expect(bound && "chatId" in bound ? bound.chatId : "").toBe("chat_demo");
+  expect(bound && "reason" in bound ? bound.reason : "").toBe("startup");
+});
+
+test("factory chat runner: factory.dispatch create reuses the bound thread objective", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-dispatch-thread");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  await writeProfile(profileRoot, {
+    id: "generalist",
+    label: "Generalist",
+    default: true,
+    toolAllowlist: ["factory.dispatch"],
+  });
+
+  let createCalled = false;
+  let reacted: { readonly objectiveId: string; readonly message?: string } | undefined;
+  const factoryService = createFactoryServiceStub({
+    createObjective: async ({ prompt }: { readonly prompt: string }) => {
+      createCalled = true;
+      return {
+        objectiveId: "objective_created",
+        title: prompt,
+        status: "queued",
+        phase: "queued",
+        latestSummary: prompt,
+        integration: { status: "idle", queuedCandidateIds: [] },
+      };
+    },
+    reactObjectiveWithNote: async (objectiveId: string, message?: string) => {
+      reacted = { objectiveId, message };
+      return {
+        objectiveId,
+        title: "Objective demo",
+        status: "active",
+        phase: "executing",
+        latestSummary: message ?? "Reused current objective.",
+        integration: { status: "idle", queuedCandidateIds: [] },
+      };
+    },
+  });
+  const actions = [
+    {
+      thought: "reuse the existing thread objective",
+      action: {
+        type: "tool",
+        name: "factory.dispatch",
+        input: JSON.stringify({ action: "create", prompt: "Tighten the current thread scope." }),
+        text: null,
+      },
+    },
+    {
+      thought: "reply",
+      action: {
+        type: "final",
+        name: null,
+        input: "{}",
+        text: "Reused the current thread objective.",
+      },
+    },
+  ];
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_dispatch_thread",
+    problem: "Keep work inside the current thread objective.",
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: factoryService as never,
+    repoRoot,
+    profileRoot,
+    chatId: "chat_demo",
+    objectiveId: "objective_demo",
+  });
+
+  expect(result.status).toBe("completed");
+  expect(createCalled).toBe(false);
+  expect(reacted).toEqual({
+    objectiveId: "objective_demo",
+    message: "Tighten the current thread scope.",
+  });
+  const chain = await agentRuntime.chain(agentRunStream("agents/factory/demo", "run_dispatch_thread"));
+  const observed = chain.find((receipt) => receipt.body.type === "tool.observed")?.body;
+  expect(observed && "output" in observed ? observed.output : "").toContain('"reused": true');
+  const boundEvents = chain.filter((receipt) => receipt.body.type === "thread.bound").map((receipt) => receipt.body);
+  const latestBound = boundEvents.at(-1);
+  expect(latestBound && "objectiveId" in latestBound ? latestBound.objectiveId : "").toBe("objective_demo");
+  expect(latestBound && "reason" in latestBound ? latestBound.reason : "").toBe("dispatch_reuse");
+});
+
 test("factory chat runner: exhausted slices queue an automatic continuation on the same thread with a higher budget", async () => {
   const dataDir = await createTempDir("receipt-factory-chat-slice-continue");
   const repoRoot = await createTempDir("receipt-factory-chat-repo");
@@ -1274,7 +1439,7 @@ test("factory chat runner: exhausted slices queue an automatic continuation on t
   const jobs = await queue.listJobs({ limit: 10 });
   expect(jobs).toHaveLength(1);
   expect(jobs[0]?.agentId).toBe("factory");
-  expect(String(jobs[0]?.payload.stream)).toContain("/generalist");
+  expect(jobs[0]?.payload.stream).toBe("agents/factory/demo");
   expect((jobs[0]?.payload.config as Record<string, unknown> | undefined)?.maxIterations).toBe(12);
   expect(jobs[0]?.payload.continuationDepth).toBe(1);
 

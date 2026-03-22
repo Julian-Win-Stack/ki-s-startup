@@ -1,8 +1,6 @@
 import type { AgentRunInput, AgentRunResult } from "./agent";
 import type { JsonlQueue } from "../adapters/jsonl-queue";
 import type { FactoryService } from "../services/factory-service";
-import type { CodexExecutor, CodexRunControl } from "../adapters/codex-executor";
-import type { MemoryTools } from "../adapters/memory-tools";
 import type { ZodTypeAny, infer as ZodInfer } from "zod";
 import {
   runFactoryChat,

@@ -10,7 +10,7 @@ import { z } from "zod";
 
 import type { Chain } from "@receipt/core/types";
 import type { Runtime } from "@receipt/core/runtime";
-import { clampNumber, parseFormNum, type AgentRunControl, createQueuedEmitter, getLatestRunId } from "../engine/runtime/workflow";
+import { clampNumber, type AgentRunControl, createQueuedEmitter } from "../engine/runtime/workflow";
 import type { MemoryTools } from "../adapters/memory-tools";
 import type { AgentCmd, AgentEvent, AgentState, AgentToolName } from "../modules/agent";
 import type { FailureRecord } from "../modules/failure";

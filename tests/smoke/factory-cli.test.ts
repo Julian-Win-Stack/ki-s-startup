@@ -72,11 +72,24 @@ const createCodexStub = async (): Promise<string> => {
     "  const prompt = await readAll();",
     "  const match = prompt.match(/Write JSON to (.+?) with:/);",
     "  if (!workspace || !lastMessagePath) throw new Error('codex stub missing required args');",
+    "  const resultPath = match ? match[1].trim() : '';",
     "  const isPublish = prompt.includes('Publish the completed objective:');",
     "  if (!match && !isPublish) throw new Error('codex stub missing match or publish flag');",
-    "  fs.writeFileSync(path.join(workspace, 'CLI_SMOKE.txt'), 'created by stub\\n', 'utf8');",
+    "  if (resultPath.includes('task_02')) {",
+    "    const packageJsonPath = path.join(workspace, 'package.json');",
+    "    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));",
+    "    packageJson.scripts = { ...(packageJson.scripts || {}), smoke: 'bun run build' };",
+    "    fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2) + '\\n', 'utf8');",
+    "  } else if (resultPath.includes('task_03')) {",
+    "    const readmePath = path.join(workspace, 'README.md');",
+    "    const existing = fs.existsSync(readmePath) ? fs.readFileSync(readmePath, 'utf8') : '';",
+    "    if (!existing.includes('Smoke validation checked.')) {",
+    "      fs.writeFileSync(readmePath, `${existing.trimEnd()}\\n\\nSmoke validation checked.\\n`, 'utf8');",
+    "    }",
+    "  } else {",
+    "    fs.writeFileSync(path.join(workspace, 'CLI_SMOKE.txt'), 'created by stub\\n', 'utf8');",
+    "  }",
     "  if (match) {",
-    "    const resultPath = match[1].trim();",
     "    fs.writeFileSync(resultPath, JSON.stringify({ outcome: 'approved', summary: 'Stub approved result.', handoff: 'Ready for integration.' }, null, 2));",
     "  }",
     "  fs.writeFileSync(lastMessagePath, 'stub completed\\n', 'utf8');",
@@ -134,6 +147,19 @@ const createCodexReplyStub = async (delayMs = 1_100): Promise<string> => {
   await fs.writeFile(scriptPath, `#!/usr/bin/env bun\n${nodeBody}`, "utf-8");
   await fs.chmod(scriptPath, 0o755);
   return scriptPath;
+};
+
+const createPathCodexStub = async (): Promise<string> => {
+  const dir = await createTempDir("receipt-factory-cli-codex-path");
+  if (process.platform === "win32") {
+    const cmdPath = path.join(dir, "codex.cmd");
+    await fs.writeFile(cmdPath, "@echo off\r\nexit /b 0\r\n", "utf-8");
+    return dir;
+  }
+  const scriptPath = path.join(dir, "codex");
+  await fs.writeFile(scriptPath, "#!/bin/sh\nexit 0\n", "utf-8");
+  await fs.chmod(scriptPath, 0o755);
+  return dir;
 };
 
   const runCli = (args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv): Promise<{ readonly code: number | null; readonly stdout: string; readonly stderr: string }> =>
@@ -201,6 +227,19 @@ test("factory runtime config: shared resolver follows .receipt/config.json", asy
   expect(resolved.repoRoot).toBe(repoDir);
   expect(resolved.dataDir).toBe(path.join(repoDir, ".receipt", "data"));
   expect(resolved.configPath).toBe(path.join(repoDir, ".receipt", "config.json"));
+}, 120_000);
+
+test("factory cli: init stores portable codex command when codex is auto-detected on PATH", async () => {
+  const repoDir = await createRepo();
+  const codexPathDir = await createPathCodexStub();
+  const init = await runCli(["factory", "init", "--yes", "--force", "--json", "--repo-root", repoDir], {
+    PATH: `${codexPathDir}${path.delimiter}${process.env.PATH ?? ""}`,
+  });
+  expect(init.code).toBe(0);
+  const config = JSON.parse(await fs.readFile(path.join(repoDir, ".receipt", "config.json"), "utf-8")) as {
+    readonly codexBin?: string;
+  };
+  expect(config.codexBin).toBe("codex");
 }, 120_000);
 
 test("factory runtime config: repo default data dir is .receipt/data before init", async () => {

@@ -1,11 +1,7 @@
-import { compareScoreVectors } from "./policy";
-import { merge, type MergePolicy } from "../../sdk/merge";
 import {
   buildFactoryProjection,
   factoryReadyTasks,
   type FactoryCandidateRecord,
-  type FactoryCheckResult,
-  type FactoryScoreVector,
   type FactoryState,
   type FactoryTaskRecord,
   type FactoryWorkerType,
@@ -69,43 +65,6 @@ const isTaskInBackoff = (state: FactoryState, task: FactoryTaskRecord, now: numb
   return now - blockedAt < taskRetryBackoffMs(failures);
 };
 
-const actionPriority = (action: FactoryAction): number => {
-  switch (action.type) {
-    case "promote_integration":
-      return 90;
-    case "queue_integration":
-      return 80;
-    case "dispatch_child":
-      return 70;
-    case "split_task":
-      return 65;
-    case "reassign_task":
-      return 60;
-    case "update_dependencies":
-      return 55;
-    case "unblock_task":
-      return 50;
-    case "supersede_task":
-      return 45;
-    case "block_objective":
-      return 10;
-    default:
-      return 0;
-  }
-};
-
-const isTerminalTaskStatus = (status: FactoryTaskRecord["status"]): boolean =>
-  status === "approved" || status === "integrated" || status === "superseded" || status === "blocked";
-
-const latestTaskCandidate = (state: FactoryState, taskId: string): FactoryCandidateRecord | undefined => {
-  for (let index = state.candidateOrder.length - 1; index >= 0; index -= 1) {
-    const candidateId = state.candidateOrder[index];
-    const candidate = state.candidates[candidateId];
-    if (candidate?.taskId === taskId) return candidate;
-  }
-  return undefined;
-};
-
 const directDependents = (
   state: FactoryState,
   taskId: string,
@@ -154,50 +113,6 @@ const isDiscoveryOnlyTask = (task: Pick<FactoryTaskRecord, "title" | "prompt">):
   const text = `${task.title}\n${task.prompt}`;
   return DISCOVERY_ONLY_RE.test(text) && !DIFF_PRODUCING_RE.test(text);
 };
-
-const completedDependencyRatio = (state: FactoryState, task: FactoryTaskRecord): number => {
-  if (task.dependsOn.length === 0) return 1;
-  const completed = task.dependsOn
-    .map((depId) => state.graph.nodes[depId])
-    .filter((dep): dep is FactoryTaskRecord => Boolean(dep))
-    .filter((dep) => isTerminalTaskStatus(dep.status))
-    .length;
-  return completed / task.dependsOn.length;
-};
-
-const checkScore = (results: ReadonlyArray<FactoryCheckResult>): number => {
-  if (results.length === 0) return 0.4;
-  const passed = results.filter((result) => result.ok).length;
-  return passed / results.length;
-};
-
-const freshnessScore = (updatedAt: number | undefined, now: number): number => {
-  if (!updatedAt) return 0;
-  const ageHours = Math.max(0, now - updatedAt) / 3_600_000;
-  return Number((1 / (1 + ageHours)).toFixed(4));
-};
-
-const workerFit = (task: FactoryTaskRecord | undefined): number => {
-  if (!task) return 0.5;
-  const text = `${task.title}\n${task.prompt}`.toLowerCase();
-  const worker = String(task.workerType);
-  if (/\b(infra|deploy|docker|terraform|k8s|kubernetes|pipeline|ci)\b/.test(text)) return worker === "infra" ? 1 : 0.3;
-  return worker === "codex" ? 0.8 : 0.6;
-};
-
-const sortedByScore = (
-  scored: ReadonlyArray<{ readonly candidate: { readonly id: string }; readonly score: FactoryScoreVector }>,
-): ReadonlyArray<{ readonly candidate: { readonly id: string }; readonly score: FactoryScoreVector }> =>
-  [...scored].sort((left, right) => {
-    const scoreCmp = compareScoreVectors(right.score, left.score);
-    if (scoreCmp !== 0) return scoreCmp;
-    return left.candidate.id.localeCompare(right.candidate.id);
-  });
-
-const actionById = (
-  actions: ReadonlyArray<FactoryAction>,
-  actionId: string,
-): FactoryAction | undefined => actions.find((action) => action.actionId === actionId);
 
 const blockReason = (task: FactoryTaskRecord): string =>
   task.blockedReason ?? task.latestSummary ?? `Task ${task.taskId} is blocked.`;
@@ -424,62 +339,7 @@ export const buildFactoryDecisionSet = (
   };
 };
 
-const scoreAction = (state: FactoryState, action: FactoryAction, now: number): FactoryScoreVector => {
-  const task = action.taskId ? state.graph.nodes[action.taskId] : action.candidateId ? state.graph.nodes[state.candidates[action.candidateId]?.taskId ?? ""] : undefined;
-  const candidate = action.candidateId ? state.candidates[action.candidateId] : action.taskId ? latestTaskCandidate(state, action.taskId) : undefined;
-  const integrationResults = action.type === "promote_integration" ? state.integration.validationResults : [];
-  const results = candidate?.checkResults ?? integrationResults;
-  const dependencyCoverage = task ? completedDependencyRatio(state, task) : candidate ? completedDependencyRatio(state, state.graph.nodes[candidate.taskId] ?? {
-    nodeId: candidate.taskId,
-    taskId: candidate.taskId,
-    taskKind: "planned",
-    title: candidate.taskId,
-    prompt: candidate.summary ?? "",
-    workerType: "codex",
-    dependsOn: [],
-    status: "approved",
-    baseCommit: candidate.baseCommit,
-    skillBundlePaths: [],
-    contextRefs: [],
-    artifactRefs: {},
-    createdAt: candidate.createdAt,
-  }) : 0;
-
-  const reviewScore = action.type === "queue_integration"
-    ? candidate?.status === "approved" ? 1 : 0
-    : action.type === "promote_integration"
-      ? state.integration.status === "ready_to_promote" ? 1 : 0
-      : action.type === "dispatch_child"
-        ? task?.status === "ready" ? 0.8 : 0
-        : action.type === "block_objective"
-          ? 0.2
-          : task?.status === "blocked" || task?.status === "ready" ? 0.6 : 0.3;
-  const freshness = freshnessScore(candidate?.updatedAt ?? task?.createdAt, now);
-  const validation = checkScore(results);
-  const conflictRisk = candidate?.status === "conflicted" || state.integration.status === "conflicted" ? -1 : 0.5;
-  const frontier = task
-    ? (task.status === "ready" ? 1 : task.status === "blocked" ? 0.7 : task.status === "approved" ? 0.9 : 0.4)
-    : candidate?.status === "approved"
-      ? 1
-      : 0.4;
-
-  return {
-    "01_action_priority": actionPriority(action),
-    "02_review": reviewScore,
-    "03_validation": validation,
-    "04_frontier": frontier,
-    "05_dependency_coverage": dependencyCoverage,
-    "06_conflict_risk": conflictRisk,
-    "07_freshness": freshness,
-    "08_worker_fit": workerFit(task),
-  };
-};
-
-
-
 export const summarizeFactoryAction = (action: FactoryAction): string =>
   action.summary?.trim()
   || action.label
   || `${action.type}:${action.taskId ?? action.candidateId ?? action.actionId}`;
-
-

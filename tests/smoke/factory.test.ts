@@ -26,8 +26,9 @@ import {
 } from "../../src/modules/factory";
 import type { AgentEvent } from "../../src/modules/agent";
 import createFactoryRoute, { buildActiveCodexCard, buildChatItemsForRun } from "../../src/agents/factory.agent";
+import { agentRunStream } from "../../src/agents/agent.streams";
 import { FactoryService } from "../../src/services/factory-service";
-import { factoryChatStream } from "../../src/services/factory-chat-profiles";
+import { factoryChatSessionStream, factoryChatStream } from "../../src/services/factory-chat-profiles";
 import { factoryChatIsland, factoryChatShell, factoryInspectorIsland, factorySidebarIsland } from "../../src/views/factory-chat";
 import {
   factoryMissionControlShell,
@@ -159,6 +160,7 @@ const makeStubJobQueueResult = (jobId: string): { readonly job: QueueJob; readon
 const createRouteTestApp = (overrides?: {
   readonly liveOutput?: Record<string, unknown>;
   readonly jobs?: ReadonlyArray<QueueJob>;
+  readonly agentEvents?: Readonly<Record<string, ReadonlyArray<AgentEvent>>>;
   readonly onSubscribeMany?: (subscriptions: ReadonlyArray<{ readonly topic: string; readonly stream?: string }>) => void;
   readonly onEnqueue?: (input: Record<string, unknown>) => QueueJob | Promise<QueueJob>;
   readonly service?: Partial<Pick<
@@ -174,11 +176,20 @@ const createRouteTestApp = (overrides?: {
   >>;
 }): Hono => {
   const enqueuedJobs = new Map<string, QueueJob>();
+  const receiptChain = (streamKey: string) => {
+    const events = overrides?.agentEvents?.[streamKey] ?? [];
+    let prev: string | undefined;
+    return events.map((event, index) => {
+      const next = receipt(streamKey, prev, event, index + 1);
+      prev = next.hash;
+      return next;
+    });
+  };
   const dummyRuntime = {
     execute: async () => [],
     state: async () => ({}),
     stateAt: async () => ({}),
-    chain: async () => [],
+    chain: async (streamKey: string) => receiptChain(streamKey),
     chainAt: async () => [],
     verify: async () => ({ ok: true, count: 0 }),
     fork: async (streamKey: string) => ({ name: streamKey, createdAt: Date.now() }),
@@ -1353,8 +1364,9 @@ test("factory route: new chat creates an isolated chat session", async () => {
   expect(response.headers.get("location")).toMatch(/^\/factory\?profile=generalist&chat=chat_[a-z0-9]+_[a-z0-9]+$/);
 });
 
-test("factory route: blank composer submissions create an isolated chat session", async () => {
+test("factory route: blank composer submissions create a session-bound objective and queued run", async () => {
   let queuedInput: Record<string, unknown> | undefined;
+  let createdInput: Record<string, unknown> | undefined;
   const app = createRouteTestApp({
     onEnqueue: async (input) => {
       queuedInput = input;
@@ -1371,6 +1383,12 @@ test("factory route: blank composer submissions create an isolated chat session"
         commands: [],
       } as QueueJob;
     },
+    service: {
+      createObjective: async (input: Record<string, unknown>) => {
+        createdInput = input;
+        return makeStubObjectiveDetail("objective_created", "job_created");
+      },
+    },
   });
 
   const response = await app.request("http://receipt.test/factory/compose?profile=generalist", {
@@ -1384,11 +1402,19 @@ test("factory route: blank composer submissions create an isolated chat session"
   });
 
   expect(response.status).toBe(303);
-  expect(response.headers.get("location")).toMatch(/^\/factory\?profile=generalist&chat=chat_[a-z0-9]+_[a-z0-9]+&run=run_[a-z0-9]+_[a-z0-9]+&job=job_chat_blank$/);
+  expect(response.headers.get("location")).toMatch(/^\/factory\?profile=generalist&chat=chat_[a-z0-9]+_[a-z0-9]+&thread=objective_created&run=run_[a-z0-9]+_[a-z0-9]+&job=job_chat_blank$/);
+  expect(createdInput).toMatchObject({
+    title: "Start fresh",
+    prompt: "Start fresh.",
+    profileId: "generalist",
+    startImmediately: true,
+  });
   expect((queuedInput?.payload as Record<string, unknown> | undefined)?.chatId).toMatch(/^chat_[a-z0-9]+_[a-z0-9]+$/);
+  expect((queuedInput?.payload as Record<string, unknown> | undefined)?.objectiveId).toBe("objective_created");
 });
 test("factory route: composer accepts UI chat submissions and redirects into queued run context", async () => {
   let queuedInput: Record<string, unknown> | undefined;
+  let createdInput: Record<string, unknown> | undefined;
   const app = createRouteTestApp({
     onEnqueue: async (input) => {
       queuedInput = input;
@@ -1405,6 +1431,12 @@ test("factory route: composer accepts UI chat submissions and redirects into que
         commands: [],
       } as QueueJob;
     },
+    service: {
+      createObjective: async (input: Record<string, unknown>) => {
+        createdInput = input;
+        return makeStubObjectiveDetail("objective_created", "job_created");
+      },
+    },
   });
 
   const response = await app.request("http://receipt.test/factory/compose?profile=generalist&chat=chat_demo", {
@@ -1418,7 +1450,13 @@ test("factory route: composer accepts UI chat submissions and redirects into que
   });
 
   expect(response.status).toBe(303);
-  expect(response.headers.get("location")).toMatch(/^\/factory\?profile=generalist&chat=chat_demo&run=run_[a-z0-9]+_[a-z0-9]+&job=job_chat_01$/);
+  expect(response.headers.get("location")).toMatch(/^\/factory\?profile=generalist&chat=chat_demo&thread=objective_created&run=run_[a-z0-9]+_[a-z0-9]+&job=job_chat_01$/);
+  expect(createdInput).toMatchObject({
+    title: "Check the repo and tell me what happens next",
+    prompt: "Check the repo and tell me what happens next.",
+    profileId: "generalist",
+    startImmediately: true,
+  });
   expect(queuedInput).toMatchObject({
     agentId: "factory",
     lane: "collect",
@@ -1428,7 +1466,108 @@ test("factory route: composer accepts UI chat submissions and redirects into que
     kind: "factory.run",
     profileId: "generalist",
     chatId: "chat_demo",
+    objectiveId: "objective_created",
     problem: "Check the repo and tell me what happens next.",
+  });
+});
+
+test("factory route: composer recovers the bound objective from chat session receipts when thread is missing", async () => {
+  let queuedInput: Record<string, unknown> | undefined;
+  const sessionStream = factoryChatSessionStream(process.cwd(), "generalist", "chat_demo");
+  const app = createRouteTestApp({
+    agentEvents: {
+      [sessionStream]: [{
+        type: "problem.set",
+        runId: "run_bound",
+        problem: "Start this thread.",
+      }],
+      [agentRunStream(sessionStream, "run_bound")]: [
+        {
+          type: "problem.set",
+          runId: "run_bound",
+          problem: "Start this thread.",
+        },
+        {
+          type: "thread.bound",
+          runId: "run_bound",
+          objectiveId: "objective_bound",
+          chatId: "chat_demo",
+          reason: "startup",
+        },
+      ],
+    },
+    onEnqueue: async (input) => {
+      queuedInput = input;
+      return {
+        id: "job_chat_bound",
+        agentId: "factory",
+        payload: (input.payload as Record<string, unknown> | undefined) ?? {},
+        lane: "collect",
+        status: "queued",
+        attempt: 1,
+        maxAttempts: 1,
+        createdAt: 10,
+        updatedAt: 11,
+        commands: [],
+      } as QueueJob;
+    },
+    service: {
+      listObjectives: async () => [
+        makeStubObjectiveDetail("objective_bound", "job_bound") as unknown as Awaited<ReturnType<FactoryService["listObjectives"]>>[number],
+      ],
+      getObjective: async () => makeStubObjectiveDetail("objective_bound", "job_bound"),
+    },
+  });
+
+  const response = await app.request("http://receipt.test/factory/compose?profile=generalist&chat=chat_demo", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      prompt: "Keep this thread moving.",
+    }).toString(),
+  });
+
+  expect(response.status).toBe(303);
+  expect(response.headers.get("location")).toMatch(/^\/factory\?profile=generalist&chat=chat_demo&thread=objective_bound&run=run_[a-z0-9]+_[a-z0-9]+&job=job_chat_bound$/);
+  expect((queuedInput?.payload as Record<string, unknown> | undefined)).toMatchObject({
+    chatId: "chat_demo",
+    objectiveId: "objective_bound",
+    problem: "Keep this thread moving.",
+  });
+});
+
+test("factory route: /new starts a fresh chat thread instead of reusing the current one", async () => {
+  let createdInput: Record<string, unknown> | undefined;
+  const app = createRouteTestApp({
+    service: {
+      createObjective: async (input: Record<string, unknown>) => {
+        createdInput = input;
+        return makeStubObjectiveDetail("objective_created", "job_created");
+      },
+    },
+  });
+
+  const response = await app.request("http://receipt.test/factory/compose?profile=generalist&chat=chat_current&thread=objective_old", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      prompt: "/new Build the replacement thread.",
+    }).toString(),
+  });
+
+  expect(response.status).toBe(303);
+  expect(response.headers.get("location")).toMatch(/^\/factory\?profile=generalist&chat=chat_[a-z0-9]+_[a-z0-9]+&thread=objective_created$/);
+  expect(response.headers.get("location")).not.toContain("chat_current");
+  expect(response.headers.get("location")).not.toContain("objective_old");
+  expect(createdInput).toMatchObject({
+    title: "Build the replacement thread",
+    prompt: "Build the replacement thread.",
+    profileId: "generalist",
+    startImmediately: true,
   });
 });
 

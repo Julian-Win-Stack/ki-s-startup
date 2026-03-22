@@ -27,8 +27,6 @@ import {
   FactoryService,
   FactoryServiceError,
   type FactoryLiveOutputTargetKind,
-  type FactoryObjectiveDetail,
-  type FactoryTaskView,
 } from "../services/factory-service";
 import {
   factoryChatIsland,
@@ -43,6 +41,7 @@ import type {
   FactoryChatProfileNav,
   FactoryChatShellModel,
   FactoryChatJobNav,
+  FactoryInspectorPanel,
   FactoryLiveCodexCard,
   FactoryLiveChildCard,
   FactoryLiveRunCard,
@@ -52,7 +51,7 @@ import type {
   FactoryInspectorModel,
 } from "../views/factory-models";
 import type { QueueJob } from "../adapters/jsonl-queue";
-import { parseComposerDraft } from "../factory-cli/composer";
+import { deriveObjectiveTitle, parseComposerDraft } from "../factory-cli/composer";
 import {
   listReceiptFiles,
   readReceiptFile,
@@ -266,32 +265,20 @@ const normalizedWorkerId = (agentId: string | undefined): string =>
 
 type AgentRunChain = Awaited<ReturnType<Runtime<AgentCmd, AgentEvent, AgentState>["chain"]>>;
 
-const payloadRecord = (job: QueueJob): Record<string, unknown> =>
-  asObject(job.payload) ?? {};
+const payloadRecord = (job: QueueJob | undefined): Record<string, unknown> =>
+  asObject(job?.payload) ?? {};
 
-const jobObjectiveId = (job: QueueJob): string | undefined =>
-  asString(payloadRecord(job).objectiveId) ?? asString(asObject(job.result)?.objectiveId);
+const jobObjectiveId = (job: QueueJob | undefined): string | undefined =>
+  asString(payloadRecord(job).objectiveId) ?? asString(asObject(job?.result)?.objectiveId);
 
-const jobStream = (job: QueueJob): string | undefined =>
-  asString(payloadRecord(job).stream);
-
-const jobParentStream = (job: QueueJob): string | undefined =>
-  asString(payloadRecord(job).parentStream);
-
-const jobRunId = (job: QueueJob): string | undefined =>
+const jobRunId = (job: QueueJob | undefined): string | undefined =>
   asString(payloadRecord(job).runId);
 
-const jobParentRunId = (job: QueueJob): string | undefined =>
+const jobParentRunId = (job: QueueJob | undefined): string | undefined =>
   asString(payloadRecord(job).parentRunId);
 
-const jobAnyRunId = (job: QueueJob): string | undefined =>
+const jobAnyRunId = (job: QueueJob | undefined): string | undefined =>
   jobRunId(job) ?? jobParentRunId(job);
-
-const jobTaskId = (job: QueueJob): string | undefined =>
-  asString(payloadRecord(job).taskId);
-
-const jobCandidateId = (job: QueueJob): string | undefined =>
-  asString(payloadRecord(job).candidateId);
 
 const seedSet = (values: ReadonlyArray<string | undefined>): Set<string> =>
   new Set(values.filter((value): value is string => typeof value === "string" && value.trim().length > 0));
@@ -300,17 +287,6 @@ const linkRunId = (pending: string[], seen: ReadonlySet<string>, value: string |
   const runId = value?.trim();
   if (!runId || seen.has(runId) || pending.includes(runId)) return;
   pending.push(runId);
-};
-
-const parseRunFocusId = (focusId: string | undefined): { readonly profileId?: string; readonly runId?: string } => {
-  const value = focusId?.trim();
-  if (!value) return {};
-  const separator = value.indexOf(":");
-  if (separator <= 0 || separator >= value.length - 1) return { runId: value };
-  return {
-    profileId: value.slice(0, separator),
-    runId: value.slice(separator + 1),
-  };
 };
 
 const collectRunLineageIds = (
@@ -381,116 +357,6 @@ const jobMatchesRunIds = (job: QueueJob, runIds: ReadonlySet<string>): boolean =
   const parentRun = jobParentRunId(job);
   return (payloadRun !== undefined && runIds.has(payloadRun))
     || (parentRun !== undefined && runIds.has(parentRun));
-};
-
-const tasksByCandidateIds = (
-  tasks: ReadonlyArray<FactoryTaskView>,
-  candidateIds: ReadonlySet<string>,
-): ReadonlySet<string> => {
-  const related = new Set<string>();
-  if (candidateIds.size === 0) return related;
-  for (const task of tasks) {
-    if (
-      (task.candidateId && candidateIds.has(task.candidateId))
-      || (task.sourceCandidateId && candidateIds.has(task.sourceCandidateId))
-    ) {
-      related.add(task.taskId);
-    }
-  }
-  return related;
-};
-
-const expandRelatedTaskIds = (
-  tasks: ReadonlyArray<FactoryTaskView>,
-  seedTaskIds: ReadonlyArray<string | undefined> | ReadonlySet<string>,
-): ReadonlySet<string> => {
-  const taskById = new Map(tasks.map((task) => [task.taskId, task] as const));
-  const dependentsByTaskId = new Map<string, string[]>();
-  const childrenBySourceTaskId = new Map<string, string[]>();
-  for (const task of tasks) {
-    for (const depId of task.dependsOn) {
-      const current = dependentsByTaskId.get(depId) ?? [];
-      current.push(task.taskId);
-      dependentsByTaskId.set(depId, current);
-    }
-    if (task.sourceTaskId) {
-      const current = childrenBySourceTaskId.get(task.sourceTaskId) ?? [];
-      current.push(task.taskId);
-      childrenBySourceTaskId.set(task.sourceTaskId, current);
-    }
-  }
-  const pending = [...seedSet(Array.isArray(seedTaskIds) ? seedTaskIds : [...seedTaskIds])];
-  const related = new Set<string>();
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current || related.has(current)) continue;
-    related.add(current);
-    const task = taskById.get(current);
-    if (!task) continue;
-    for (const depId of task.dependsOn) linkRunId(pending, related, depId);
-    for (const dependentId of dependentsByTaskId.get(current) ?? []) linkRunId(pending, related, dependentId);
-    linkRunId(pending, related, task.sourceTaskId);
-    for (const childId of childrenBySourceTaskId.get(current) ?? []) linkRunId(pending, related, childId);
-  }
-  return related;
-};
-
-const candidateIdsForTaskIds = (
-  tasks: ReadonlyArray<FactoryTaskView>,
-  taskIds: ReadonlySet<string>,
-): ReadonlySet<string> => {
-  const related = new Set<string>();
-  for (const task of tasks) {
-    if (!taskIds.has(task.taskId)) continue;
-    if (task.candidateId) related.add(task.candidateId);
-    if (task.sourceCandidateId) related.add(task.sourceCandidateId);
-  }
-  return related;
-};
-
-const buildTaskCandidateContext = (
-  tasks: ReadonlyArray<FactoryTaskView>,
-  seedTaskIds: ReadonlyArray<string | undefined> | ReadonlySet<string>,
-  seedCandidateIds: ReadonlyArray<string | undefined> | ReadonlySet<string>,
-): { readonly taskIds: ReadonlySet<string>; readonly candidateIds: ReadonlySet<string> } => {
-  const initialTaskIds = seedSet(Array.isArray(seedTaskIds) ? seedTaskIds : [...seedTaskIds]);
-  const initialCandidateIds = seedSet(Array.isArray(seedCandidateIds) ? seedCandidateIds : [...seedCandidateIds]);
-  const seededTaskIds = new Set<string>([
-    ...initialTaskIds,
-    ...tasksByCandidateIds(tasks, initialCandidateIds),
-  ]);
-  const expandedTaskIds = expandRelatedTaskIds(tasks, seededTaskIds);
-  const candidateIds = new Set<string>([
-    ...initialCandidateIds,
-    ...candidateIdsForTaskIds(tasks, expandedTaskIds),
-  ]);
-  const finalTaskIds = expandRelatedTaskIds(tasks, [
-    ...expandedTaskIds,
-    ...tasksByCandidateIds(tasks, candidateIds),
-  ]);
-  return {
-    taskIds: finalTaskIds,
-    candidateIds: new Set<string>([
-      ...candidateIds,
-      ...candidateIdsForTaskIds(tasks, finalTaskIds),
-    ]),
-  };
-};
-
-const mentionsContextRef = (
-  value: string | undefined,
-  taskIds: ReadonlySet<string>,
-  candidateIds: ReadonlySet<string>,
-): boolean => {
-  const text = value?.trim();
-  if (!text) return false;
-  for (const taskId of taskIds) {
-    if (text.includes(taskId)) return true;
-  }
-  for (const candidateId of candidateIds) {
-    if (text.includes(candidateId)) return true;
-  }
-  return false;
 };
 
 export const buildActiveCodexCard = (jobs: ReadonlyArray<QueueJob>): FactoryLiveCodexCard | undefined => {
@@ -1141,29 +1007,70 @@ const resolveChatViewStream = (input: {
       : asString(input.job?.payload.parentStream)
         ?? asString(input.job?.payload.stream);
 
-const makeFactoryObjectiveId = (): string =>
-  `objective_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+const normalizeKnownObjectiveId = <T extends { readonly objectiveId: string }>(
+  candidate: string | undefined,
+  objectives: ReadonlyArray<T>,
+): string | undefined => {
+  const objectiveId = candidate?.trim();
+  if (!objectiveId) return undefined;
+  return objectives.some((objective) => objective.objectiveId === objectiveId)
+    ? objectiveId
+    : undefined;
+};
+
+const latestObjectiveIdFromRunChains = (
+  runChains: ReadonlyArray<Awaited<ReturnType<Runtime<AgentCmd, AgentEvent, AgentState>["chain"]>>>,
+): string | undefined => {
+  for (let chainIndex = runChains.length - 1; chainIndex >= 0; chainIndex -= 1) {
+    const chain = runChains[chainIndex] ?? [];
+    for (let receiptIndex = chain.length - 1; receiptIndex >= 0; receiptIndex -= 1) {
+      const event = chain[receiptIndex]?.body;
+      if (!event) continue;
+      if (event.type === "thread.bound") {
+        const objectiveId = asString(event.objectiveId);
+        if (objectiveId) return objectiveId;
+        continue;
+      }
+      if (event.type === "tool.observed") {
+        const output = typeof event.output === "string" ? tryParseJson(event.output) : asObject(event.output);
+        const objectiveId = asString(output?.objectiveId);
+        if (objectiveId) return objectiveId;
+        continue;
+      }
+      if (event.type === "tool.called") {
+        const input = typeof event.input === "string" ? tryParseJson(event.input) : asObject(event.input);
+        const objectiveId = asString(input?.objectiveId);
+        if (objectiveId) return objectiveId;
+      }
+    }
+  }
+  return undefined;
+};
+
+const compareJobsByRecency = (left: QueueJob, right: QueueJob): number =>
+  right.updatedAt - left.updatedAt
+  || right.createdAt - left.createdAt
+  || right.id.localeCompare(left.id);
+
+const latestObjectiveIdFromJobs = (
+  jobs: ReadonlyArray<QueueJob>,
+  stream: string,
+  chatId?: string,
+): string | undefined =>
+  [...jobs]
+    .filter((job) =>
+      (chatId && asString(job.payload.chatId) === chatId)
+      || isRelevantShellJob(job, stream)
+    )
+    .sort(compareJobsByRecency)
+    .map((job) => jobObjectiveId(job))
+    .find((objectiveId): objectiveId is string => typeof objectiveId === "string" && objectiveId.trim().length > 0);
 
 const makeFactoryRunId = (): string =>
   `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
 const makeFactoryChatId = (): string =>
   `chat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-const chatItemPreview = (item: FactoryChatItem): string => {
-  if (item.kind === "user" || item.kind === "assistant") return item.body;
-  if (item.kind === "system") return `${item.title}: ${item.body}`;
-  if (item.kind === "objective_event") return `${item.title}: ${item.summary}`;
-  return `${item.card.title}: ${item.card.summary}`;
-};
-
-const summarizeRunItems = (items: ReadonlyArray<FactoryChatItem>): { readonly summary: string; readonly previewLines: ReadonlyArray<string> } => {
-  const preview = items.slice(-4).map(chatItemPreview).filter(Boolean);
-  return {
-    summary: preview.at(-1) ?? "No run output yet.",
-    previewLines: preview,
-  };
-};
 
 const summarizePendingRunJob = (job: QueueJob, profileLabel: string): FactoryLiveRunCard => {
   const summary = job.status === "queued"
@@ -1281,14 +1188,6 @@ const summarizeActiveRunCard = (
   };
 };
 
-const objectiveSummary = (detail: FactoryObjectiveDetail): string | undefined =>
-  detail.latestSummary
-  ?? detail.nextAction
-  ?? detail.blockedExplanation?.summary
-  ?? detail.blockedReason;
-
-const runFocusId = (profileId: string, runId: string): string => `${profileId}:${runId}`;
-
 const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
   const helpers = ctx.helpers ?? {};
   const service = (helpers.factoryService as FactoryService | undefined) ?? new FactoryService({
@@ -1335,8 +1234,12 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
   const requestedFocusId = (req: Request): string | undefined =>
     optionalTrimmedString(new URL(req.url).searchParams.get("focusId"));
 
-  const requestedPanel = (req: Request): string =>
-    optionalTrimmedString(new URL(req.url).searchParams.get("panel")) ?? "overview";
+  const requestedPanel = (req: Request): FactoryInspectorPanel => {
+    const panel = optionalTrimmedString(new URL(req.url).searchParams.get("panel"));
+    return panel === "execution" || panel === "live" || panel === "receipts" || panel === "debug"
+      ? panel
+      : "overview";
+  };
 
   const requestedShowAll = (req: Request): boolean =>
     optionalTrimmedString(new URL(req.url).searchParams.get("all")) === "1";
@@ -1430,6 +1333,34 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     return value;
   };
 
+  const resolveSessionObjectiveId = async (input: {
+    readonly repoRoot: string;
+    readonly profileId: string;
+    readonly chatId?: string;
+    readonly objectiveId?: string;
+    readonly selectedJob?: QueueJob;
+    readonly jobs: ReadonlyArray<QueueJob>;
+    readonly liveObjectives: ReadonlyArray<{ readonly objectiveId: string }>;
+    readonly allowExplicitFallback?: boolean;
+  }): Promise<string | undefined> => {
+    const requestedObjectiveId = normalizeKnownObjectiveId(input.objectiveId, input.liveObjectives);
+    if (requestedObjectiveId) return requestedObjectiveId;
+    const explicitObjectiveId = input.objectiveId?.trim();
+    if (input.allowExplicitFallback && explicitObjectiveId) return explicitObjectiveId;
+    const selectedJobObjectiveId = normalizeKnownObjectiveId(jobObjectiveId(input.selectedJob), input.liveObjectives);
+    if (selectedJobObjectiveId) return selectedJobObjectiveId;
+    if (!input.chatId) return undefined;
+    const stream = factoryChatSessionStream(input.repoRoot, input.profileId, input.chatId);
+    const indexChain = await agentRuntime.chain(stream);
+    const runIds = collectRunIds(indexChain);
+    const runChains = await Promise.all(runIds.map((runId) => agentRuntime.chain(agentRunStream(stream, runId))));
+    return normalizeKnownObjectiveId(
+      latestObjectiveIdFromRunChains(runChains)
+      ?? latestObjectiveIdFromJobs(input.jobs, stream, input.chatId),
+      input.liveObjectives,
+    );
+  };
+
   const buildChatShellModel = async (input: {
     readonly profileId?: string;
     readonly chatId?: string;
@@ -1453,9 +1384,15 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     const jobsById = new Map(jobs.map((job) => [job.id, job] as const));
     const selectedJob = input.jobId ? jobsById.get(input.jobId) : undefined;
     const liveObjectives = objectives.filter((objective) => !objective.archivedAt);
-    const resolvedObjectiveId = liveObjectives.some((objective) => objective.objectiveId === input.objectiveId)
-      ? input.objectiveId
-      : undefined;
+    const resolvedObjectiveId = await resolveSessionObjectiveId({
+      repoRoot,
+      profileId: resolved.root.id,
+      chatId: input.chatId,
+      objectiveId: input.objectiveId,
+      selectedJob,
+      jobs,
+      liveObjectives,
+    });
     const stream = resolveChatViewStream({
       repoRoot,
       profileId: resolved.root.id,
@@ -1463,15 +1400,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       objectiveId: resolvedObjectiveId,
       job: selectedJob,
     });
-    const [selectedObjective, indexChain] = await Promise.all([
-      resolvedObjectiveId
-        ? service.getObjective(resolvedObjectiveId).catch(err => {
-            if (err instanceof FactoryServiceError && err.status === 404) return undefined;
-            throw err;
-          })
-        : Promise.resolve(undefined),
-      stream ? agentRuntime.chain(stream) : Promise.resolve([]),
-    ]);
+    const indexChain = stream ? await agentRuntime.chain(stream) : [];
 
     const allRunIds = collectRunIds(indexChain);
     const requestedRunIndex = input.runId ? allRunIds.indexOf(input.runId) : -1;
@@ -1480,6 +1409,12 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     const runChains = await Promise.all(runIds.map((runId) => stream ? agentRuntime.chain(agentRunStream(stream, runId)) : Promise.resolve([])));
     const runChainsById = new Map(runIds.map((runId, index) => [runId, runChains[index]!] as const));
     const chatItems = runChains.flatMap((runChain, index) => buildChatItemsForRun(runIds[index]!, runChain, jobsById));
+    const selectedObjective = resolvedObjectiveId
+      ? await service.getObjective(resolvedObjectiveId).catch(err => {
+          if (err instanceof FactoryServiceError && err.status === 404) return undefined;
+          throw err;
+        })
+      : undefined;
     const activeProfileOverview = describeProfileMarkdown(resolved.root.mdBody);
 
     const profileNav: ReadonlyArray<FactoryChatProfileNav> = profiles.map((profile) => ({
@@ -1613,6 +1548,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     const navModel: FactoryNavModel = {
       activeProfileId: resolved.root.id,
       activeProfileLabel: resolved.root.label,
+      chatId: input.chatId,
       profiles: profileNav,
       objectives: objectiveNav,
       showAll: input.showAll,
@@ -1667,18 +1603,30 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       profileRoot,
       requestedId: input.profileId,
     });
+    const objectives = await service.listObjectives();
+    const liveObjectives = objectives.filter((objective) => !objective.archivedAt);
     const jobs = await ctx.queue.listJobs({ limit: 120 });
     const jobsById = new Map(jobs.map((job) => [job.id, job] as const));
     const selectedJob = input.jobId ? jobsById.get(input.jobId) : undefined;
-    const stream = resolveChatViewStream({
+    const resolvedObjectiveId = await resolveSessionObjectiveId({
       repoRoot: service.git.repoRoot,
       profileId: resolved.root.id,
       chatId: input.chatId,
       objectiveId: input.objectiveId,
+      selectedJob,
+      jobs,
+      liveObjectives,
+      allowExplicitFallback: true,
+    });
+    const stream = resolveChatViewStream({
+      repoRoot: service.git.repoRoot,
+      profileId: resolved.root.id,
+      chatId: input.chatId,
+      objectiveId: resolvedObjectiveId,
       job: selectedJob,
     });
     const baseQueueJobs = stream
-      ? jobs.filter((job) => isRelevantShellJob(job, stream, input.objectiveId))
+      ? jobs.filter((job) => isRelevantShellJob(job, stream, resolvedObjectiveId))
       : [];
     const selectedRunIds = collectRunLineageIds(
       [
@@ -1715,14 +1663,30 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           const prompt = optionalTrimmedString(body.prompt);
           if (!prompt) return navigationError(req, 400, "Enter a chat message or slash command.");
 
-          const objectiveId = requestedObjectiveId(req);
-          const requestedChat = requestedChatId(req) ?? (!objectiveId ? makeFactoryChatId() : undefined);
+          const requestedObjective = requestedObjectiveId(req);
+          const requestedChat = requestedChatId(req) ?? (!requestedObjective ? makeFactoryChatId() : undefined);
           const requestedRun = requestedRunId(req);
           const requestedJob = optionalTrimmedString(body.currentJobId) ?? requestedJobId(req);
           const resolved = await resolveFactoryChatProfile({
             repoRoot: service.git.repoRoot,
             profileRoot,
             requestedId: requestedProfileId(req),
+          });
+          const [objectives, jobs] = await Promise.all([
+            service.listObjectives(),
+            ctx.queue.listJobs({ limit: 120 }),
+          ]);
+          const liveObjectives = objectives.filter((objective) => !objective.archivedAt);
+          const jobsById = new Map(jobs.map((job) => [job.id, job] as const));
+          let objectiveId = await resolveSessionObjectiveId({
+            repoRoot: service.git.repoRoot,
+            profileId: resolved.root.id,
+            chatId: requestedChat,
+            objectiveId: requestedObjective,
+            selectedJob: requestedJob ? jobsById.get(requestedJob) : undefined,
+            jobs,
+            liveObjectives,
+            allowExplicitFallback: true,
           });
 
           if (prompt.startsWith("/")) {
@@ -1751,17 +1715,21 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 }
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
+                  chatId: requestedChat,
                   objectiveId: nextObjectiveId,
                 }));
               }
               case "new": {
+                const nextChatId = makeFactoryChatId();
                 const created = await service.createObjective({
                   title: command.title ?? "Factory objective",
                   prompt: command.prompt,
                   profileId: resolved.root.id,
+                  startImmediately: true,
                 });
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
+                  chatId: nextChatId,
                   objectiveId: created.objectiveId,
                 }));
               }
@@ -1770,6 +1738,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 const detail = await service.reactObjectiveWithNote(objectiveId, command.message);
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
+                  chatId: requestedChat,
                   objectiveId: detail.objectiveId,
                   runId: requestedRun,
                   jobId: requestedJob,
@@ -1780,6 +1749,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 const detail = await service.promoteObjective(objectiveId);
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
+                  chatId: requestedChat,
                   objectiveId: detail.objectiveId,
                   runId: requestedRun,
                   jobId: requestedJob,
@@ -1790,6 +1760,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 const detail = await service.cancelObjective(objectiveId, command.reason ?? "canceled from UI");
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
+                  chatId: requestedChat,
                   objectiveId: detail.objectiveId,
                 }));
               }
@@ -1798,6 +1769,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 const detail = await service.cleanupObjectiveWorkspaces(objectiveId);
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
+                  chatId: requestedChat,
                   objectiveId: detail.objectiveId,
                 }));
               }
@@ -1806,6 +1778,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 const detail = await service.archiveObjective(objectiveId);
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
+                  chatId: requestedChat,
                   objectiveId: detail.objectiveId,
                 }));
               }
@@ -1817,6 +1790,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 });
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
+                  chatId: requestedChat,
                   objectiveId: jobObjectiveId(queued.job) ?? objectiveId,
                   runId: jobAnyRunId(queued.job) ?? requestedRun,
                   jobId: queued.job.id,
@@ -1831,6 +1805,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 );
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
+                  chatId: requestedChat,
                   objectiveId: jobObjectiveId(queued.job) ?? objectiveId,
                   runId: jobAnyRunId(queued.job) ?? requestedRun,
                   jobId: queued.job.id,
@@ -1845,12 +1820,23 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 );
                 return navigationResponse(req, buildChatLink({
                   profileId: resolved.root.id,
+                  chatId: requestedChat,
                   objectiveId: jobObjectiveId(queued.job) ?? objectiveId,
                   runId: jobAnyRunId(queued.job) ?? requestedRun,
                   jobId: queued.job.id,
                 }));
               }
             }
+          }
+
+          if (!objectiveId) {
+            const created = await service.createObjective({
+              title: deriveObjectiveTitle(prompt),
+              prompt,
+              profileId: resolved.root.id,
+              startImmediately: true,
+            });
+            objectiveId = created.objectiveId;
           }
 
           const stream = requestedChat
@@ -1925,9 +1911,21 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             requestedId: requestedProfileId(c.req.raw),
           });
           const chatId = requestedChatId(c.req.raw);
-          const objectiveId = requestedObjectiveId(c.req.raw);
           const jobId = requestedJobId(c.req.raw);
+          const objectives = await service.listObjectives();
+          const liveObjectives = objectives.filter((objective) => !objective.archivedAt);
           const selectedJob = jobId ? await ctx.queue.getJob(jobId) : undefined;
+          const jobs = await ctx.queue.listJobs({ limit: 120 });
+          const objectiveId = await resolveSessionObjectiveId({
+            repoRoot: service.git.repoRoot,
+            profileId: resolved.root.id,
+            chatId,
+            objectiveId: requestedObjectiveId(c.req.raw),
+            selectedJob,
+            jobs,
+            liveObjectives,
+            allowExplicitFallback: true,
+          });
           return {
             stream: resolveChatViewStream({
               repoRoot: service.git.repoRoot,
@@ -1995,10 +1993,10 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             jobId: requestedJobId(c.req.raw),
           });
           const objectiveId = model.objectiveId ?? model.inspector.selectedObjective?.objectiveId;
-          const panel = requestedPanel(c.req.raw) || "overview";
-          let receipts;
-          let debugInfo;
-          let tasks;
+          const panel = requestedPanel(c.req.raw);
+          let receipts: FactoryInspectorModel["receipts"];
+          let debugInfo: FactoryInspectorModel["debugInfo"];
+          let tasks: FactoryInspectorModel["tasks"];
           
           if (objectiveId) {
             if (panel === "receipts") {
@@ -2023,7 +2021,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             }
           }
           
-          return { ...model.inspector, panel: panel as any, receipts, debugInfo, tasks };
+          return { ...model.inspector, panel, receipts, debugInfo, tasks };
         },
         (model) => html(factoryInspectorIsland(model))
       ));
@@ -2054,9 +2052,21 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             requestedId: requestedProfileId(c.req.raw),
           });
           const chatId = requestedChatId(c.req.raw);
-          const objectiveId = requestedObjectiveId(c.req.raw);
           const jobId = requestedJobId(c.req.raw);
+          const objectives = await service.listObjectives();
+          const liveObjectives = objectives.filter((objective) => !objective.archivedAt);
           const selectedJob = jobId ? await ctx.queue.getJob(jobId) : undefined;
+          const jobs = await ctx.queue.listJobs({ limit: 120 });
+          const objectiveId = await resolveSessionObjectiveId({
+            repoRoot: service.git.repoRoot,
+            profileId: resolved.root.id,
+            chatId,
+            objectiveId: requestedObjectiveId(c.req.raw),
+            selectedJob,
+            jobs,
+            liveObjectives,
+            allowExplicitFallback: true,
+          });
           return {
             stream: resolveChatViewStream({
               repoRoot: service.git.repoRoot,

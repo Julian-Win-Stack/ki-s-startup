@@ -1,7 +1,7 @@
 {
   "repoRoot": ".",
   "dataDir": ".receipt/data",
-  "codexBin": "/Users/kishore/.nvm/versions/node/v20.14.0/bin/codex",
+  "codexBin": "codex",
   "orchestratorMode": "enabled",
   "defaultChecks": [
     "bun run build",

@@ -8,9 +8,9 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 import { jsonBranchStore, jsonlStore } from "../adapters/jsonl";
-import type { JsonlQueue, QueueCommandRecord, QueueJob } from "../adapters/jsonl-queue";
+import type { JsonlQueue, QueueJob } from "../adapters/jsonl-queue";
 import { type CodexExecutor, type CodexRunControl } from "../adapters/codex-executor";
-import { HubGit, HubGitError } from "../adapters/hub-git";
+import { HubGit } from "../adapters/hub-git";
 import type { MemoryTools } from "../adapters/memory-tools";
 import {
   DEFAULT_FACTORY_OBJECTIVE_POLICY,
@@ -26,17 +26,13 @@ import {
   type FactoryBudgetState,
   type FactoryCandidateRecord,
   type FactoryObjectivePhase,
-  type FactoryObjectiveSlotState,
   type FactoryRepoProfileRecord,
   type FactoryCheckResult,
   type FactoryCmd,
   type FactoryEvent,
-  type FactoryNormalizedObjectivePolicy,
   type FactoryObjectiveProfileSnapshot,
   type FactoryObjectiveProfileWorktreeMode,
   type FactoryObjectiveStatus,
-  type FactoryObjectivePolicy,
-  type FactoryProjection,
   type FactoryState,
   type FactoryTaskRecord,
   type FactoryTaskStatus,
@@ -72,7 +68,6 @@ const FACTORY_DATA_DIR = ".receipt/factory";
 const FACTORY_SHARED_REPO_PROFILE_DIR = path.join("factory", "repo-profile");
 const DEFAULT_FACTORY_PROFILE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const FACTORY_CONTROL_AGENT_ID = "factory-control";
-const AGENT_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$/;
 const SUPPORTED_WORKER_TYPES = new Set<FactoryWorkerType>(["codex", "agent", "infra"]);
 
 const resolveRepoRoot = (repoRoot?: string): string =>
@@ -97,7 +92,6 @@ const FACTORY_TASK_CODEX_MODEL =
   || process.env.HUB_FACTORY_TASK_MODEL?.trim()
   || "gpt-5.4-mini";
 
-const shortHash = (value: string | undefined): string => value ? value.slice(0, 8) : "none";
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const requireNonEmpty = (value: unknown, message: string): string => {
@@ -3387,28 +3381,6 @@ export class FactoryService {
     return normalized;
   }
 
-  private normalizeExistingDependencies(
-    state: FactoryState,
-    taskId: string,
-    requested: ReadonlyArray<string>,
-  ): ReadonlyArray<string> {
-    const taskIndex = state.taskOrder.indexOf(taskId);
-    const normalized: string[] = [];
-    const seen = new Set<string>();
-    for (const depId of requested) {
-      const trimmed = depId.trim();
-      if (!trimmed || trimmed === taskId || seen.has(trimmed)) continue;
-      const dep = state.graph.nodes[trimmed];
-      if (!dep || dep.status === "superseded") continue;
-      const depIndex = state.taskOrder.indexOf(trimmed);
-      if (taskIndex >= 0 && depIndex >= taskIndex) continue;
-      if (this.dependsTransitivelyOn(state, trimmed, taskId)) continue;
-      seen.add(trimmed);
-      normalized.push(trimmed);
-    }
-    return normalized;
-  }
-
   private directDependents(
     state: FactoryState,
     taskId: string,
@@ -3464,14 +3436,6 @@ export class FactoryService {
     if (!task) return false;
     if (task.dependsOn.includes(targetTaskId)) return true;
     return task.dependsOn.some((depId) => this.dependsTransitivelyOn(state, depId, targetTaskId, seen));
-  }
-
-  private isMutationAction(actionType: FactoryAction["type"]): boolean {
-    return actionType === "split_task"
-      || actionType === "reassign_task"
-      || actionType === "update_dependencies"
-      || actionType === "unblock_task"
-      || actionType === "supersede_task";
   }
 
   private latestTaskCandidate(state: FactoryState, taskId: string): FactoryCandidateRecord | undefined {
@@ -3801,6 +3765,7 @@ export class FactoryService {
     task: FactoryTaskRecord,
     candidateId: string,
   ): Promise<FactoryContextPack> {
+    const contextPackBuiltAt = Date.now();
     const chain = await this.runtime.chain(objectiveStream(state.objectiveId));
     const splitIndex = this.buildSplitIndex(chain);
     const dependencyIds = this.collectDependencyClosure(state, task.taskId);
@@ -3811,9 +3776,28 @@ export class FactoryService {
         this.buildRelatedContextTask(state, relatedTaskId, relations)
       ),
     );
-    const lineage = state.candidateOrder
-      .map((id) => state.candidates[id])
-      .filter((candidate): candidate is FactoryCandidateRecord => candidate?.taskId === task.taskId)
+    const syntheticCurrentCandidate = state.candidates[candidateId]
+      ? undefined
+      : {
+          candidateId,
+          taskId: task.taskId,
+          status: "planned",
+          parentCandidateId: this.latestTaskCandidate(state, task.taskId)?.candidateId,
+          baseCommit: task.baseCommit,
+          checkResults: [],
+          artifactRefs: {},
+          createdAt: contextPackBuiltAt,
+          updatedAt: contextPackBuiltAt,
+          summary: undefined,
+          headCommit: undefined,
+          latestReason: undefined,
+        } satisfies FactoryCandidateRecord;
+    const lineage = [
+      ...state.candidateOrder
+        .map((id) => state.candidates[id])
+        .filter((candidate): candidate is FactoryCandidateRecord => candidate?.taskId === task.taskId),
+      ...(syntheticCurrentCandidate ? [syntheticCurrentCandidate] : []),
+    ]
       .map((candidate) => ({
         candidateId: candidate.candidateId,
         parentCandidateId: candidate.parentCandidateId,
@@ -3852,6 +3836,24 @@ export class FactoryService {
           summary: this.summarizeReceipt(receipt.body),
         } satisfies FactoryContextReceipt;
       });
+    if (syntheticCurrentCandidate) {
+      recentReceipts.push(
+        {
+          type: "candidate.created",
+          at: contextPackBuiltAt,
+          taskId: task.taskId,
+          candidateId,
+          summary: "candidate.created",
+        },
+        {
+          type: "task.dispatched",
+          at: contextPackBuiltAt + 1,
+          taskId: task.taskId,
+          candidateId,
+          summary: "task.dispatched",
+        },
+      );
+    }
     const focusedReceiptKeys = new Set(recentReceipts.map((receipt) => `${receipt.type}:${receipt.at}:${receipt.summary}`));
     const objectiveTasks = state.taskOrder
       .map((taskId) => state.graph.nodes[taskId])

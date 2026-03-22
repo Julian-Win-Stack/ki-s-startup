@@ -15,7 +15,7 @@ import { embed, llmStructured } from "../adapters/openai";
 import { createRuntime } from "@receipt/core/runtime";
 import type { JobHandler } from "../engine/runtime/job-worker";
 import type { SseHub } from "../framework/sse-hub";
-import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../modules/job";
+import type { JobCmd, JobEvent, JobState } from "../modules/job";
 import { FACTORY_CONTROL_AGENT_ID, FactoryService } from "./factory-service";
 import { runFactoryCodexJob } from "../agents/factory-chat";
 

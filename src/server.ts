@@ -23,7 +23,7 @@ import { createHeartbeat, type HeartbeatSpec } from "./adapters/heartbeat";
 import { createRuntime } from "@receipt/core/runtime";
 import type { JobCmd, JobEvent, JobState } from "./modules/job";
 import { decide as decideJob, reduce as reduceJob, initial as initialJob } from "./modules/job";
-import type { AgentEvent } from "./modules/agent";
+import type { AgentCmd, AgentEvent } from "./modules/agent";
 import { decide as decideAgent, reduce as reduceAgent, initial as initialAgent } from "./modules/agent";
 import { llmStructured, llmText, embed } from "./adapters/openai";
 import { loadAgentPrompts, hashAgentPrompts } from "./prompts/agent";
@@ -458,8 +458,7 @@ type WorkerHandlerSpec = {
   readonly defaultAgentId: string;
   readonly kind: string;
   readonly defaultSubConfig: Record<string, unknown>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  readonly runtime: { execute: (stream: string, cmd: any) => Promise<unknown> };
+  readonly runtime: { execute: (stream: string, cmd: AgentCmd) => Promise<AgentEvent[]> };
   readonly runStreamFn: (base: string, runId: string) => string;
   readonly runner: AgentRunner;
   readonly mergeEventExtras?: Record<string, unknown>;
@@ -527,12 +526,12 @@ const handleDelegates = async (
       type: "subagent.merged", runId: parentRunId, agentId: "orchestrator",
       subJobId: subJob.id, subRunId, task: delegate.task,
       ...(spec.mergeEventExtras ?? {}),
-    };
+    } as const;
 
     const emitMerged = async (summary: string) => {
       await spec.runtime.execute(rs, {
         type: "emit", eventId: makeEventId(rs),
-        event: { ...mergedEvent, summary },
+        event: { ...mergedEvent, summary } satisfies AgentEvent,
       });
     };
 

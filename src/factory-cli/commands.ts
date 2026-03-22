@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import React from "react";
-import { cancel, confirm, intro, isCancel, outro, select, spinner, text } from "@clack/prompts";
+import { cancel, confirm, intro, isCancel, outro, spinner, text } from "@clack/prompts";
 import { render } from "ink";
 
 import type { Flags } from "../cli.types";
@@ -264,27 +264,6 @@ const ensurePromptValue = async (opts: {
   return String(value).trim();
 };
 
-const ensureSelectValue = async (opts: {
-  readonly message: string;
-  readonly initialValue: string;
-  readonly options: ReadonlyArray<{ readonly value: string; readonly label: string; readonly hint?: string }>;
-}): Promise<string> => {
-  const value = await select({
-    message: opts.message,
-    initialValue: opts.initialValue,
-    options: opts.options.map((option) => ({
-      value: option.value,
-      label: option.label,
-      hint: option.hint,
-    })),
-  });
-  if (isCancel(value)) {
-    cancel("Factory setup canceled.");
-    throw new Error("Factory setup canceled");
-  }
-  return String(value);
-};
-
 const initFactoryConfig = async (cwd: string, flags: Flags): Promise<FactoryCliConfig> => {
   const repoRoot = path.resolve(asString(flags, "repo-root") ?? await detectGitRoot(cwd) ?? cwd);
   const gitRoot = await detectGitRoot(repoRoot);
@@ -297,7 +276,8 @@ const initFactoryConfig = async (cwd: string, flags: Flags): Promise<FactoryCliC
   const json = parseBooleanFlag(flags, "json");
   const defaultDataDir = path.resolve(repoRoot, asString(flags, "data-dir") ?? path.join(".receipt", "data"));
   const detectedCodexPath = bunWhich("codex");
-  const defaultCodexBin = asString(flags, "codex-bin") ?? process.env.RECEIPT_CODEX_BIN ?? process.env.HUB_CODEX_BIN ?? detectedCodexPath ?? "codex";
+  const explicitCodexBin = asString(flags, "codex-bin") ?? process.env.RECEIPT_CODEX_BIN ?? process.env.HUB_CODEX_BIN;
+  const defaultCodexBin = explicitCodexBin ?? "codex";
 
   let dataDir = defaultDataDir;
   let codexBin = defaultCodexBin;
@@ -460,7 +440,6 @@ const waitForObjectiveTerminal = async (
 ): Promise<FactoryAppExit> => {
   while (true) {
     const detail = await runtime.service.getObjective(objectiveId);
-    const jobs = await runtime.service.queue.listJobs({ limit: 10 });
     console.log(`waiting... obj=${objectiveId.slice(-6)} status=${detail.status} int=${detail.integration.status} cands=${detail.candidates.length} tasks=${detail.tasks.map(t => `${t.taskId.slice(-2)}(${t.status.slice(0, 3)})`).join(",")}`);
     const terminal =
       detail.status === "completed" ? { code: 0, reason: "completed" as const, objectiveId } :

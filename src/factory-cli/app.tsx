@@ -93,12 +93,6 @@ const exitForDetail = (detail: FactoryObjectiveDetail): FactoryAppExit | undefin
   return undefined;
 };
 
-const sectionForObjective = (objective: Pick<FactoryObjectiveDetail, "status" | "scheduler">): keyof FactoryBoardProjection["sections"] =>
-  objective.status === "completed" || objective.status === "canceled" ? "completed"
-  : objective.status === "blocked" || objective.status === "failed" ? "needs_attention"
-  : objective.scheduler.slotState === "queued" ? "queued"
-  : "active";
-
 const Surface = (props: {
   readonly kicker?: string;
   readonly title: string;
@@ -735,33 +729,6 @@ const nextPanel = (panel: FactoryObjectivePanel, delta: number): FactoryObjectiv
   const normalized = current < 0 ? 0 : current;
   return PANEL_ORDER[(normalized + delta + PANEL_ORDER.length) % PANEL_ORDER.length] ?? "overview";
 };
-
-const syntheticBoardForDetail = (detail: FactoryObjectiveDetail): FactoryBoardProjection => {
-  const section = sectionForObjective(detail);
-  const empty = {
-    needs_attention: [] as FactoryBoardProjection["objectives"],
-    active: [] as FactoryBoardProjection["objectives"],
-    queued: [] as FactoryBoardProjection["objectives"],
-    completed: [] as FactoryBoardProjection["objectives"],
-  };
-  empty[section] = [{ ...detail, section }];
-  return {
-    objectives: [{ ...detail, section }],
-    sections: empty,
-    selectedObjectiveId: detail.objectiveId,
-  };
-};
-
-const syntheticComposeForDetail = (detail: FactoryObjectiveDetail): FactoryComposeModel => ({
-  defaultBranch: "n/a",
-  sourceDirty: false,
-  sourceBranch: "n/a",
-  objectiveCount: 1,
-  defaultPolicy: detail.policy,
-  repoProfile: detail.repoProfile,
-  defaultValidationCommands: detail.checks,
-});
-
 
 export const FactoryTerminalApp = ({
   runtime,

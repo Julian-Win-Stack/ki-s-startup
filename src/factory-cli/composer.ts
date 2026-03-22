@@ -61,7 +61,7 @@ export type ComposerCommandDefinition = {
 
 export const COMPOSER_COMMANDS: ReadonlyArray<ComposerCommandDefinition> = [
   { name: "help", label: "/help", usage: "/help or /?", description: "Show slash command help.", aliases: ["?", "help"] },
-  { name: "new", label: "/new", usage: "/new <prompt>", description: "Create a new objective from the prompt." },
+  { name: "new", label: "/new", usage: "/new <prompt>", description: "Start a new thread from the prompt." },
   { name: "react", label: "/react", usage: "/react [message]", description: "React to the selected objective." },
   { name: "watch", label: "/watch", usage: "/watch <objective-id>", description: "Focus an objective by id." },
   { name: "promote", label: "/promote", usage: "/promote", description: "Promote the selected objective." },
@@ -125,7 +125,7 @@ export const findComposerSlashContext = (value: string, caret: number): Composer
   };
 };
 
-export const replaceComposerSlashContext = (value: string, context: ComposerSlashContext, insert: string): { readonly value: string; readonly caret: number } => {
+export const replaceComposerSlashContext = (_value: string, context: ComposerSlashContext, insert: string): { readonly value: string; readonly caret: number } => {
   const nextValue = `${context.before}${insert}${context.after}`;
   return { value: nextValue, caret: context.before.length + insert.length };
 };

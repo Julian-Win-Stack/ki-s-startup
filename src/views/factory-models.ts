@@ -1,3 +1,6 @@
+import type { FactoryState } from "../modules/factory";
+import type { FactoryObjectiveDetail } from "../services/factory-types";
+
 export type FactoryChatProfileNav = {
   readonly id: string;
   readonly label: string;
@@ -172,6 +175,7 @@ export type FactoryChatIslandModel = {
 export type FactoryNavModel = {
   readonly activeProfileId: string;
   readonly activeProfileLabel: string;
+  readonly chatId?: string;
   readonly profiles: ReadonlyArray<FactoryChatProfileNav>;
   readonly objectives: ReadonlyArray<FactoryChatObjectiveNav>;
   readonly showAll?: boolean;
@@ -186,9 +190,9 @@ export type FactoryInspectorModel = {
   readonly liveChildren?: ReadonlyArray<FactoryLiveChildCard>;
   readonly activeRun?: FactoryLiveRunCard;
   readonly jobs: ReadonlyArray<FactoryChatJobNav>;
-  readonly receipts?: ReadonlyArray<any>;
-  readonly debugInfo?: any;
-  readonly tasks?: ReadonlyArray<any>;
+  readonly receipts?: FactoryObjectiveDetail["recentReceipts"];
+  readonly debugInfo?: FactoryState;
+  readonly tasks?: FactoryObjectiveDetail["tasks"];
 };
 
 export type FactoryChatShellModel = {

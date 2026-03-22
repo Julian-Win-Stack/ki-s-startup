@@ -34,7 +34,7 @@
     "new:agent": "bun src/cli.ts new",
     "test:smoke": "bun test ./tests/smoke",
     "test:perf": "bun test ./tests/perf",
-    "check:no-any": "if rg -n \"as any\\\\b|<any>|:\\\\s*any\\\\b|Runtime<any\\\\s*,\" src/core src/engine src/agents tests; then echo \"explicit any found\"; exit 1; fi",
+    "check:no-any": "if rg -n \"as any\\\\b|<any>|:\\\\s*any\\\\b|Runtime<any\\\\s*,\" src tests; then echo \"explicit any found\"; exit 1; fi",
     "verify": "bun run build && bun run check:no-any && bun run test:smoke"
   },
   "dependencies": {

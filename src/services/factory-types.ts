@@ -3,18 +3,15 @@ import type { QueueCommandRecord, QueueJob } from "../adapters/jsonl-queue";
 import type {
   FactoryBudgetState,
   FactoryCandidateRecord,
-  FactoryCandidateStatus,
   FactoryNormalizedObjectivePolicy,
   FactoryObjectivePhase,
   FactoryObjectivePolicy,
   FactoryObjectiveProfileSnapshot,
   FactoryObjectiveSlotState,
   FactoryObjectiveStatus,
-  FactoryProjection,
   FactoryRepoProfileRecord,
   FactoryState,
   FactoryTaskRecord,
-  FactoryTaskStatus,
   FactoryWorkerType,
 } from "../modules/factory";
 import type { JobRecord, JobStatus } from "../modules/job";
