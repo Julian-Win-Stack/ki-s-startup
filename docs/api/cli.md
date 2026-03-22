@@ -175,13 +175,20 @@ receipt memory diff factory/objectives/demo --from-ts 1710000000000
   - `resume` reacts an objective and stays attached until terminal/manual-promotion state.
   - `react`, `promote`, `cancel`, `cleanup`, `archive` mutate an objective once and return structured output.
   - `steer`, `follow-up`, `abort-job` queue commands for a Factory-visible job.
+- Common flags:
+  - `run`, `create`, and `compose` accept `--objective-mode delivery|investigation`.
+  - `run`, `create`, and `compose` accept `--severity 1|2|3|4|5`.
+  - `watch`, `inspect`, `run`, and `resume` accept `--panel overview|report|tasks|candidates|evidence|activity|live|debug|receipts`.
+  - completed investigation objectives prefer the `report` panel by default when a synthesized report is available.
 - JSON output:
   - objective mutations return `{ ok, kind: "objective", action, objectiveId, objective, note? }`
   - job mutations return `{ ok, kind: "job", action, jobId, job, commandId }`
 - Examples:
 ```bash
 receipt factory create --prompt "Plan a CLI-first Factory migration"
+receipt factory run --profile infrastructure --objective-mode investigation --severity 2 --prompt "Investigate current AWS access posture"
 receipt factory compose --objective objective_demo --prompt "Tighten the next pass and keep receipts concise."
+receipt factory inspect objective_demo --panel report
 receipt factory react objective_demo --message "Advance using the latest operator note."
 receipt factory steer job_demo --problem "Retarget this run to the live-output bug."
 receipt factory follow-up job_demo --note "Keep the receipt links stable."

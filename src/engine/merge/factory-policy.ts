@@ -249,7 +249,11 @@ export const buildFactoryDecisionSet = (
     .filter((candidate): candidate is FactoryCandidateRecord => Boolean(candidate))
     .filter((candidate) => candidate.status === "approved");
 
-  if ((state.integration.status === "idle" || state.integration.status === "conflicted" || state.integration.status === "validated") && approvedCandidates.length > 0) {
+  if (
+    state.objectiveMode !== "investigation"
+    && (state.integration.status === "idle" || state.integration.status === "conflicted" || state.integration.status === "validated")
+    && approvedCandidates.length > 0
+  ) {
     for (const candidate of approvedCandidates) {
       if (state.integration.queuedCandidateIds.includes(candidate.candidateId) || state.integration.activeCandidateId === candidate.candidateId) continue;
       actions.push({
@@ -265,7 +269,12 @@ export const buildFactoryDecisionSet = (
 
   //   // console.log(`[DEBUG buildFactoryDecisionSet] objective: ${state.objectiveId}, integrationStatus: ${state.integration.status}, approvedCandidates: ${approvedCandidates.map(c => c.candidateId).join(",")}, actions:`, actions.map(a => a.type));
 
-  if (state.integration.status === "validated" && state.integration.activeCandidateId && state.policy.promotion.autoPromote) {
+  if (
+    state.objectiveMode !== "investigation"
+    && state.integration.status === "validated"
+    && state.integration.activeCandidateId
+    && state.policy.promotion.autoPromote
+  ) {
     const allDone = state.taskOrder.every((taskId) => {
       const task = state.graph.nodes[taskId];
       return task?.status === "integrated" || task?.status === "superseded" || task?.status === "blocked";

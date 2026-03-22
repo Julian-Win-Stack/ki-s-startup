@@ -67,6 +67,7 @@ Queue streams:
 - [docs/factory-on-another-repo.md](./docs/factory-on-another-repo.md)
 - [docs/factory-agent-orchestration.md](./docs/factory-agent-orchestration.md)
 - [docs/factory-profile-orchestration.md](./docs/factory-profile-orchestration.md)
+- [docs/factory-infrastructure-engineer.md](./docs/factory-infrastructure-engineer.md)
 - [docs/agent-framework.md](./docs/agent-framework.md)
 - [docs/axiom-theorem-prover.md](./docs/axiom-theorem-prover.md)
 - [docs/axiom-public-prover.md](./docs/axiom-public-prover.md)

@@ -5,6 +5,7 @@ import type {
   FactoryLiveProjection,
   FactoryObjectiveDetail,
 } from "../services/factory-service";
+import { buildInvestigationReportSections } from "./investigation-report";
 import { BOARD_SECTION_META, type FactoryObjectivePanel, formatList, formatTime, shortHash, truncate } from "./view-model";
 
 const section = (title: string, lines: ReadonlyArray<string>): string =>
@@ -17,6 +18,7 @@ const renderObjectiveCard = (objective: FactoryBoardProjection["objectives"][num
   return [
     `${marker} ${objective.title} [${objective.phase}/${objective.integrationStatus}]`,
     `  id=${objective.objectiveId} slot=${objective.scheduler.slotState}${objective.scheduler.queuePosition ? ` q=${objective.scheduler.queuePosition}` : ""} updated=${formatTime(objective.updatedAt)}`,
+    `  mode=${objective.objectiveMode} severity=${objective.severity} reconciliation=${objective.reconciliationStatus}`,
     `  tasks=${objective.taskCount} active=${objective.activeTaskCount} ready=${objective.readyTaskCount} head=${shortHash(objective.latestCommitHash)}`,
     blocked ? `  blocked=${truncate(blocked, 120)}` : `  next=${summary}`,
   ].join("\n");
@@ -52,6 +54,7 @@ export const renderBoardText = (opts: {
       `title=${opts.selected.title}`,
       `objective=${opts.selected.objectiveId}`,
       `phase=${opts.selected.phase} slot=${opts.selected.scheduler.slotState} integration=${opts.selected.integration.status}`,
+      `mode=${opts.selected.objectiveMode} severity=${opts.selected.severity} reconciliation=${opts.selected.reconciliationStatus}`,
       `next=${truncate(opts.selected.nextAction, 180) || "none"}`,
       opts.selected.blockedExplanation ? `blocked=${truncate(opts.selected.blockedExplanation.summary, 180)}` : "blocked=none",
       opts.selected.latestDecision
@@ -74,6 +77,7 @@ export const renderObjectiveHeader = (detail: FactoryObjectiveDetail): ReadonlyA
   `title=${detail.title}`,
   `phase=${detail.phase} slot=${detail.scheduler.slotState}${detail.scheduler.queuePosition ? ` q=${detail.scheduler.queuePosition}` : ""}`,
   `integration=${detail.integration.status}`,
+  `mode=${detail.objectiveMode} severity=${detail.severity} reconciliation=${detail.reconciliationStatus}`,
   `elapsed=${detail.budgetState.elapsedMinutes}m`,
   `task-runs=${detail.budgetState.taskRunsUsed}/${detail.policy.budgets.maxTaskRuns}`,
   `reconciliation=${detail.budgetState.reconciliationTasksUsed}/${detail.policy.budgets.maxReconciliationTasks}`,
@@ -96,6 +100,10 @@ export const renderObjectivePanelText = (
         `repo-profile=${detail.repoProfile.status} ${truncate(detail.repoProfile.summary, 180)}`,
         `policy=maxActiveTasks:${detail.policy.concurrency.maxActiveTasks} autoPromote:${String(detail.policy.promotion.autoPromote)}`,
       ]);
+    case "report":
+      return buildInvestigationReportSections(detail)
+        .map((entry) => section(entry.title, entry.lines.map((line) => line.startsWith("- ") ? line : entry.title === "Conclusion" || entry.title === "Report" ? line : `- ${line}`)))
+        .join("\n\n");
     case "tasks":
       return section("Tasks", detail.tasks.length
         ? detail.tasks.map((task) => [

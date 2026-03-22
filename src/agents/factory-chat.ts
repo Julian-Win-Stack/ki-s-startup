@@ -96,16 +96,18 @@ const FACTORY_CHAT_LOOP_TEMPLATE = [
   "",
   "Orchestration rules:",
   "- Profiles are orchestration-only. Do not claim this chat edited code directly.",
-  "- Use `codex.run` only for read-only inspection or evidence-gathering in the current repo.",
-  "- Use `factory.dispatch` for any code-changing delivery work or when the next step should run in an objective worktree.",
+  "- Use `codex.run` only for lightweight read-only inspection or evidence-gathering in the current repo.",
+  "- Use `factory.dispatch` for any code-changing delivery work, any substantive infrastructure investigation, or when the next step should run in an objective worktree.",
   "- Before `react`, `promote`, `cancel`, or duplicate dispatch, ground the decision in the current situation, receipts, or live output.",
   "- When child work is already active, prefer `codex.status`, `factory.status`, or `factory.output` with `waitForChangeMs` so you wait for real progress instead of tight polling.",
+  "- If investigation reports disagree or reconciliation is pending, do not finalize yet. Inspect status/receipts and wait for the objective to align or block.",
   "",
   "For final answers to the user:",
   "- write plain language, not raw JSON",
   "- keep it concise and operator-facing",
   "- prefer the words Skill, Chat, and Work",
   "- mention objective, run, and job only when needed for debugging or inspection",
+  "- for investigation work, use a short conversational lead followed by sections named Conclusion, Evidence, Disagreements, Scripts Run, Artifacts, and Next Steps",
   "- if code changes are needed, route them through Factory objective work instead of claiming this chat changed code directly",
   "",
   "Respond with JSON only, no markdown. Always include every field in the action object:",
@@ -422,6 +424,7 @@ const buildFactorySituation = async (input: {
       ]);
       lines.push(`Objective: ${detail.title} (${detail.objectiveId})`);
       lines.push(`Status: ${detail.status} · phase ${detail.phase} · integration ${detail.integration.status}`);
+      lines.push(`Mode: ${detail.objectiveMode} · severity ${detail.severity} · reconciliation ${detail.reconciliationStatus}`);
       if (detail.latestDecision?.summary) lines.push(`Latest decision: ${detail.latestDecision.summary}`);
       if (detail.blockedExplanation?.summary) lines.push(`Blocked: ${detail.blockedExplanation.summary}`);
       const activeJobs = debug.activeJobs.slice(0, 3);
@@ -849,6 +852,13 @@ const createFactoryDispatchTool = (input: {
             title: asString(toolInput.title) ?? deriveObjectiveTitle(prompt),
             prompt,
             baseHash: asString(toolInput.baseHash),
+            objectiveMode: toolInput.objectiveMode === "investigation" || toolInput.objectiveMode === "delivery"
+              ? toolInput.objectiveMode
+              : undefined,
+            severity: typeof toolInput.severity === "number" && Number.isInteger(toolInput.severity)
+              && toolInput.severity >= 1 && toolInput.severity <= 5
+              ? toolInput.severity as FactoryObjectiveInput["severity"]
+              : undefined,
             checks: asStringList(toolInput.checks),
             channel: asString(toolInput.channel),
             profileId: input.profileId,
@@ -1469,8 +1479,8 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
         "codex.logs": "{\"jobId\"?: string} — Inspect Codex child logs, packet files, and artifact paths for this Factory chat context. Without jobId, use the latest Codex child.",
       } : {}),
       "job.control": "{\"jobId\": string, \"command\": \"steer\"|\"follow_up\"|\"abort\", \"problem\"?: string, \"config\"?: object, \"note\"?: string, \"reason\"?: string} — Queue a steer, follow-up, or abort command for a running child job. Do not pass the current factory job id.",
-      "codex.run": "{\"prompt\": string, \"timeoutMs\"?: number} — Queue a read-only Codex probe against the repo and return its live child job handle immediately. Use it for inspection and evidence-gathering only; use factory.dispatch for code changes.",
-      "factory.dispatch": "{\"action\"?: \"create\"|\"react\"|\"promote\"|\"cancel\"|\"cleanup\"|\"archive\", \"objectiveId\"?: string, \"prompt\"?: string, \"title\"?: string, \"baseHash\"?: string, \"checks\"?: string[], \"channel\"?: string, \"reason\"?: string} — Create or operate on a tracked Factory project. 'react' means re-evaluate the project and dispatch the next eligible step.",
+      "codex.run": "{\"prompt\": string, \"timeoutMs\"?: number} — Queue a read-only Codex probe against the repo and return its live child job handle immediately. Use it for lightweight inspection and evidence-gathering only; use factory.dispatch for substantive infra work or code changes.",
+      "factory.dispatch": "{\"action\"?: \"create\"|\"react\"|\"promote\"|\"cancel\"|\"cleanup\"|\"archive\", \"objectiveId\"?: string, \"prompt\"?: string, \"title\"?: string, \"baseHash\"?: string, \"objectiveMode\"?: \"delivery\"|\"investigation\", \"severity\"?: 1|2|3|4|5, \"checks\"?: string[], \"channel\"?: string, \"reason\"?: string} — Create or operate on a tracked Factory project. 'react' means re-evaluate the project and dispatch the next eligible step.",
       "factory.status": "{\"objectiveId\"?: string, \"waitForChangeMs\"?: number} — Inspect a tracked Factory project and return objective state, decisions, evidence cards, recent receipts, jobs, worktrees, and latest context packs. With waitForChangeMs, block briefly until the objective changes.",
       "factory.output": "{\"objectiveId\"?: string, \"focusKind\": \"task\"|\"job\", \"focusId\": string, \"waitForChangeMs\"?: number} — Inspect live output and log tails for an objective task or job. With waitForChangeMs, block briefly until the output changes.",
       "factory.receipts": "{\"objectiveId\"?: string, \"taskId\"?: string, \"candidateId\"?: string, \"types\"?: string[], \"limit\"?: number} — Inspect a bounded objective-scoped receipt slice for the current project.",

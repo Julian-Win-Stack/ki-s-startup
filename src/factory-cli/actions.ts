@@ -1,5 +1,5 @@
 import type { QueueJob } from "../adapters/jsonl-queue";
-import type { FactoryObjectivePolicy } from "../modules/factory";
+import type { FactoryObjectiveMode, FactoryObjectivePolicy, FactoryObjectiveSeverity } from "../modules/factory";
 import { FactoryServiceError, type FactoryObjectiveDetail, type FactoryLiveProjection } from "../services/factory-service";
 import type { FactoryCliRuntime } from "./runtime";
 import { deriveObjectiveTitle } from "./composer";
@@ -55,6 +55,8 @@ export const createObjectiveMutation = async (
     readonly prompt: string;
     readonly title?: string;
     readonly baseHash?: string;
+    readonly objectiveMode?: FactoryObjectiveMode;
+    readonly severity?: FactoryObjectiveSeverity;
     readonly checks?: ReadonlyArray<string>;
     readonly channel?: string;
     readonly policy?: FactoryObjectivePolicy;
@@ -65,6 +67,8 @@ export const createObjectiveMutation = async (
     title: input.title ?? deriveObjectiveTitle(input.prompt),
     prompt: input.prompt,
     baseHash: input.baseHash,
+    objectiveMode: input.objectiveMode,
+    severity: input.severity,
     checks: input.checks,
     channel: input.channel,
     policy: input.policy,
@@ -85,6 +89,8 @@ export const composeObjectiveMutation = async (
     readonly objectiveId?: string;
     readonly title?: string;
     readonly baseHash?: string;
+    readonly objectiveMode?: FactoryObjectiveMode;
+    readonly severity?: FactoryObjectiveSeverity;
     readonly checks?: ReadonlyArray<string>;
     readonly channel?: string;
     readonly policy?: FactoryObjectivePolicy;
@@ -96,6 +102,8 @@ export const composeObjectiveMutation = async (
     objectiveId: input.objectiveId,
     title: input.title ?? deriveObjectiveTitle(input.prompt),
     baseHash: input.baseHash,
+    objectiveMode: input.objectiveMode,
+    severity: input.severity,
     checks: input.checks,
     channel: input.channel,
     policy: input.policy,

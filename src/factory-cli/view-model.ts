@@ -9,6 +9,7 @@ import type {
 
 export type FactoryObjectivePanel =
   | "overview"
+  | "report"
   | "tasks"
   | "candidates"
   | "evidence"
@@ -19,6 +20,7 @@ export type FactoryObjectivePanel =
 
 export const PANEL_ORDER: readonly FactoryObjectivePanel[] = [
   "overview",
+  "report",
   "tasks",
   "candidates",
   "evidence",
@@ -30,6 +32,7 @@ export const PANEL_ORDER: readonly FactoryObjectivePanel[] = [
 
 export const PANEL_LABELS: Readonly<Record<FactoryObjectivePanel, string>> = {
   overview: "Overview",
+  report: "Report",
   tasks: "Tasks",
   candidates: "Candidates",
   evidence: "Evidence",

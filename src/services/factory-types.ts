@@ -3,10 +3,15 @@ import type { QueueCommandRecord, QueueJob } from "../adapters/jsonl-queue";
 import type {
   FactoryBudgetState,
   FactoryCandidateRecord,
+  FactoryInvestigationReport,
+  FactoryInvestigationSynthesisRecord,
+  FactoryInvestigationTaskReport,
+  FactoryObjectiveMode,
   FactoryNormalizedObjectivePolicy,
   FactoryObjectivePhase,
   FactoryObjectivePolicy,
   FactoryObjectiveProfileSnapshot,
+  FactoryObjectiveSeverity,
   FactoryObjectiveSlotState,
   FactoryObjectiveStatus,
   FactoryRepoProfileRecord,
@@ -51,6 +56,8 @@ export type FactoryObjectiveInput = {
   readonly title: string;
   readonly prompt: string;
   readonly baseHash?: string;
+  readonly objectiveMode?: FactoryObjectiveMode;
+  readonly severity?: FactoryObjectiveSeverity;
   readonly checks?: ReadonlyArray<string>;
   readonly channel?: string;
   readonly policy?: FactoryObjectivePolicy;
@@ -63,6 +70,8 @@ export type FactoryObjectiveComposeInput = {
   readonly objectiveId?: string;
   readonly title?: string;
   readonly baseHash?: string;
+  readonly objectiveMode?: FactoryObjectiveMode;
+  readonly severity?: FactoryObjectiveSeverity;
   readonly checks?: ReadonlyArray<string>;
   readonly channel?: string;
   readonly policy?: FactoryObjectivePolicy;
@@ -86,6 +95,7 @@ export type FactoryContextSources = {
 
 export type FactoryTaskView = FactoryTaskRecord & {
   readonly candidate?: FactoryCandidateRecord;
+  readonly investigationReport?: FactoryInvestigationTaskReport;
   readonly jobStatus?: JobStatus | "missing";
   readonly job?: JobRecord;
   readonly workspaceExists: boolean;
@@ -105,6 +115,9 @@ export type FactoryObjectiveCard = {
   readonly title: string;
   readonly status: FactoryObjectiveStatus;
   readonly phase: FactoryObjectivePhase;
+  readonly objectiveMode: FactoryObjectiveMode;
+  readonly severity: FactoryObjectiveSeverity;
+  readonly reconciliationStatus: "none" | "pending" | "running" | "completed";
   readonly scheduler: {
     readonly slotState: FactoryObjectiveSlotState;
     readonly queuePosition?: number;
@@ -147,6 +160,11 @@ export type FactoryObjectiveDetail = FactoryObjectiveCard & {
   readonly contextSources: FactoryContextSources;
   readonly budgetState: FactoryBudgetState;
   readonly createdAt: number;
+  readonly investigation: {
+    readonly reports: ReadonlyArray<FactoryInvestigationTaskReport>;
+    readonly synthesized?: FactoryInvestigationSynthesisRecord;
+    readonly finalReport: FactoryInvestigationReport;
+  };
   readonly tasks: ReadonlyArray<FactoryTaskView>;
   readonly candidates: ReadonlyArray<FactoryCandidateRecord>;
   readonly integration: FactoryState["integration"];
@@ -159,7 +177,7 @@ export type FactoryObjectiveDetail = FactoryObjectiveCard & {
     readonly candidateId?: string;
   }>;
   readonly evidenceCards: ReadonlyArray<{
-    readonly kind: "decision" | "plan" | "blocked" | "merge" | "promotion";
+    readonly kind: "decision" | "plan" | "blocked" | "merge" | "promotion" | "report";
     readonly title: string;
     readonly summary: string;
     readonly at: number;
@@ -280,6 +298,8 @@ export type FactoryTaskJobPayload = {
   readonly objectiveId: string;
   readonly taskId: string;
   readonly workerType: FactoryWorkerType;
+  readonly objectiveMode: FactoryObjectiveMode;
+  readonly severity: FactoryObjectiveSeverity;
   readonly candidateId: string;
   readonly baseCommit: string;
   readonly workspaceId: string;

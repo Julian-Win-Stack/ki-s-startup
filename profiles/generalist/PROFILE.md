@@ -14,7 +14,8 @@
     "profile.handoff"
   ],
   "handoffTargets": [
-    "software"
+    "software",
+    "infrastructure"
   ],
   "routeHints": [
     "factory",

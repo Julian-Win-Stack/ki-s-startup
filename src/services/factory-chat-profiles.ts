@@ -11,6 +11,8 @@ const PROFILE_DIR = "profiles";
 
 export type FactoryChatProfileObjectiveWorktreeMode = "required" | "forbidden";
 export type FactoryChatProfileObjectiveValidationMode = "repo_profile" | "none";
+export type FactoryChatProfileObjectiveMode = "delivery" | "investigation";
+export type FactoryChatProfileObjectiveSeverity = 1 | 2 | 3 | 4 | 5;
 export type FactoryChatProfileCapability =
   | "memory.read"
   | "memory.write"
@@ -26,6 +28,8 @@ export type FactoryChatProfileObjectiveManifest = {
   readonly defaultWorker?: string;
   readonly worktreeModeByWorker?: Readonly<Record<string, FactoryChatProfileObjectiveWorktreeMode>>;
   readonly validation?: FactoryChatProfileObjectiveValidationMode;
+  readonly defaultMode?: FactoryChatProfileObjectiveMode;
+  readonly defaultSeverity?: FactoryChatProfileObjectiveSeverity;
   readonly maxParallelChildren?: number;
   readonly allowObjectiveCreation?: boolean;
 };
@@ -35,6 +39,8 @@ export type FactoryChatProfileObjectivePolicyManifest = {
   readonly defaultWorkerType?: string;
   readonly worktreeModeByWorker?: Readonly<Record<string, FactoryChatProfileObjectiveWorktreeMode>>;
   readonly defaultValidationMode?: FactoryChatProfileObjectiveValidationMode;
+  readonly defaultObjectiveMode?: FactoryChatProfileObjectiveMode;
+  readonly defaultSeverity?: FactoryChatProfileObjectiveSeverity;
   readonly maxParallelChildren?: number;
   readonly allowObjectiveCreation?: boolean;
 };
@@ -44,6 +50,8 @@ export type FactoryChatResolvedObjectivePolicy = {
   readonly defaultWorkerType: string;
   readonly worktreeModeByWorker: Readonly<Record<string, FactoryChatProfileObjectiveWorktreeMode>>;
   readonly defaultValidationMode: FactoryChatProfileObjectiveValidationMode;
+  readonly defaultObjectiveMode: FactoryChatProfileObjectiveMode;
+  readonly defaultSeverity: FactoryChatProfileObjectiveSeverity;
   readonly maxParallelChildren: number;
   readonly allowObjectiveCreation: boolean;
 };
@@ -167,6 +175,8 @@ const DEFAULT_FACTORY_OBJECTIVE_POLICY: FactoryChatResolvedObjectivePolicy = {
   defaultWorkerType: "codex",
   worktreeModeByWorker: FACTORY_OBJECTIVE_WORKTREE_DEFAULTS,
   defaultValidationMode: "repo_profile",
+  defaultObjectiveMode: "delivery",
+  defaultSeverity: 1,
   maxParallelChildren: 4,
   allowObjectiveCreation: true,
 };
@@ -198,6 +208,24 @@ const normalizeObjectiveWorktreeMode = (
 ): FactoryChatProfileObjectiveWorktreeMode | undefined =>
   value === "required" || value === "forbidden" ? value : undefined;
 
+const normalizeObjectiveMode = (
+  value: unknown,
+): FactoryChatProfileObjectiveMode | undefined =>
+  value === "delivery" || value === "investigation" ? value : undefined;
+
+const normalizeObjectiveSeverity = (
+  value: unknown,
+): FactoryChatProfileObjectiveSeverity | undefined => {
+  const numeric = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim().length > 0
+      ? Number(value)
+      : NaN;
+  if (!Number.isFinite(numeric)) return undefined;
+  const rounded = Math.max(1, Math.min(5, Math.round(numeric)));
+  return rounded as FactoryChatProfileObjectiveSeverity;
+};
+
 const normalizeObjectivePolicyManifest = (
   raw: FactoryChatProfileObjectivePolicyManifest | undefined,
 ): FactoryChatProfileObjectivePolicyManifest => {
@@ -215,6 +243,8 @@ const normalizeObjectivePolicyManifest = (
   const defaultValidationMode = raw?.defaultValidationMode === "none" || raw?.defaultValidationMode === "repo_profile"
     ? raw.defaultValidationMode
     : undefined;
+  const defaultObjectiveMode = normalizeObjectiveMode(raw?.defaultObjectiveMode);
+  const defaultSeverity = normalizeObjectiveSeverity(raw?.defaultSeverity);
   const maxParallelChildren = typeof raw?.maxParallelChildren === "number" && Number.isFinite(raw.maxParallelChildren)
     ? Math.max(1, Math.min(Math.floor(raw.maxParallelChildren), 8))
     : undefined;
@@ -223,6 +253,8 @@ const normalizeObjectivePolicyManifest = (
     defaultWorkerType,
     worktreeModeByWorker: Object.keys(worktreeModeByWorker).length > 0 ? worktreeModeByWorker : undefined,
     defaultValidationMode,
+    defaultObjectiveMode,
+    defaultSeverity,
     maxParallelChildren,
     allowObjectiveCreation: typeof raw?.allowObjectiveCreation === "boolean" ? raw.allowObjectiveCreation : undefined,
   };
@@ -236,6 +268,8 @@ const normalizeObjectiveManifest = (
     defaultWorkerType: raw.defaultWorker,
     worktreeModeByWorker: raw.worktreeModeByWorker,
     defaultValidationMode: raw.validation,
+    defaultObjectiveMode: raw.defaultMode,
+    defaultSeverity: raw.defaultSeverity,
     maxParallelChildren: raw.maxParallelChildren,
     allowObjectiveCreation: raw.allowObjectiveCreation,
   } : undefined);
@@ -302,6 +336,8 @@ const mergeObjectivePolicyManifestEntries = (
       }
     : merged.worktreeModeByWorker,
   defaultValidationMode: next.defaultValidationMode ?? merged.defaultValidationMode,
+  defaultObjectiveMode: next.defaultObjectiveMode ?? merged.defaultObjectiveMode,
+  defaultSeverity: next.defaultSeverity ?? merged.defaultSeverity,
   maxParallelChildren: next.maxParallelChildren ?? merged.maxParallelChildren,
   allowObjectiveCreation: next.allowObjectiveCreation ?? merged.allowObjectiveCreation,
 });
@@ -372,6 +408,8 @@ const resolveObjectivePolicy = (
     defaultWorkerType,
     worktreeModeByWorker,
     defaultValidationMode: raw.defaultValidationMode ?? DEFAULT_FACTORY_OBJECTIVE_POLICY.defaultValidationMode,
+    defaultObjectiveMode: raw.defaultObjectiveMode ?? DEFAULT_FACTORY_OBJECTIVE_POLICY.defaultObjectiveMode,
+    defaultSeverity: raw.defaultSeverity ?? DEFAULT_FACTORY_OBJECTIVE_POLICY.defaultSeverity,
     maxParallelChildren: raw.maxParallelChildren ?? DEFAULT_FACTORY_OBJECTIVE_POLICY.maxParallelChildren,
     allowObjectiveCreation: raw.allowObjectiveCreation ?? DEFAULT_FACTORY_OBJECTIVE_POLICY.allowObjectiveCreation,
   };
@@ -401,6 +439,8 @@ const renderObjectivePolicy = (policy: FactoryChatResolvedObjectivePolicy, skill
   `- Objective creation: ${policy.allowObjectiveCreation ? "allowed" : "forbidden"}`,
   `- Default worker: ${policy.defaultWorkerType}`,
   `- Allowed workers: ${policy.allowedWorkerTypes.join(", ") || "none"}`,
+  `- Default mode: ${policy.defaultObjectiveMode}`,
+  `- Default severity: ${String(policy.defaultSeverity)}`,
   `- Max parallel children: ${String(policy.maxParallelChildren)}`,
   `- Default validation: ${policy.defaultValidationMode}`,
   `- Worktree rules: ${Object.entries(policy.worktreeModeByWorker).map(([workerType, mode]) => `${workerType}=${mode}`).join(", ") || "none"}`,

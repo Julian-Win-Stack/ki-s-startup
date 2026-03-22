@@ -61,6 +61,55 @@ export type FactoryWorkerType =
   | "infra"
   | string;
 
+export type FactoryObjectiveMode =
+  | "delivery"
+  | "investigation";
+
+export type FactoryObjectiveSeverity =
+  | 1
+  | 2
+  | 3
+  | 4
+  | 5;
+
+export type FactoryInvestigationEvidence = {
+  readonly title: string;
+  readonly summary: string;
+  readonly detail?: string;
+};
+
+export type FactoryInvestigationScriptRun = {
+  readonly command: string;
+  readonly summary?: string;
+  readonly status?: "ok" | "warning" | "error";
+};
+
+export type FactoryInvestigationReport = {
+  readonly conclusion: string;
+  readonly evidence: ReadonlyArray<FactoryInvestigationEvidence>;
+  readonly scriptsRun: ReadonlyArray<FactoryInvestigationScriptRun>;
+  readonly disagreements: ReadonlyArray<string>;
+  readonly nextSteps: ReadonlyArray<string>;
+};
+
+export type FactoryInvestigationTaskReport = {
+  readonly taskId: string;
+  readonly candidateId: string;
+  readonly summary: string;
+  readonly handoff: string;
+  readonly report: FactoryInvestigationReport;
+  readonly artifactRefs: Readonly<Record<string, GraphRef>>;
+  readonly evidenceCommit?: string;
+  readonly reportedAt: number;
+};
+
+export type FactoryInvestigationSynthesisRecord = {
+  readonly summary: string;
+  readonly report: FactoryInvestigationReport;
+  readonly taskIds: ReadonlyArray<string>;
+  readonly synthesizedAt: number;
+};
+
 export type FactoryObjectiveProfileWorktreeMode = "required" | "forbidden";
 
 export type FactoryObjectiveProfilePolicy = {
@@ -68,6 +117,8 @@ export type FactoryObjectiveProfilePolicy = {
   readonly defaultWorkerType: FactoryWorkerType;
   readonly worktreeModeByWorker: Readonly<Record<string, FactoryObjectiveProfileWorktreeMode>>;
   readonly defaultValidationMode: "repo_profile" | "none";
+  readonly defaultObjectiveMode: FactoryObjectiveMode;
+  readonly defaultSeverity: FactoryObjectiveSeverity;
   readonly maxParallelChildren: number;
   readonly allowObjectiveCreation: boolean;
 };
@@ -280,6 +331,8 @@ export type FactoryState = {
   readonly prompt: string;
   readonly channel: string;
   readonly baseHash: string;
+  readonly objectiveMode: FactoryObjectiveMode;
+  readonly severity: FactoryObjectiveSeverity;
   readonly checks: ReadonlyArray<string>;
   readonly checksSource: "explicit" | "profile" | "default";
   readonly profile: FactoryObjectiveProfileSnapshot;
@@ -304,6 +357,11 @@ export type FactoryState = {
   readonly scheduler: FactorySchedulerRecord;
   readonly repoProfile: FactoryRepoProfileRecord;
   readonly plan: FactoryPlanRecord;
+  readonly investigation: {
+    readonly reports: Readonly<Record<string, FactoryInvestigationTaskReport>>;
+    readonly reportOrder: ReadonlyArray<string>;
+    readonly synthesized?: FactoryInvestigationSynthesisRecord;
+  };
   readonly latestEvidence?: FactoryActionEvidence;
   readonly latestRebracket?: FactoryRebracketRecord;
 };
@@ -377,6 +435,8 @@ export const DEFAULT_FACTORY_OBJECTIVE_PROFILE: FactoryObjectiveProfileSnapshot 
       agent: "forbidden",
     },
     defaultValidationMode: "repo_profile",
+    defaultObjectiveMode: "delivery",
+    defaultSeverity: 1,
     maxParallelChildren: 4,
     allowObjectiveCreation: true,
   },
@@ -384,6 +444,20 @@ export const DEFAULT_FACTORY_OBJECTIVE_PROFILE: FactoryObjectiveProfileSnapshot 
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const normalizeObjectiveMode = (value: unknown): FactoryObjectiveMode =>
+  value === "investigation" ? "investigation" : "delivery";
+
+const normalizeObjectiveSeverity = (value: unknown): FactoryObjectiveSeverity => {
+  const numeric = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim().length > 0
+      ? Number(value)
+      : NaN;
+  if (!Number.isFinite(numeric)) return 1;
+  const clamped = Math.max(1, Math.min(5, Math.round(numeric)));
+  return clamped as FactoryObjectiveSeverity;
+};
 
 export const normalizeFactoryObjectiveProfileSnapshot = (value: unknown): FactoryObjectiveProfileSnapshot => {
   if (!isRecord(value)) return DEFAULT_FACTORY_OBJECTIVE_PROFILE;
@@ -428,6 +502,8 @@ export const normalizeFactoryObjectiveProfileSnapshot = (value: unknown): Factor
       defaultValidationMode: policyInput.defaultValidationMode === "none"
         ? "none"
         : DEFAULT_FACTORY_OBJECTIVE_PROFILE.objectivePolicy.defaultValidationMode,
+      defaultObjectiveMode: normalizeObjectiveMode(policyInput.defaultObjectiveMode),
+      defaultSeverity: normalizeObjectiveSeverity(policyInput.defaultSeverity),
       maxParallelChildren: typeof policyInput.maxParallelChildren === "number" && Number.isFinite(policyInput.maxParallelChildren)
         ? Math.max(1, Math.round(policyInput.maxParallelChildren))
         : DEFAULT_FACTORY_OBJECTIVE_PROFILE.objectivePolicy.maxParallelChildren,
@@ -673,6 +749,8 @@ export type FactoryEvent =
       readonly prompt: string;
       readonly channel: string;
       readonly baseHash: string;
+      readonly objectiveMode: FactoryObjectiveMode;
+      readonly severity: FactoryObjectiveSeverity;
       readonly checks: ReadonlyArray<string>;
       readonly checksSource: "explicit" | "profile" | "default";
       readonly profile: FactoryObjectiveProfileSnapshot;
@@ -853,6 +931,26 @@ export type FactoryEvent =
       readonly reviewedAt: number;
     }
   | {
+      readonly type: "investigation.reported";
+      readonly objectiveId: string;
+      readonly taskId: string;
+      readonly candidateId: string;
+      readonly summary: string;
+      readonly handoff: string;
+      readonly report: FactoryInvestigationReport;
+      readonly artifactRefs: Readonly<Record<string, GraphRef>>;
+      readonly evidenceCommit?: string;
+      readonly reportedAt: number;
+    }
+  | {
+      readonly type: "investigation.synthesized";
+      readonly objectiveId: string;
+      readonly summary: string;
+      readonly report: FactoryInvestigationReport;
+      readonly taskIds: ReadonlyArray<string>;
+      readonly synthesizedAt: number;
+    }
+  | {
       readonly type: "candidate.conflicted";
       readonly objectiveId: string;
       readonly candidateId: string;
@@ -1003,6 +1101,8 @@ export const initialFactoryState: FactoryState = {
   prompt: "",
   channel: "results",
   baseHash: "",
+  objectiveMode: "delivery",
+  severity: 1,
   checks: [],
   checksSource: "default",
   profile: DEFAULT_FACTORY_OBJECTIVE_PROFILE,
@@ -1032,6 +1132,10 @@ export const initialFactoryState: FactoryState = {
   plan: {
     taskIds: [],
   },
+  investigation: {
+    reports: {},
+    reportOrder: [],
+  },
 };
 
 export const decideFactory: Decide<FactoryCmd, FactoryEvent> = (cmd) => {
@@ -1049,6 +1153,8 @@ export const reduceFactory: Reducer<FactoryState, FactoryEvent> = (state, event)
         prompt: event.prompt,
         channel: event.channel,
         baseHash: event.baseHash,
+        objectiveMode: event.objectiveMode,
+        severity: event.severity,
         checks: event.checks,
         checksSource: event.checksSource,
         profile: normalizeFactoryObjectiveProfileSnapshot(event.profile),
@@ -1077,6 +1183,10 @@ export const reduceFactory: Reducer<FactoryState, FactoryEvent> = (state, event)
         },
         plan: {
           taskIds: [],
+        },
+        investigation: {
+          reports: {},
+          reportOrder: [],
         },
       };
     case "repo.profile.requested":
@@ -1370,6 +1480,64 @@ export const reduceFactory: Reducer<FactoryState, FactoryEvent> = (state, event)
         latestSummary: event.summary,
       };
     }
+    case "investigation.reported": {
+      const active = state.graph.activeNodeIds.filter((taskId) => taskId !== event.taskId);
+      let next = updateCandidate(state, event.candidateId, {
+        status: "approved",
+        summary: event.summary,
+        handoff: event.handoff,
+        artifactRefs: event.artifactRefs,
+        headCommit: event.evidenceCommit,
+        latestReason: event.summary,
+        approvedAt: event.reportedAt,
+        updatedAt: event.reportedAt,
+      });
+      next = updateTask(next, event.taskId, {
+        status: "approved",
+        candidateId: event.candidateId,
+        latestSummary: event.summary,
+        artifactRefs: event.artifactRefs,
+        completedAt: event.reportedAt,
+      });
+      return {
+        ...setActiveTaskIds(next, active, event.reportedAt),
+        latestSummary: event.summary,
+        investigation: {
+          reports: {
+            ...state.investigation.reports,
+            [event.taskId]: {
+              taskId: event.taskId,
+              candidateId: event.candidateId,
+              summary: event.summary,
+              handoff: event.handoff,
+              report: event.report,
+              artifactRefs: event.artifactRefs,
+              evidenceCommit: event.evidenceCommit,
+              reportedAt: event.reportedAt,
+            },
+          },
+          reportOrder: state.investigation.reportOrder.includes(event.taskId)
+            ? state.investigation.reportOrder
+            : [...state.investigation.reportOrder, event.taskId],
+          synthesized: undefined,
+        },
+      };
+    }
+    case "investigation.synthesized":
+      return {
+        ...state,
+        latestSummary: event.summary,
+        updatedAt: event.synthesizedAt,
+        investigation: {
+          ...state.investigation,
+          synthesized: {
+            summary: event.summary,
+            report: event.report,
+            taskIds: event.taskIds,
+            synthesizedAt: event.synthesizedAt,
+          },
+        },
+      };
     case "candidate.conflicted":
       return {
         ...updateCandidate(state, event.candidateId, {

@@ -5,7 +5,7 @@ import { cancel, confirm, intro, isCancel, outro, spinner, text } from "@clack/p
 import { render } from "ink";
 
 import type { Flags } from "../cli.types";
-import type { FactoryObjectivePolicy } from "../modules/factory";
+import type { FactoryObjectiveMode, FactoryObjectivePolicy, FactoryObjectiveSeverity } from "../modules/factory";
 import { DEFAULT_FACTORY_OBJECTIVE_POLICY } from "../modules/factory";
 import { bunWhich, resolveBunRuntime } from "../lib/runtime-paths";
 import {
@@ -33,6 +33,7 @@ import {
 } from "./config";
 import { renderCodexProbeText, runFactoryCodexProbe, type CodexProbeMode } from "./codex-probe";
 import { renderBoardText, renderObjectiveHeader, renderObjectivePanelText } from "./format";
+import { buildInvestigationReportPanelValue, defaultObjectivePanelForDetail } from "./investigation-report";
 import { createFactoryCliRuntime } from "./runtime";
 import { terminalTheme } from "./theme";
 import type { FactoryObjectivePanel } from "./view-model";
@@ -104,6 +105,23 @@ const parseChecksInput = (value: string): string[] =>
     .split(/\r?\n|,/)
     .map((item) => item.trim())
     .filter(Boolean);
+
+const parseObjectiveModeFlag = (flags: Flags): FactoryObjectiveMode | undefined => {
+  const value = asString(flags, "objective-mode")?.trim().toLowerCase();
+  if (!value) return undefined;
+  if (value === "delivery" || value === "investigation") return value;
+  throw new Error(`--objective-mode must be 'delivery' or 'investigation'`);
+};
+
+const parseSeverityFlag = (flags: Flags): FactoryObjectiveSeverity | undefined => {
+  const value = asString(flags, "severity");
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 5) {
+    throw new Error("--severity must be an integer between 1 and 5");
+  }
+  return parsed as FactoryObjectiveSeverity;
+};
 
 const formatDurationMs = (durationMs: number): string => {
   if (durationMs < 1_000) return `${durationMs}ms`;
@@ -177,6 +195,8 @@ const panelValue = (
         blockedExplanation: detail.blockedExplanation,
         latestDecision: detail.latestDecision,
       };
+    case "report":
+      return buildInvestigationReportPanelValue(detail);
     case "tasks":
       return detail.tasks;
     case "candidates":
@@ -198,7 +218,7 @@ const panelValue = (
 
 const parsePanel = (value: string | undefined): FactoryObjectivePanel => {
   const panel = value?.trim().toLowerCase() as FactoryObjectivePanel | undefined;
-  return panel && ["overview", "tasks", "candidates", "evidence", "activity", "live", "debug", "receipts"].includes(panel)
+  return panel && ["overview", "report", "tasks", "candidates", "evidence", "activity", "live", "debug", "receipts"].includes(panel)
     ? panel
     : "overview";
 };
@@ -471,7 +491,7 @@ const printBoardSnapshot = async (runtime: ReturnType<typeof createFactoryCliRun
 const printObjectiveSnapshot = async (
   runtime: ReturnType<typeof createFactoryCliRuntime>,
   objectiveId: string,
-  panel: FactoryObjectivePanel,
+  panel: FactoryObjectivePanel | undefined,
   asJson: boolean,
 ): Promise<void> => {
   const [detail, live, debug] = await Promise.all([
@@ -479,23 +499,36 @@ const printObjectiveSnapshot = async (
     runtime.service.buildLiveProjection(objectiveId),
     runtime.service.getObjectiveDebug(objectiveId),
   ]);
+  const resolvedPanel = panel ?? defaultObjectivePanelForDetail(detail);
   if (asJson) {
     printJson({
       objectiveId,
-      panel,
-      data: panelValue(panel, detail, live, debug),
+      panel: resolvedPanel,
+      data: panelValue(resolvedPanel, detail, live, debug),
     });
     return;
   }
   console.log([
     renderObjectiveHeader(detail).join("\n"),
-    renderObjectivePanelText(detail, live, debug, panel),
+    renderObjectivePanelText(detail, live, debug, resolvedPanel),
   ].join("\n\n"));
+};
+
+const resolveObjectivePanel = async (
+  runtime: ReturnType<typeof createFactoryCliRuntime>,
+  objectiveId: string,
+  requestedPanel?: FactoryObjectivePanel,
+): Promise<FactoryObjectivePanel> => {
+  if (requestedPanel) return requestedPanel;
+  const detail = await runtime.service.getObjective(objectiveId);
+  return defaultObjectivePanelForDetail(detail);
 };
 
 export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<string>, flags: Flags): Promise<void> => {
   const subcommand = args[0];
   const json = parseBooleanFlag(flags, "json");
+  const objectiveMode = parseObjectiveModeFlag(flags);
+  const severity = parseSeverityFlag(flags);
 
   if (subcommand === "init") {
     await initFactoryConfig(cwd, flags);
@@ -572,6 +605,8 @@ export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<stri
           prompt,
           title: deriveTitle(asString(flags, "title"), prompt),
           baseHash: asString(flags, "base-hash"),
+          objectiveMode,
+          severity,
           checks: explicitChecks.length ? explicitChecks : config.defaultChecks,
           channel: asString(flags, "channel"),
           policy: policyOverride,
@@ -579,7 +614,7 @@ export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<stri
         });
         if (json || !isInteractiveTerminal()) {
           const result = await waitForObjectiveTerminal(runtime, created.objectiveId);
-          await printObjectiveSnapshot(runtime, created.objectiveId, "overview", json);
+          await printObjectiveSnapshot(runtime, created.objectiveId, undefined, json);
           process.exitCode = result.code;
           return;
         }
@@ -589,6 +624,7 @@ export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<stri
           initialObjectiveId: created.objectiveId,
           exitOnTerminal: true,
         });
+        await printObjectiveSnapshot(runtime, created.objectiveId, undefined, false);
         process.exitCode = result.code;
         return;
       }
@@ -604,6 +640,8 @@ export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<stri
           prompt,
           title: deriveTitle(asString(flags, "title"), prompt),
           baseHash: asString(flags, "base-hash"),
+          objectiveMode,
+          severity,
           checks: explicitChecks.length ? explicitChecks : config.defaultChecks,
           channel: asString(flags, "channel"),
           policy: policyOverride,
@@ -625,6 +663,8 @@ export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<stri
           objectiveId: asString(flags, "objective"),
           title: deriveTitle(asString(flags, "title"), prompt),
           baseHash: asString(flags, "base-hash"),
+          objectiveMode,
+          severity,
           checks: explicitChecks.length ? explicitChecks : config.defaultChecks,
           channel: asString(flags, "channel"),
           policy: policyOverride,
@@ -636,24 +676,27 @@ export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<stri
       case "watch": {
         const objectiveId = args[1];
         if (!objectiveId) throw new Error("factory watch requires <objective-id>");
+        const panelFlag = asString(flags, "panel");
         await runtime.start();
         if (json || !isInteractiveTerminal()) {
-          await printObjectiveSnapshot(runtime, objectiveId, parsePanel(asString(flags, "panel")), json);
+          await printObjectiveSnapshot(runtime, objectiveId, panelFlag ? parsePanel(panelFlag) : undefined, json);
           return;
         }
+        const initialPanel = await resolveObjectivePanel(runtime, objectiveId, panelFlag ? parsePanel(panelFlag) : undefined);
         await runInteractiveFactoryApp({
           runtime,
           initialMode: "objective",
           initialObjectiveId: objectiveId,
-          initialPanel: parsePanel(asString(flags, "panel")),
+          initialPanel,
         });
         return;
       }
       case "inspect": {
         const objectiveId = args[1];
         if (!objectiveId) throw new Error("factory inspect requires <objective-id>");
+        const panelFlag = asString(flags, "panel");
         await runtime.service.ensureBootstrap();
-        await printObjectiveSnapshot(runtime, objectiveId, parsePanel(asString(flags, "panel")), json);
+        await printObjectiveSnapshot(runtime, objectiveId, panelFlag ? parsePanel(panelFlag) : undefined, json);
         return;
       }
       case "resume": {
@@ -663,7 +706,7 @@ export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<stri
         await reactObjectiveMutation(runtime, { objectiveId });
         if (json || !isInteractiveTerminal()) {
           const result = await waitForObjectiveTerminal(runtime, objectiveId);
-          await printObjectiveSnapshot(runtime, objectiveId, "overview", json);
+          await printObjectiveSnapshot(runtime, objectiveId, undefined, json);
           process.exitCode = result.code;
           return;
         }
@@ -673,6 +716,7 @@ export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<stri
           initialObjectiveId: objectiveId,
           exitOnTerminal: true,
         });
+        await printObjectiveSnapshot(runtime, objectiveId, undefined, false);
         process.exitCode = result.code;
         return;
       }

@@ -12,7 +12,8 @@
     "profile.handoff"
   ],
   "handoffTargets": [
-    "generalist"
+    "generalist",
+    "infrastructure"
   ],
   "routeHints": [
     "bug",

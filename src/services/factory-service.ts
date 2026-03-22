@@ -25,13 +25,18 @@ import {
   reduceFactory,
   type FactoryBudgetState,
   type FactoryCandidateRecord,
+  type FactoryInvestigationReport,
+  type FactoryInvestigationSynthesisRecord,
+  type FactoryInvestigationTaskReport,
   type FactoryObjectivePhase,
+  type FactoryObjectiveMode,
   type FactoryRepoProfileRecord,
   type FactoryCheckResult,
   type FactoryCmd,
   type FactoryEvent,
   type FactoryObjectiveProfileSnapshot,
   type FactoryObjectiveProfileWorktreeMode,
+  type FactoryObjectiveSeverity,
   type FactoryObjectiveStatus,
   type FactoryState,
   type FactoryTaskRecord,
@@ -45,6 +50,11 @@ import {
   factoryChatCodexArtifactPaths,
   type FactoryChatCodexArtifactPaths,
 } from "./factory-codex-artifacts";
+import {
+  renderFactoryRepoExecutionLandscapeSkill,
+  scanFactoryRepoExecutionLandscape,
+  type FactoryRepoExecutionLandscape,
+} from "./factory-repo-landscape";
 import { createRuntime, type Runtime } from "@receipt/core/runtime";
 import { type GraphRef } from "@receipt/core/graph";
 import { CONTROL_RECEIPT_TYPES } from "../engine/runtime/control-receipts";
@@ -83,6 +93,48 @@ const FACTORY_TASK_RESULT_SCHEMA = {
     outcome: { type: "string", enum: ["approved", "changes_requested", "blocked"] },
     summary: { type: "string" },
     handoff: { type: "string" },
+    report: {
+      type: "object",
+      properties: {
+        conclusion: { type: "string" },
+        evidence: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              summary: { type: "string" },
+              detail: { type: "string" },
+            },
+            required: ["title", "summary"],
+            additionalProperties: false,
+          },
+        },
+        scriptsRun: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              command: { type: "string" },
+              summary: { type: "string" },
+              status: { type: "string", enum: ["ok", "warning", "error"] },
+            },
+            required: ["command"],
+            additionalProperties: false,
+          },
+        },
+        disagreements: {
+          type: "array",
+          items: { type: "string" },
+        },
+        nextSteps: {
+          type: "array",
+          items: { type: "string" },
+        },
+      },
+      required: ["conclusion"],
+      additionalProperties: false,
+    },
   },
   required: ["outcome", "summary", "handoff"],
   additionalProperties: false,
@@ -191,6 +243,138 @@ const objectiveTaskStatusPriority = (status: FactoryTaskStatus): number => {
   }
 };
 
+const normalizeObjectiveModeInput = (
+  value: unknown,
+  fallback: FactoryObjectiveMode,
+): FactoryObjectiveMode =>
+  value === "investigation" || value === "delivery" ? value : fallback;
+
+const normalizeObjectiveSeverityInput = (
+  value: unknown,
+  fallback: FactoryObjectiveSeverity,
+): FactoryObjectiveSeverity => {
+  const numeric = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim().length > 0
+      ? Number(value)
+      : NaN;
+  if (!Number.isFinite(numeric)) return fallback;
+  const rounded = Math.max(1, Math.min(5, Math.round(numeric)));
+  return rounded as FactoryObjectiveSeverity;
+};
+
+const severityMaxParallelChildren = (severity: FactoryObjectiveSeverity): number => {
+  switch (severity) {
+    case 1:
+      return 1;
+    case 2:
+      return 2;
+    case 3:
+      return 4;
+    case 4:
+      return 2;
+    case 5:
+      return 1;
+    default:
+      return 1;
+  }
+};
+
+const severityWorkerReasoningEffort = (
+  objectiveMode: FactoryObjectiveMode,
+  severity: FactoryObjectiveSeverity,
+  taskKind: FactoryTaskRecord["taskKind"],
+): "low" | "medium" | "high" | "xhigh" => {
+  if (taskKind === "reconciliation") {
+    return severity >= 4 ? "xhigh" : "high";
+  }
+  if (objectiveMode === "investigation") {
+    return severity === 1 ? "medium" : "high";
+  }
+  return "low";
+};
+
+const asReadonlyStringArray = (value: unknown): ReadonlyArray<string> =>
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim())
+    : [];
+
+const normalizeInvestigationReport = (
+  value: unknown,
+  summary: string,
+): FactoryInvestigationReport => {
+  const record = isRecord(value) ? value : {};
+  const evidence = Array.isArray(record.evidence)
+    ? record.evidence
+      .filter((item): item is Record<string, unknown> => isRecord(item))
+      .map((item) => ({
+        title: clipText(typeof item.title === "string" ? item.title : undefined, 140) ?? "Evidence",
+        summary: clipText(typeof item.summary === "string" ? item.summary : undefined, 280) ?? "Evidence captured.",
+        detail: clipText(typeof item.detail === "string" ? item.detail : undefined, 600),
+      }))
+    : [];
+  const scriptsRun = Array.isArray(record.scriptsRun)
+    ? record.scriptsRun
+      .filter((item): item is Record<string, unknown> => isRecord(item))
+      .map((item) => ({
+        command: clipText(typeof item.command === "string" ? item.command : undefined, 220) ?? "command",
+        summary: clipText(typeof item.summary === "string" ? item.summary : undefined, 280),
+        status: item.status === "ok" || item.status === "warning" || item.status === "error"
+          ? item.status
+          : undefined,
+      } satisfies FactoryInvestigationReport["scriptsRun"][number]))
+    : [];
+  return {
+    conclusion: clipText(typeof record.conclusion === "string" ? record.conclusion : undefined, 400) ?? summary,
+    evidence,
+    scriptsRun,
+    disagreements: asReadonlyStringArray(record.disagreements).map((item) => clipText(item, 280) ?? item),
+    nextSteps: asReadonlyStringArray(record.nextSteps).map((item) => clipText(item, 280) ?? item),
+  };
+};
+
+const conclusionFingerprint = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+const formatInvestigationReportMarkdown = (input: {
+  readonly lead?: string;
+  readonly report: FactoryInvestigationReport;
+  readonly artifactLines?: ReadonlyArray<string>;
+}): string => {
+  const lines: string[] = [];
+  const pushSection = (title: string, body: string): void => {
+    if (lines.length > 0) lines.push("");
+    lines.push(title, body);
+  };
+  if (input.lead?.trim()) lines.push(input.lead.trim(), "");
+  pushSection("Conclusion", input.report.conclusion.trim());
+  pushSection(
+    "Evidence",
+    input.report.evidence.length
+      ? input.report.evidence.map((item) => `- ${item.title}: ${item.summary}${item.detail ? ` (${item.detail})` : ""}`).join("\n")
+      : "- none",
+  );
+  pushSection(
+    "Disagreements",
+    input.report.disagreements.length ? input.report.disagreements.map((item) => `- ${item}`).join("\n") : "- none",
+  );
+  pushSection(
+    "Scripts Run",
+    input.report.scriptsRun.length
+      ? input.report.scriptsRun.map((item) => `- ${item.command}${item.status ? ` [${item.status}]` : ""}${item.summary ? `: ${item.summary}` : ""}`).join("\n")
+      : "- none",
+  );
+  pushSection(
+    "Artifacts",
+    input.artifactLines && input.artifactLines.length > 0 ? input.artifactLines.map((line) => `- ${line}`).join("\n") : "- none",
+  );
+  pushSection(
+    "Next Steps",
+    input.report.nextSteps.length ? input.report.nextSteps.map((item) => `- ${item}`).join("\n") : "- none",
+  );
+  return lines.join("\n");
+};
+
 export {
   FactoryServiceError,
   type FactoryServiceOptions,
@@ -276,6 +460,7 @@ type FactoryRepoProfileArtifact = {
   readonly generatedSkillRefs: ReadonlyArray<GraphRef>;
   readonly generatedSkillPaths: ReadonlyArray<string>;
   readonly summary: string;
+  readonly permissionsLandscape?: FactoryRepoExecutionLandscape;
 };
 
 type FactoryRepoProfilePrepareOptions = {
@@ -342,6 +527,9 @@ type FactoryContextPack = {
   readonly objectiveId: string;
   readonly title: string;
   readonly prompt: string;
+  readonly objectiveMode: FactoryObjectiveMode;
+  readonly severity: FactoryObjectiveSeverity;
+  readonly repoExecutionLandscape?: FactoryRepoExecutionLandscape;
   readonly profile: FactoryObjectiveProfileSnapshot;
   readonly task: {
     readonly taskId: string;
@@ -375,8 +563,20 @@ type FactoryContextPack = {
     readonly objective?: string;
     readonly integration?: string;
   };
+  readonly investigation: {
+    readonly reports: ReadonlyArray<FactoryInvestigationTaskReport>;
+    readonly synthesized?: FactoryInvestigationSynthesisRecord;
+  };
   readonly contextSources: FactoryContextSources;
 };
+
+const hasExecutionLandscapeSkill = (
+  skills: ReadonlyArray<{ readonly slug: string; readonly title: string; readonly content: string }>,
+): boolean =>
+  skills.some((skill) =>
+    /\bexecution\b|\bpermission\b|\blandscape\b/i.test(skill.slug)
+    || /\bexecution\b|\bpermission\b|\blandscape\b/i.test(skill.title)
+  );
 
 const decompositionSchema = z.object({
   tasks: z.array(z.object({
@@ -532,6 +732,7 @@ export class FactoryService {
       1,
       Math.min(
         state.policy.concurrency.maxActiveTasks,
+        severityMaxParallelChildren(state.severity),
         this.objectiveProfileForState(state).objectivePolicy.maxParallelChildren,
       ),
     );
@@ -602,6 +803,8 @@ export class FactoryService {
           ]),
         ),
         defaultValidationMode: objectivePolicy.defaultValidationMode,
+        defaultObjectiveMode: objectivePolicy.defaultObjectiveMode,
+        defaultSeverity: objectivePolicy.defaultSeverity,
         maxParallelChildren: objectivePolicy.maxParallelChildren,
         allowObjectiveCreation: objectivePolicy.allowObjectiveCreation,
       },
@@ -636,6 +839,14 @@ export class FactoryService {
     const prompt = requireNonEmpty(input.prompt, "prompt required");
     const channel = input.channel?.trim() || "results";
     const profile = await this.resolveObjectiveProfileSnapshot(input.profileId);
+    const objectiveMode = normalizeObjectiveModeInput(
+      input.objectiveMode,
+      profile.objectivePolicy.defaultObjectiveMode,
+    );
+    const severity = normalizeObjectiveSeverityInput(
+      input.severity,
+      profile.objectivePolicy.defaultSeverity,
+    );
     if (!profile.objectivePolicy.allowObjectiveCreation) {
       throw new FactoryServiceError(
         403,
@@ -652,7 +863,16 @@ export class FactoryService {
       : profile.objectivePolicy.defaultValidationMode === "none"
         ? "profile"
         : "default";
-    const policy = normalizeFactoryObjectivePolicy(input.policy);
+    const normalizedPolicy = normalizeFactoryObjectivePolicy(input.policy);
+    const policy = objectiveMode === "investigation"
+      ? {
+          ...normalizedPolicy,
+          promotion: {
+            ...normalizedPolicy.promotion,
+            autoPromote: false,
+          },
+        }
+      : normalizedPolicy;
     const sourceStatus = await this.git.sourceStatus();
     if (!input.baseHash && sourceStatus.dirty) {
       throw new FactoryServiceError(
@@ -673,6 +893,8 @@ export class FactoryService {
         prompt,
         channel,
         baseHash,
+        objectiveMode,
+        severity,
         checks,
         checksSource,
         profile,
@@ -931,6 +1153,8 @@ export class FactoryService {
       title: optionalTrimmedString(input.title) ?? clipText(prompt, 96) ?? "Factory objective",
       prompt,
       baseHash: input.baseHash,
+      objectiveMode: input.objectiveMode,
+      severity: input.severity,
       checks: input.checks,
       channel: input.channel,
       policy: input.policy,
@@ -1201,10 +1425,14 @@ export class FactoryService {
   }
 
   private deriveNextAction(state: FactoryState, queuePosition?: number): string | undefined {
-    if (state.status === "completed") return "Objective is complete.";
+    if (state.status === "completed") return state.objectiveMode === "investigation" ? "Investigation is complete." : "Objective is complete.";
     if (state.status === "canceled") return "Objective was canceled.";
     if (state.status === "failed") return "Objective failed.";
-    if (state.status === "blocked") return "Review the blocking receipt and react or cancel the objective.";
+    if (state.status === "blocked") {
+      return state.objectiveMode === "investigation"
+        ? "Review the blocking receipt, adjust the investigation, or cancel the objective."
+        : "Review the blocking receipt and react or cancel the objective.";
+    }
     if (state.scheduler.slotState === "queued") {
       return queuePosition
         ? `Waiting for the repo execution slot (${queuePosition} in queue).`
@@ -1212,6 +1440,11 @@ export class FactoryService {
     }
     if (state.status === "decomposing") return "Preparing the repo profile and generated skill bundle.";
     if (state.status === "planning") return "Adopting the first task graph.";
+    if (state.objectiveMode === "investigation") {
+      const reconciliation = this.reconciliationStatus(state);
+      if (reconciliation === "running") return "Wait for the reconciliation task to resolve the conflicting findings.";
+      if (reconciliation === "pending") return "Wait for the reconciliation task to start.";
+    }
     if (state.integration.status === "ready_to_promote" && !state.policy.promotion.autoPromote) {
       return "Promote the integration branch into source when ready.";
     }
@@ -1399,6 +1632,26 @@ export class FactoryService {
         generatedSkillRefs: parsed.generatedSkillRefs.filter((item): item is GraphRef => isRecord(item) && typeof item.kind === "string" && typeof item.ref === "string"),
         generatedSkillPaths: parsed.generatedSkillPaths.filter((item): item is string => typeof item === "string" && item.trim().length > 0),
         summary: typeof parsed.summary === "string" ? parsed.summary : "",
+        permissionsLandscape: isRecord(parsed.permissionsLandscape) && typeof parsed.permissionsLandscape.summary === "string"
+          ? {
+              summary: parsed.permissionsLandscape.summary,
+              tooling: Array.isArray(parsed.permissionsLandscape.tooling)
+                ? parsed.permissionsLandscape.tooling.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+                : [],
+              authSurfaces: Array.isArray(parsed.permissionsLandscape.authSurfaces)
+                ? parsed.permissionsLandscape.authSurfaces.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+                : [],
+              policySurfaces: Array.isArray(parsed.permissionsLandscape.policySurfaces)
+                ? parsed.permissionsLandscape.policySurfaces.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+                : [],
+              guardrails: Array.isArray(parsed.permissionsLandscape.guardrails)
+                ? parsed.permissionsLandscape.guardrails.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+                : [],
+              notablePaths: Array.isArray(parsed.permissionsLandscape.notablePaths)
+                ? parsed.permissionsLandscape.notablePaths.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+                : [],
+            }
+          : undefined,
       };
     } catch {
       return undefined;
@@ -1409,6 +1662,7 @@ export class FactoryService {
     readonly summary: string;
     readonly inferredChecks: ReadonlyArray<string>;
     readonly generatedSkills: ReadonlyArray<{ readonly slug: string; readonly title: string; readonly content: string }>;
+    readonly permissionsLandscape: FactoryRepoExecutionLandscape;
   }> {
     const packageJsonPath = path.join(this.git.repoRoot, "package.json");
     const readmePath = path.join(this.git.repoRoot, "README.md");
@@ -1434,6 +1688,17 @@ export class FactoryService {
       "lint" in scripts ? scriptCommand("lint", bunFirst) : undefined,
     ].filter((item): item is string => Boolean(item));
     const checks = inferredChecks.length ? inferredChecks : [...DEFAULT_CHECKS];
+    const topEntries = (await fs.readdir(this.git.repoRoot, { withFileTypes: true }).catch(() => []))
+      .map((entry) => ({
+        name: entry.name,
+        kind: (entry.isDirectory() ? "dir" : entry.isFile() ? "file" : "other") as "dir" | "file" | "other",
+      }))
+      .slice(0, 40);
+    const permissionsLandscape = await scanFactoryRepoExecutionLandscape({
+      repoRoot: this.git.repoRoot,
+      packageScripts: scripts,
+      topEntries,
+    });
     const summary = [
       `Repo ${packageJson?.name ?? path.basename(this.git.repoRoot)} is prepared for Factory objectives.`,
       bunFirst ? "Bun was detected as the package runner." : "npm-compatible scripts were detected for validation.",
@@ -1443,27 +1708,32 @@ export class FactoryService {
       readmeRaw.trim()
         ? `README focus: ${clipText(readmeRaw.replace(/\s+/g, " "), 220) ?? ""}`
         : "No README summary was available.",
+      `Execution landscape: ${permissionsLandscape.summary}`,
     ].join(" ");
     return {
       summary,
       inferredChecks: checks,
-      generatedSkills: [{
-        slug: "repo-operating-notes",
-        title: "Repo Operating Notes",
-        content: [
-          "# Repo Operating Notes",
-          "",
-          summary,
-          "",
-          "## Validation Commands",
-          ...checks.map((check) => `- ${check}`),
-          "",
-          "## Factory Guidance",
-          "- Reuse existing repository conventions before introducing new build or test paths.",
-          "- Prefer the repository's current package manager and script names.",
-          "- Keep task changes aligned with committed Git history and objective integration flow.",
-        ].join("\n"),
-      }],
+      generatedSkills: [
+        {
+          slug: "repo-operating-notes",
+          title: "Repo Operating Notes",
+          content: [
+            "# Repo Operating Notes",
+            "",
+            summary,
+            "",
+            "## Validation Commands",
+            ...checks.map((check) => `- ${check}`),
+            "",
+            "## Factory Guidance",
+            "- Reuse existing repository conventions before introducing new build or test paths.",
+            "- Prefer the repository's current package manager and script names.",
+            "- Keep task changes aligned with committed Git history and objective integration flow.",
+          ].join("\n"),
+        },
+        renderFactoryRepoExecutionLandscapeSkill(permissionsLandscape),
+      ],
+      permissionsLandscape,
     };
   }
 
@@ -1516,6 +1786,7 @@ export class FactoryService {
             "You are preparing a software repo for Receipt Factory objectives.",
             "Infer the best default validation commands for this repo.",
             "Write a short repo summary and generate concise repo-specific skill markdown files that future code workers can use.",
+            "One generated skill should make the repo execution and permission landscape explicit so CLI-native Codex workers understand auth surfaces, policy surfaces, and guardrails.",
             "Do not invent commands that do not match the repository's likely tooling.",
           ].join("\n"),
           user: JSON.stringify({
@@ -1524,13 +1795,18 @@ export class FactoryService {
             checkedInSkills,
             packageJson: packageJsonRaw ? JSON.parse(packageJsonRaw) : undefined,
             readme: clipText(readmeRaw.replace(/\s+/g, " "), 2_000),
+            permissionsLandscape: fallback.permissionsLandscape,
             fallback,
           }, null, 2),
         });
+        const generatedSkills = parsed.generatedSkills.length ? parsed.generatedSkills : fallback.generatedSkills;
         profile = {
           summary: parsed.summary,
           inferredChecks: parsed.inferredChecks.length ? parsed.inferredChecks : fallback.inferredChecks,
-          generatedSkills: parsed.generatedSkills.length ? parsed.generatedSkills : fallback.generatedSkills,
+          generatedSkills: hasExecutionLandscapeSkill(generatedSkills)
+            ? generatedSkills
+            : [...generatedSkills, renderFactoryRepoExecutionLandscapeSkill(fallback.permissionsLandscape)],
+          permissionsLandscape: fallback.permissionsLandscape,
         };
       } catch {
         status = "ready";
@@ -1559,6 +1835,7 @@ export class FactoryService {
       generatedSkillRefs,
       generatedSkillPaths,
       summary: profile.summary,
+      permissionsLandscape: profile.permissionsLandscape,
     };
     opts.onProgress?.({
       step: "persist",
@@ -1847,7 +2124,80 @@ export class FactoryService {
     }
 
     state = await refreshState();
+    if (state.objectiveMode === "investigation") {
+      const conflict = this.findInvestigationConflict(state);
+      if (conflict) {
+        await this.spawnInvestigationReconciliationTask(state, conflict.taskIds, conflict.reason);
+        await this.reactObjective(objectiveId);
+        return;
+      }
+    }
     const finalProjection = buildFactoryProjection(state);
+
+    if (state.objectiveMode === "investigation") {
+      const investigationReady = (
+        finalProjection.tasks.length > 0
+        && finalProjection.readyTasks.length === 0
+        && finalProjection.activeTasks.length === 0
+        && finalProjection.tasks.every((task) => ["approved", "blocked", "superseded"].includes(task.status))
+        && this.finalInvestigationReports(state).length > 0
+      );
+      const investigationBlocked = (
+        finalProjection.tasks.length > 0
+        && finalProjection.readyTasks.length === 0
+        && finalProjection.activeTasks.length === 0
+        && finalProjection.tasks.every((task) => ["blocked", "superseded"].includes(task.status))
+      );
+
+      if (investigationReady) {
+        const synthesis = this.buildInvestigationSynthesis(state);
+        if (synthesis) {
+          const existing = state.investigation.synthesized;
+          const changed = !existing
+            || existing.summary !== synthesis.summary
+            || existing.taskIds.join(",") !== synthesis.taskIds.join(",")
+            || existing.report.conclusion !== synthesis.report.conclusion;
+          if (changed) {
+            await this.emitObjective(objectiveId, {
+              type: "investigation.synthesized",
+              objectiveId,
+              summary: synthesis.summary,
+              report: synthesis.report,
+              taskIds: synthesis.taskIds,
+              synthesizedAt: synthesis.synthesizedAt,
+            });
+            state = await refreshState();
+          }
+        }
+        if (state.status !== "completed") {
+          await this.emitObjective(objectiveId, {
+            type: "objective.completed",
+            objectiveId,
+            summary: state.investigation.synthesized?.summary
+              ?? state.latestSummary
+              ?? "Investigation objective completed.",
+            completedAt: Date.now(),
+          });
+        }
+        await this.rebalanceObjectiveSlots();
+        return;
+      }
+
+      if (investigationBlocked && state.status !== "blocked") {
+        await this.emitObjective(objectiveId, {
+          type: "objective.blocked",
+          objectiveId,
+          reason: "No runnable investigation tasks remained.",
+          summary: "Investigation objective is blocked with no runnable tasks.",
+          blockedAt: Date.now(),
+        });
+        await this.rebalanceObjectiveSlots();
+        return;
+      }
+
+      await this.rebalanceObjectiveSlots();
+      return;
+    }
 
     const readyToPromote = (
       finalProjection.tasks.length > 0
@@ -1952,7 +2302,7 @@ export class FactoryService {
       stderrPath: parsed.stderrPath,
       model: FACTORY_TASK_CODEX_MODEL,
       outputSchemaPath: resultSchemaPath,
-      reasoningEffort: "low",
+      reasoningEffort: severityWorkerReasoningEffort(parsed.objectiveMode, parsed.severity, task.taskKind),
       objectiveId: parsed.objectiveId,
       taskId: parsed.taskId,
       candidateId: parsed.candidateId,
@@ -1985,6 +2335,7 @@ export class FactoryService {
     const handoff = optionalTrimmedString(rawResult.handoff) ?? summary;
     const outcome = optionalTrimmedString(rawResult.outcome) ?? "approved";
     const completedAt = Date.now();
+    const isInvestigation = state.objectiveMode === "investigation";
 
     if (outcome === "blocked") {
       await this.emitObjective(payload.objectiveId, {
@@ -1997,10 +2348,13 @@ export class FactoryService {
       return;
     }
 
-    const checkResults = await this.runChecks(state.checks, payload.workspacePath);
-    const failedCheck = checkResults.find((check) => !check.ok);
     const status = await this.git.worktreeStatus(payload.workspacePath);
-    if (!status.dirty) {
+    const checkResults = isInvestigation
+      ? (state.checks.length > 0 ? await this.runChecks(state.checks, payload.workspacePath) : [])
+      : await this.runChecks(state.checks, payload.workspacePath);
+    const failedCheck = checkResults.find((check) => !check.ok);
+
+    if (!status.dirty && !isInvestigation) {
       const noDiffReason = `factory task produced no tracked diff: ${summary}`;
       await this.commitTaskMemory(state, task, payload.candidateId, `${summary}\n\n${handoff}`, "blocked_no_diff");
       await this.emitObjective(payload.objectiveId, {
@@ -2013,10 +2367,14 @@ export class FactoryService {
       return;
     }
 
-    const committed = await this.git.commitWorkspace(
-      payload.workspacePath,
-      `[factory][${payload.objectiveId}] ${payload.taskId} ${state.title}`
-    );
+    const committed = status.dirty
+      ? await this.git.commitWorkspace(
+          payload.workspacePath,
+          isInvestigation
+            ? `[factory][investigation][${payload.objectiveId}] ${payload.taskId} ${state.title}`
+            : `[factory][${payload.objectiveId}] ${payload.taskId} ${state.title}`,
+        )
+      : undefined;
     const resultRefs = {
       manifest: fileRef(payload.manifestPath, "task manifest"),
       prompt: fileRef(payload.promptPath, "task prompt"),
@@ -2027,15 +2385,54 @@ export class FactoryService {
       contextPack: fileRef(payload.contextPackPath, "task recursive context pack"),
       memoryScript: fileRef(payload.memoryScriptPath, "task memory script"),
       memoryConfig: fileRef(payload.memoryConfigPath, "task memory config"),
-      commit: commitRef(committed.hash, "candidate commit"),
+      ...(committed ? { commit: commitRef(committed.hash, isInvestigation ? "evidence commit" : "candidate commit") } : {}),
     } satisfies Readonly<Record<string, GraphRef>>;
+
+    if (isInvestigation) {
+      const report = normalizeInvestigationReport(rawResult.report, summary);
+      const reportWithChecks: FactoryInvestigationReport = checkResults.length > 0
+        ? {
+            ...report,
+            evidence: [
+              ...report.evidence,
+              ...checkResults.map((check) => ({
+                title: check.ok ? "Check passed" : "Check failed",
+                summary: `${check.command} exited ${String(check.exitCode ?? "unknown")}`,
+                detail: clipText((check.stderr || check.stdout).trim(), 600),
+              })),
+            ],
+            scriptsRun: [
+              ...report.scriptsRun,
+              ...checkResults.map((check) => ({
+                command: check.command,
+                summary: check.ok ? "Passed." : "Failed.",
+                status: check.ok ? "ok" : "error",
+              } satisfies FactoryInvestigationReport["scriptsRun"][number])),
+            ],
+          }
+        : report;
+      await this.emitObjective(payload.objectiveId, {
+        type: "investigation.reported",
+        objectiveId: payload.objectiveId,
+        taskId: payload.taskId,
+        candidateId: payload.candidateId,
+        summary,
+        handoff,
+        report: reportWithChecks,
+        artifactRefs: resultRefs,
+        evidenceCommit: committed?.hash,
+        reportedAt: completedAt,
+      });
+      await this.commitTaskMemory(state, task, payload.candidateId, summary, "investigation_reported");
+      return;
+    }
 
     await this.emitObjective(payload.objectiveId, {
       type: "candidate.produced",
       objectiveId: payload.objectiveId,
       candidateId: payload.candidateId,
       taskId: payload.taskId,
-      headCommit: committed.hash,
+      headCommit: committed?.hash ?? payload.baseCommit,
       summary,
       handoff,
       checkResults,
@@ -2256,6 +2653,8 @@ export class FactoryService {
       objectiveId: state.objectiveId,
       taskId: task.taskId,
       workerType,
+      objectiveMode: state.objectiveMode,
+      severity: state.severity,
       candidateId,
       baseCommit: pinnedBaseCommit,
       workspaceId,
@@ -2876,6 +3275,8 @@ export class FactoryService {
         receipt.type === "objective.plan.proposed"
         || receipt.type === "objective.plan.adopted"
         || receipt.type === "rebracket.applied"
+        || receipt.type === "investigation.reported"
+        || receipt.type === "investigation.synthesized"
         || receipt.type === "objective.blocked"
         || receipt.type === "task.blocked"
         || receipt.type === "integration.conflicted"
@@ -2888,6 +3289,7 @@ export class FactoryService {
         kind:
           receipt.type === "rebracket.applied" ? "decision"
           : receipt.type.startsWith("objective.plan") ? "plan"
+          : receipt.type.startsWith("investigation.") ? "report"
           : receipt.type === "merge.applied" ? "merge"
           : receipt.type === "integration.ready_to_promote" || receipt.type === "integration.promoted" ? "promotion"
           : "blocked",
@@ -2895,6 +3297,8 @@ export class FactoryService {
           receipt.type === "rebracket.applied" ? "Latest decision"
           : receipt.type === "objective.plan.proposed" ? "Plan proposed"
           : receipt.type === "objective.plan.adopted" ? "Plan adopted"
+          : receipt.type === "investigation.reported" ? "Investigation report"
+          : receipt.type === "investigation.synthesized" ? "Investigation synthesis"
           : receipt.type === "merge.applied" ? "Integration merge"
           : receipt.type === "integration.ready_to_promote" ? "Ready to promote"
           : receipt.type === "integration.promoted" ? "Promoted"
@@ -2981,6 +3385,9 @@ export class FactoryService {
         activeTasks: projection.activeTasks.length,
         readyTasks: projection.readyTasks.length,
       }),
+      objectiveMode: state.objectiveMode,
+      severity: state.severity,
+      reconciliationStatus: this.reconciliationStatus(state),
       scheduler: {
         slotState,
         queuePosition,
@@ -3031,6 +3438,7 @@ export class FactoryService {
         return {
           ...task,
           candidate: task?.candidateId ? state.candidates[task.candidateId] : undefined,
+          investigationReport: task ? state.investigation.reports[task.taskId] : undefined,
           jobStatus: job?.status ?? (task?.jobId ? "missing" : undefined),
           job,
           workspaceExists: workspaceStatus.exists,
@@ -3064,6 +3472,11 @@ export class FactoryService {
       budgetState: this.buildBudgetState(state),
       createdAt: state.createdAt,
       tasks,
+      investigation: {
+        reports: this.investigationReports(state),
+        synthesized: state.investigation.synthesized,
+        finalReport: state.investigation.synthesized?.report ?? this.buildFinalInvestigationReport(state),
+      },
       candidates: state.candidateOrder
         .map((candidateId) => state.candidates[candidateId])
         .filter((candidate): candidate is FactoryCandidateRecord => Boolean(candidate)),
@@ -3239,23 +3652,34 @@ export class FactoryService {
     const title = state.title;
     const prompt = state.prompt;
     const profile = this.objectiveProfileForState(state);
+    const investigationMode = state.objectiveMode === "investigation";
     if (this.llmStructured) {
       try {
         const { parsed } = await this.llmStructured({
           schema: decompositionSchema,
           schemaName: "factory_task_decomposition",
           system: [
-            "Decompose the objective into a small DAG of implementation tasks.",
-            `Return only actionable implementation or validation tasks. Use workerType ${profile.objectivePolicy.defaultWorkerType} unless a specialist is clearly better.`,
+            investigationMode
+              ? "Decompose the objective into a small DAG of investigation tasks."
+              : "Decompose the objective into a small DAG of implementation tasks.",
+            investigationMode
+              ? `Return only actionable investigation or synthesis tasks. Use workerType ${profile.objectivePolicy.defaultWorkerType} unless a specialist is clearly better.`
+              : `Return only actionable implementation or validation tasks. Use workerType ${profile.objectivePolicy.defaultWorkerType} unless a specialist is clearly better.`,
             `Allowed worker types for this objective: ${profile.objectivePolicy.allowedWorkerTypes.join(", ")}.`,
-            "Avoid pure search, locate, identify, or report-only tasks when the overall objective is to change code.",
-            "Fold discovery work into the implementation task prompt unless the objective is explicitly investigation-only.",
-            "Each non-validation task should be expected to produce a tracked repository diff.",
+            investigationMode
+              ? "Tasks may investigate, script, summarize evidence, and reconcile disagreements. They do not need to produce a tracked repository diff."
+              : "Avoid pure search, locate, identify, or report-only tasks when the overall objective is to change code.",
+            investigationMode
+              ? "Prefer parallel evidence-gathering tasks only when they answer distinct subquestions."
+              : "Fold discovery work into the implementation task prompt unless the objective is explicitly investigation-only.",
+            investigationMode
+              ? "At least one task should synthesize or reconcile sibling findings when the investigation spans multiple services or signals."
+              : "Each non-validation task should be expected to produce a tracked repository diff.",
             "Keep dependency edges between task IDs by referring to earlier returned task ids like task_01, task_02.",
           ].join("\n"),
           user: JSON.stringify({ title, prompt }, null, 2),
         });
-        const normalized = this.normalizeDecomposedTasks(parsed.tasks, profile);
+        const normalized = this.normalizeDecomposedTasks(parsed.tasks, profile, state.objectiveMode);
         if (normalized.length > 0) {
           return {
             tasks: normalized,
@@ -3286,6 +3710,7 @@ export class FactoryService {
       readonly dependsOn: ReadonlyArray<string>;
     }>,
     profile: FactoryObjectiveProfileSnapshot,
+    objectiveMode: FactoryObjectiveMode,
   ): ReadonlyArray<DecomposedTaskSpec> {
     const normalized: DecomposedTaskSpec[] = [];
     for (const [index, task] of tasks.entries()) {
@@ -3302,7 +3727,9 @@ export class FactoryService {
         dependsOn,
       });
     }
-    return this.collapseDiscoveryOnlyTasks(normalized);
+    return objectiveMode === "investigation"
+      ? normalized
+      : this.collapseDiscoveryOnlyTasks(normalized);
   }
 
   private collapseDiscoveryOnlyTasks(tasks: ReadonlyArray<DecomposedTaskSpec>): ReadonlyArray<DecomposedTaskSpec> {
@@ -3596,6 +4023,10 @@ export class FactoryService {
         return `${event.candidateId} produced: ${event.summary}`;
       case "candidate.reviewed":
         return `${event.candidateId} ${event.status}: ${event.summary}`;
+      case "investigation.reported":
+        return `${event.taskId} reported: ${event.summary}`;
+      case "investigation.synthesized":
+        return `investigation synthesized: ${event.summary}`;
       case "candidate.conflicted":
         return `${event.candidateId} conflicted: ${event.reason}`;
       case "integration.conflicted":
@@ -3633,7 +4064,10 @@ export class FactoryService {
         return { taskId: event.candidate.taskId, candidateId: event.candidate.candidateId };
       case "candidate.produced":
       case "candidate.reviewed":
+      case "investigation.reported":
         return { taskId: event.taskId, candidateId: event.candidateId };
+      case "investigation.synthesized":
+        return {};
       case "candidate.conflicted":
       case "merge.candidate.scored":
       case "integration.queued":
@@ -3896,10 +4330,11 @@ export class FactoryService {
       .filter((receipt) => !focusedReceiptKeys.has(`${receipt.type}:${receipt.at}:${receipt.summary}`))
       .slice(0, 20)
       .reverse();
-    const [overview, objectiveMemory, integrationMemory] = await Promise.all([
+    const [overview, objectiveMemory, integrationMemory, sharedProfile] = await Promise.all([
       this.summarizeScope(`factory/objectives/${state.objectiveId}`, `${state.title}\n${task.title}`, 520),
       this.summarizeScope(`factory/objectives/${state.objectiveId}`, state.title, 360),
       this.summarizeScope(`factory/objectives/${state.objectiveId}/integration`, `${state.title}\nintegration`, 360),
+      this.loadSharedRepoProfileArtifact(),
     ]);
     const repoSkillPaths = await this.collectRepoSkillPaths();
     const sharedArtifactRefs = [
@@ -3916,6 +4351,9 @@ export class FactoryService {
       objectiveId: state.objectiveId,
       title: state.title,
       prompt: state.prompt,
+      objectiveMode: state.objectiveMode,
+      severity: state.severity,
+      repoExecutionLandscape: sharedProfile?.permissionsLandscape,
       profile: this.objectiveProfileForState(state),
       task: {
         taskId: task.taskId,
@@ -3951,8 +4389,188 @@ export class FactoryService {
         objective: objectiveMemory,
         integration: integrationMemory,
       },
+      investigation: {
+        reports: state.investigation.reportOrder
+          .map((taskId) => state.investigation.reports[taskId])
+          .filter((report): report is FactoryInvestigationTaskReport => Boolean(report)),
+        synthesized: state.investigation.synthesized,
+      },
       contextSources: this.buildContextSources(state, repoSkillPaths, sharedArtifactRefs),
     };
+  }
+
+  private investigationReports(state: FactoryState): ReadonlyArray<FactoryInvestigationTaskReport> {
+    return state.investigation.reportOrder
+      .map((taskId) => state.investigation.reports[taskId])
+      .filter((report): report is FactoryInvestigationTaskReport => Boolean(report));
+  }
+
+  private reconciliationStatus(state: FactoryState): FactoryObjectiveCard["reconciliationStatus"] {
+    const tasks = state.taskOrder
+      .map((taskId) => state.graph.nodes[taskId])
+      .filter((task): task is FactoryTaskRecord => Boolean(task) && task.taskKind === "reconciliation" && task.status !== "superseded");
+    if (tasks.length === 0) return "none";
+    if (tasks.some((task) => task.status === "running" || task.status === "reviewing")) return "running";
+    if (tasks.some((task) => task.status === "pending" || task.status === "ready")) return "pending";
+    return "completed";
+  }
+
+  private finalInvestigationReports(
+    state: FactoryState,
+  ): ReadonlyArray<FactoryInvestigationTaskReport> {
+    const reports = this.investigationReports(state);
+    const coveredTaskIds = new Set<string>();
+    for (const taskId of state.taskOrder) {
+      const task = state.graph.nodes[taskId];
+      if (!task || task.taskKind !== "reconciliation" || task.status !== "approved") continue;
+      for (const depId of task.dependsOn) coveredTaskIds.add(depId);
+    }
+    return reports.filter((report) => {
+      const task = state.graph.nodes[report.taskId];
+      if (!task || task.status !== "approved") return false;
+      if (task.taskKind === "reconciliation") return true;
+      return !coveredTaskIds.has(report.taskId);
+    });
+  }
+
+  private buildFinalInvestigationReport(
+    state: FactoryState,
+  ): FactoryInvestigationReport {
+    const reports = this.finalInvestigationReports(state);
+    if (reports.length === 0) {
+      return normalizeInvestigationReport(undefined, state.latestSummary ?? "No investigation findings were recorded.");
+    }
+    if (reports.length === 1) return reports[0]!.report;
+    return {
+      conclusion: reports.map((report) => `${report.taskId}: ${report.report.conclusion}`).join(" "),
+      evidence: reports.flatMap((report) => report.report.evidence).slice(0, 16),
+      scriptsRun: reports.flatMap((report) => report.report.scriptsRun).slice(0, 16),
+      disagreements: [...new Set(reports.flatMap((report) => report.report.disagreements))],
+      nextSteps: [...new Set(reports.flatMap((report) => report.report.nextSteps))],
+    };
+  }
+
+  private buildInvestigationSynthesis(
+    state: FactoryState,
+  ): FactoryInvestigationSynthesisRecord | undefined {
+    const reports = this.finalInvestigationReports(state);
+    if (reports.length === 0) return undefined;
+    if (reports.length === 1) {
+      return {
+        summary: reports[0]!.summary,
+        report: reports[0]!.report,
+        taskIds: [reports[0]!.taskId],
+        synthesizedAt: Date.now(),
+      };
+    }
+    const report = this.buildFinalInvestigationReport(state);
+    return {
+      summary: report.conclusion,
+      report,
+      taskIds: reports.map((item) => item.taskId),
+      synthesizedAt: Date.now(),
+    };
+  }
+
+  private findInvestigationConflict(
+    state: FactoryState,
+  ): { readonly taskIds: ReadonlyArray<string>; readonly reason: string } | undefined {
+    if (state.objectiveMode !== "investigation") return undefined;
+    const sourceReports = this.investigationReports(state)
+      .filter((report) => {
+        const task = state.graph.nodes[report.taskId];
+        return Boolean(task) && task.status === "approved" && task.taskKind !== "reconciliation";
+      });
+    if (sourceReports.length < 2) return undefined;
+    const disagreements = sourceReports.some((report) => report.report.disagreements.length > 0);
+    const conclusions = [...new Set(sourceReports.map((report) => conclusionFingerprint(report.report.conclusion)).filter(Boolean))];
+    if (!disagreements && conclusions.length <= 1) return undefined;
+    const taskIds = [...new Set(sourceReports.map((report) => report.taskId))].sort();
+    const signature = taskIds.join(",");
+    const existing = state.taskOrder
+      .map((taskId) => state.graph.nodes[taskId])
+      .filter((task): task is FactoryTaskRecord => Boolean(task) && task.taskKind === "reconciliation" && task.status !== "superseded")
+      .some((task) => [...task.dependsOn].sort().join(",") === signature);
+    if (existing) return undefined;
+    return {
+      taskIds,
+      reason: conclusions.length > 1
+        ? `Reconcile conflicting investigation conclusions across ${taskIds.join(", ")}.`
+        : `Reconcile unresolved investigation disagreements across ${taskIds.join(", ")}.`,
+    };
+  }
+
+  private async spawnInvestigationReconciliationTask(
+    state: FactoryState,
+    sourceTaskIds: ReadonlyArray<string>,
+    reason: string,
+  ): Promise<void> {
+    const current = await this.getObjectiveState(state.objectiveId);
+    if (current.reconciliationTasksUsed >= current.policy.budgets.maxReconciliationTasks) {
+      const blockedReason = `Policy blocked: objective exhausted maxReconciliationTasks (${current.reconciliationTasksUsed}/${current.policy.budgets.maxReconciliationTasks}).`;
+      await this.emitObjective(current.objectiveId, {
+        type: "objective.blocked",
+        objectiveId: current.objectiveId,
+        reason: blockedReason,
+        summary: blockedReason,
+        blockedAt: Date.now(),
+      });
+      return;
+    }
+    const signature = [...sourceTaskIds].sort().join(",");
+    const alreadyQueued = current.taskOrder
+      .map((taskId) => current.graph.nodes[taskId])
+      .filter((task): task is FactoryTaskRecord => Boolean(task) && task.taskKind === "reconciliation" && task.status !== "superseded")
+      .some((task) => [...task.dependsOn].sort().join(",") === signature);
+    if (alreadyQueued) return;
+
+    const reports = sourceTaskIds
+      .map((taskId) => current.investigation.reports[taskId])
+      .filter((report): report is FactoryInvestigationTaskReport => Boolean(report));
+    const basedOn = await this.currentHeadHash(current.objectiveId);
+    const taskId = this.nextTaskId(current);
+    const createdAt = Date.now();
+    const artifactRefs = reports.flatMap((report) => Object.values(report.artifactRefs));
+    const contextRefs = [
+      ...sourceTaskIds.map((sourceTaskId) => stateRef(`${objectiveStream(current.objectiveId)}:task/${sourceTaskId}`, `investigation ${sourceTaskId}`)),
+      ...artifactRefs,
+    ];
+    const prompt = [
+      reason,
+      `Objective: ${current.prompt}`,
+      `Source tasks: ${sourceTaskIds.join(", ")}`,
+      ...reports.map((report) => [
+        `${report.taskId} summary: ${report.summary}`,
+        `${report.taskId} conclusion: ${report.report.conclusion}`,
+        report.report.disagreements.length > 0
+          ? `${report.taskId} disagreements: ${report.report.disagreements.join(" | ")}`
+          : undefined,
+      ].filter((line): line is string => Boolean(line)).join("\n")),
+      "Review the source task packets, report artifacts, logs, and scripts. Produce one aligned investigation report that resolves the disagreement clearly.",
+    ].join("\n\n");
+    await this.emitObjectiveBatch(current.objectiveId, [{
+      type: "task.added",
+      objectiveId: current.objectiveId,
+      createdAt,
+      task: {
+        nodeId: taskId,
+        taskId,
+        taskKind: "reconciliation",
+        title: `Reconcile ${sourceTaskIds.join(", ")}`,
+        prompt,
+        workerType: this.normalizeProfileWorkerType(current.profile, "codex"),
+        sourceTaskId: sourceTaskIds[0],
+        sourceCandidateId: reports[0]?.candidateId,
+        baseCommit: current.baseHash,
+        dependsOn: [...sourceTaskIds],
+        status: "pending",
+        skillBundlePaths: [],
+        contextRefs,
+        artifactRefs: {},
+        createdAt,
+        basedOn,
+      },
+    }], basedOn);
   }
 
   private resolveTaskBaseCommit(state: FactoryState, task: FactoryTaskRecord): string {
@@ -4120,6 +4738,8 @@ export class FactoryService {
         title: state.title,
         prompt: state.prompt,
         baseHash: state.baseHash,
+        objectiveMode: state.objectiveMode,
+        severity: state.severity,
         checks: state.checks,
       },
       profile,
@@ -4224,7 +4844,11 @@ export class FactoryService {
       objectivePolicy: DEFAULT_FACTORY_OBJECTIVE_PROFILE.objectivePolicy,
     }));
     const includeFactoryObjectiveSkills = Boolean(input.objectiveId);
-    const repoSkillPaths = (await this.collectRepoSkillPaths()).filter((skillPath) =>
+    const [sharedProfile, allRepoSkillPaths] = await Promise.all([
+      this.loadSharedRepoProfileArtifact(),
+      this.collectRepoSkillPaths(),
+    ]);
+    const repoSkillPaths = allRepoSkillPaths.filter((skillPath) =>
       includeFactoryObjectiveSkills
       || (!skillPath.includes("/skills/factory-receipt-worker/")
         && !skillPath.includes("/skills/factory-run-orchestrator/"))
@@ -4356,6 +4980,7 @@ export class FactoryService {
       mode: input.objectiveId
         ? (readOnly ? "read_only_direct_codex_probe" : "direct_codex")
         : (readOnly ? "read_only_repo_probe" : "direct_repo_probe"),
+      repoExecutionLandscape: sharedProfile?.permissionsLandscape,
       profile,
       task: {
         taskId: `direct_codex_${input.jobId}`,
@@ -4532,6 +5157,8 @@ export class FactoryService {
       ``,
       `Objective: ${state.title}`,
       `Objective ID: ${state.objectiveId}`,
+      `Objective Mode: ${state.objectiveMode}`,
+      `Severity: ${state.severity}`,
       `Task ID: ${task.taskId}`,
       `Worker Type: ${task.workerType}`,
       `Profile: ${payload.profile.rootProfileLabel} (${payload.profile.rootProfileId})`,
@@ -4553,6 +5180,17 @@ export class FactoryService {
       downstreamSummaries,
       `If you notice adjacent copy, validation, or follow-up work outside this task's scope, mention it in the handoff instead of implementing it here.`,
       ``,
+      `## Investigation Contract`,
+      state.objectiveMode === "investigation"
+        ? `This objective is investigation-first. Plan before you run commands. It is valid to write helper code or scripts in the worktree if that makes the investigation clearer or more reproducible.`
+        : `This objective is delivery-oriented. Prefer tracked repo changes and keep investigation folded into the implementation task.`,
+      state.objectiveMode === "investigation"
+        ? `A tracked diff is optional. If you leave helper code or scripts behind, Factory will preserve them as evidence instead of integrating them.`
+        : `A non-validation task is expected to leave a tracked repo diff unless you are hard blocked.`,
+      state.objectiveMode === "investigation"
+        ? `Interpret command and script outputs in plain language. Do not just paste logs.`
+        : `Capture implementation and validation results precisely in the handoff.`,
+      ``,
       ...validationSection,
       ``,
       `## Bootstrap Context`,
@@ -4562,6 +5200,7 @@ export class FactoryService {
       `2. Manifest: ${payload.manifestPath}`,
       `3. Context Pack: ${payload.contextPackPath}`,
       `4. Memory Script: ${payload.memoryScriptPath}`,
+      `5. Repo skills from the manifest, especially any execution or permissions landscape notes`,
       `Use current-objective inspection only if the packet or memory script is insufficient, and run these sequentially, not in parallel:`,
       `- receipt factory inspect ${state.objectiveId} --json --panel receipts`,
       `- receipt factory inspect ${state.objectiveId} --json --panel debug`,
@@ -4577,9 +5216,12 @@ export class FactoryService {
       ``,
       `## Result Contract`,
       `Write JSON to ${payload.resultPath} with:`,
-      `{ "outcome": "approved" | "changes_requested" | "blocked", "summary": string, "handoff": string }`,
+      `{ "outcome": "approved" | "changes_requested" | "blocked", "summary": string, "handoff": string, "report"?: { "conclusion": string, "evidence"?: [{ "title": string, "summary": string, "detail"?: string }], "scriptsRun"?: [{ "command": string, "summary"?: string, "status"?: "ok" | "warning" | "error" }], "disagreements"?: string[], "nextSteps"?: string[] } }`,
       `Do not write this file yourself. Return exactly that JSON object as your final response and the runtime will persist it to the result path.`,
       `Use "changes_requested" only when more work is clearly needed; use "blocked" only for a hard blocker.`,
+      state.objectiveMode === "investigation"
+        ? `For investigation tasks, include the report object and make conclusion/evidence/scripts/next steps concrete.`
+        : `For delivery tasks, the report object is optional.`,
       ``,
       `## Starting Hint`,
       memorySummary || "No durable task memory yet.",
@@ -4707,6 +5349,7 @@ export class FactoryService {
       ``,
       `## Repo Skills`,
       input.repoSkillPaths.map((skill) => `- ${skill}`).join("\n") || "- none",
+      `If a repo skill covers execution landscape, permissions, or infrastructure guardrails, read it before issuing AWS, IaC, or fleet-wide commands.`,
       ``,
       `## Recent Receipt Evidence`,
       input.recentReceipts.map((receipt) => `- ${receipt.type}: ${receipt.summary}`).join("\n") || "- none",
@@ -4723,6 +5366,8 @@ export class FactoryService {
       objectiveId: requireNonEmpty(payload.objectiveId, "objectiveId required"),
       taskId: requireNonEmpty(payload.taskId, "taskId required"),
       workerType: normalizeWorkerType(requireNonEmpty(payload.workerType, "workerType required")),
+      objectiveMode: normalizeObjectiveModeInput(payload.objectiveMode, "delivery"),
+      severity: normalizeObjectiveSeverityInput(payload.severity, 1),
       candidateId: requireNonEmpty(payload.candidateId, "candidateId required"),
       baseCommit: requireNonEmpty(payload.baseCommit, "baseCommit required"),
       workspaceId: requireNonEmpty(payload.workspaceId, "workspaceId required"),

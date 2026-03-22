@@ -34,6 +34,7 @@ import {
   type FactoryObjectivePanel,
   type MissionControlFocusArea,
 } from "./view-model";
+import { buildInvestigationReportSections } from "./investigation-report";
 import type {
   FactoryBoardProjection,
   FactoryComposeModel,
@@ -72,7 +73,7 @@ type MissionControlSnapshot = {
 
 const HOTKEYS = [
   ["j/k, ↑/↓", "select"],
-  ["1-8", "panel"],
+  ["1-9", "panel"],
   ["tab", "focus"],
   ["/", "command"],
   ["enter", "send/open"],
@@ -316,6 +317,11 @@ const OverviewPanel = ({ detail }: { readonly detail: FactoryObjectiveDetail }):
   <Box flexDirection="column">
     <Text bold color={tone("text")}>Objective prompt</Text>
     <Text color={tone("text")}>{truncate(detail.prompt, 520)}</Text>
+    <Box marginTop={1} flexWrap="wrap">
+      <MetricCell label="Mode" value={labelize(detail.objectiveMode)} />
+      <MetricCell label="Severity" value={String(detail.severity)} />
+      <MetricCell label="Reconcile" value={labelize(detail.reconciliationStatus)} />
+    </Box>
     <Box marginTop={1} flexDirection="column">
       <Text bold color={tone("text")}>Initiating profile</Text>
       <Text color={tone("muted")}>
@@ -396,6 +402,21 @@ const EvidencePanel = ({ detail }: { readonly detail: FactoryObjectiveDetail }):
   </Box>
 );
 
+const ReportPanel = ({ detail }: { readonly detail: FactoryObjectiveDetail }): React.ReactElement => (
+  <Box flexDirection="column">
+    {buildInvestigationReportSections(detail).map((entry) => (
+      <Box key={entry.title} flexDirection="column" marginBottom={1}>
+        <Text bold color={tone("text")}>{entry.title}</Text>
+        {entry.lines.map((line, index) => (
+          <Text key={`${entry.title}:${index}`} color={tone("muted")}>
+            {entry.title === "Report" || entry.title === "Conclusion" ? truncate(line, 220) : truncate(`- ${line}`, 220)}
+          </Text>
+        ))}
+      </Box>
+    ))}
+  </Box>
+);
+
 const ActivityPanel = ({ detail }: { readonly detail: FactoryObjectiveDetail }): React.ReactElement => (
   <Box flexDirection="column">
     {detail.activity.length ? detail.activity.map((entry) => (
@@ -457,6 +478,8 @@ const ObjectivePanelContent = ({
   switch (panel) {
     case "overview":
       return <OverviewPanel detail={detail} />;
+    case "report":
+      return <ReportPanel detail={detail} />;
     case "tasks":
       return <TasksPanel detail={detail} />;
     case "candidates":
@@ -515,6 +538,11 @@ const RightRail = ({
         </Text>
         <Box marginTop={1}>
           <Text color={tone("text")}>{truncate(detail.nextAction ?? "No next action.", 180)}</Text>
+        </Box>
+        <Box marginTop={1} flexWrap="wrap">
+          <MetricCell label="Mode" value={labelize(detail.objectiveMode)} />
+          <MetricCell label="Severity" value={String(detail.severity)} />
+          <MetricCell label="Reconcile" value={labelize(detail.reconciliationStatus)} />
         </Box>
         <Box marginTop={1} flexDirection="column">
           <Text bold color={tone("text")}>Panel</Text>
@@ -1100,7 +1128,7 @@ export const FactoryTerminalApp = ({
       if (selectedObjectiveIdRef.current) setFocusArea("composer");
       return;
     }
-    if (/^[1-8]$/.test(input)) {
+    if (/^[1-9]$/.test(input)) {
       const next = PANEL_ORDER[Number(input) - 1];
       if (next) setPanel(next);
       return;
