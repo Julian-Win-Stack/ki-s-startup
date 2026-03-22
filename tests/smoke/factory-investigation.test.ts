@@ -123,15 +123,24 @@ test("factory investigation: no-diff reports complete without integration and sy
       }),
       raw: "",
     }),
-    codexRun: async () => {
+    codexRun: async (input) => {
+      const schema = JSON.parse(await fs.readFile(input.outputSchemaPath!, "utf-8")) as Record<string, unknown>;
+      expect(schema.required).toEqual(["outcome", "summary", "handoff", "report"]);
+      const report = (schema.properties as Record<string, Record<string, unknown>>).report;
+      expect(report.required).toEqual(["conclusion", "evidence", "scriptsRun", "disagreements", "nextSteps"]);
+      const evidenceItem = ((report.properties as Record<string, Record<string, unknown>>).evidence.items as Record<string, unknown>);
+      expect(evidenceItem.required).toEqual(["title", "summary", "detail"]);
+      const scriptItem = ((report.properties as Record<string, Record<string, unknown>>).scriptsRun.items as Record<string, unknown>);
+      expect(scriptItem.required).toEqual(["command", "summary", "status"]);
       const structured = {
         outcome: "approved",
         summary: "Collected the current AWS access posture.",
         handoff: "Investigation is ready for synthesis.",
         report: {
           conclusion: "The configured AWS identity has read access but no mutation path was exercised.",
-          evidence: [{ title: "AWS CLI inspection", summary: "Read-only identity details were collected successfully." }],
+          evidence: [{ title: "AWS CLI inspection", summary: "Read-only identity details were collected successfully.", detail: null }],
           scriptsRun: [{ command: "aws sts get-caller-identity", summary: "Confirmed the active principal.", status: "ok" }],
+          disagreements: [],
           nextSteps: ["If mutation testing is required, create a higher-severity follow-up objective."],
         },
       };

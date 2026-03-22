@@ -93,50 +93,59 @@ const FACTORY_TASK_RESULT_SCHEMA = {
     outcome: { type: "string", enum: ["approved", "changes_requested", "blocked"] },
     summary: { type: "string" },
     handoff: { type: "string" },
-    report: {
-      type: "object",
-      properties: {
-        conclusion: { type: "string" },
-        evidence: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              title: { type: "string" },
-              summary: { type: "string" },
-              detail: { type: "string" },
-            },
-            required: ["title", "summary"],
-            additionalProperties: false,
-          },
-        },
-        scriptsRun: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              command: { type: "string" },
-              summary: { type: "string" },
-              status: { type: "string", enum: ["ok", "warning", "error"] },
-            },
-            required: ["command"],
-            additionalProperties: false,
-          },
-        },
-        disagreements: {
-          type: "array",
-          items: { type: "string" },
-        },
-        nextSteps: {
-          type: "array",
-          items: { type: "string" },
-        },
-      },
-      required: ["conclusion"],
-      additionalProperties: false,
-    },
   },
   required: ["outcome", "summary", "handoff"],
+  additionalProperties: false,
+} as const;
+const FACTORY_INVESTIGATION_REPORT_SCHEMA = {
+  type: "object",
+  properties: {
+    conclusion: { type: "string" },
+    evidence: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          summary: { type: "string" },
+          detail: { type: ["string", "null"] },
+        },
+        required: ["title", "summary", "detail"],
+        additionalProperties: false,
+      },
+    },
+    scriptsRun: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          command: { type: "string" },
+          summary: { type: ["string", "null"] },
+          status: { type: ["string", "null"], enum: ["ok", "warning", "error", null] },
+        },
+        required: ["command", "summary", "status"],
+        additionalProperties: false,
+      },
+    },
+    disagreements: {
+      type: "array",
+      items: { type: "string" },
+    },
+    nextSteps: {
+      type: "array",
+      items: { type: "string" },
+    },
+  },
+  required: ["conclusion", "evidence", "scriptsRun", "disagreements", "nextSteps"],
+  additionalProperties: false,
+} as const;
+const FACTORY_INVESTIGATION_TASK_RESULT_SCHEMA = {
+  type: "object",
+  properties: {
+    ...FACTORY_TASK_RESULT_SCHEMA.properties,
+    report: FACTORY_INVESTIGATION_REPORT_SCHEMA,
+  },
+  required: ["outcome", "summary", "handoff", "report"],
   additionalProperties: false,
 } as const;
 const FACTORY_TASK_CODEX_MODEL =
@@ -191,6 +200,10 @@ const safeWorkspacePart = (value: string): string =>
 const tailText = (value: string, maxChars: number): string =>
   value.length <= maxChars ? value.trimEnd() : `…${value.slice(value.length - maxChars).trimEnd()}`;
 const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
+const FACTORY_CLI_PREFIX = (() => {
+  const { command, args } = resolveCliInvocation(import.meta.url);
+  return [command, ...args].map((item) => shellQuote(item)).join(" ");
+})();
 const prependPath = (dir: string, currentPath: string | undefined): string =>
   currentPath ? `${dir}${path.delimiter}${currentPath}` : dir;
 const uniqueChecks = (checks?: ReadonlyArray<string>): ReadonlyArray<string> => {
@@ -210,6 +223,9 @@ const isActiveJobStatus = (status?: JobStatus | "missing"): boolean =>
   status === "queued" || status === "leased" || status === "running";
 const ansiRe = /\x1b\[[0-9;]*m/g;
 const salientFailureLineRe = /(fail|error|enoent|eperm|expected|received|exited with code|unable to|no such file|missing)/i;
+const PROVIDER_CONDITIONAL_RE = /\bif the context is\b|\bif the provider is\b/i;
+const CONTEXT_RESOLUTION_RE = /\b(determine|identify|locate|establish|resolve)\b.*\b(provider|cloud|storage system|credentials?|scope|account|project|region|profile|what ['"`].+['"`] refers)\b/i;
+const SYNTHESIS_TASK_RE = /\b(synthesi[sz]e|reconcile|compile|authoritative count|final report|summari[sz]e findings|produce final)\b/i;
 
 const boardSectionForObjective = (
   objective: Pick<FactoryObjectiveCard, "status" | "scheduler">,
@@ -2292,7 +2308,11 @@ export class FactoryService {
     const receiptBinDir = await this.ensureWorkspaceReceiptCli(parsed.workspacePath);
     const resultSchemaPath = this.taskResultSchemaPath(parsed.resultPath);
     await fs.mkdir(path.dirname(resultSchemaPath), { recursive: true });
-    await fs.writeFile(resultSchemaPath, JSON.stringify(FACTORY_TASK_RESULT_SCHEMA, null, 2), "utf-8");
+    await fs.writeFile(
+      resultSchemaPath,
+      JSON.stringify(parsed.objectiveMode === "investigation" ? FACTORY_INVESTIGATION_TASK_RESULT_SCHEMA : FACTORY_TASK_RESULT_SCHEMA, null, 2),
+      "utf-8",
+    );
     const execution = await this.codexExecutor.run({
       prompt: renderedPrompt,
       workspacePath: parsed.workspacePath,
@@ -3675,6 +3695,9 @@ export class FactoryService {
             investigationMode
               ? "At least one task should synthesize or reconcile sibling findings when the investigation spans multiple services or signals."
               : "Each non-validation task should be expected to produce a tracked repository diff.",
+            investigationMode
+              ? "Do not speculate across AWS, GCP, and Azure in parallel unless the prompt or context explicitly indicates multiple clouds. If provider context is ambiguous, create one context-resolution task first, make any provider-specific follow-up tasks depend on it, and make synthesis depend on the evidence tasks it summarizes."
+              : "Keep validation or synthesis tasks dependent on the implementation work they summarize.",
             "Keep dependency edges between task IDs by referring to earlier returned task ids like task_01, task_02.",
           ].join("\n"),
           user: JSON.stringify({ title, prompt }, null, 2),
@@ -3728,8 +3751,42 @@ export class FactoryService {
       });
     }
     return objectiveMode === "investigation"
-      ? normalized
+      ? this.normalizeInvestigationDecomposition(normalized)
       : this.collapseDiscoveryOnlyTasks(normalized);
+  }
+
+  private normalizeInvestigationDecomposition(
+    tasks: ReadonlyArray<DecomposedTaskSpec>,
+  ): ReadonlyArray<DecomposedTaskSpec> {
+    const contextTaskId = tasks.find((task) => this.isContextResolutionTask(task))?.taskId;
+    const gated = contextTaskId
+      ? tasks.map((task) => {
+        if (task.taskId === contextTaskId || !this.isProviderConditionalTask(task)) return task;
+        return {
+          ...task,
+          dependsOn: [...new Set([contextTaskId, ...task.dependsOn])],
+        };
+      })
+      : [...tasks];
+    return gated.map((task, index) => {
+      if (!this.isSynthesisTask(task) || task.dependsOn.length > 0 || index === 0) return task;
+      return {
+        ...task,
+        dependsOn: gated.slice(0, index).map((candidate) => candidate.taskId),
+      };
+    });
+  }
+
+  private isProviderConditionalTask(task: Pick<DecomposedTaskSpec, "title" | "prompt">): boolean {
+    return PROVIDER_CONDITIONAL_RE.test(`${task.title}\n${task.prompt}`);
+  }
+
+  private isContextResolutionTask(task: Pick<DecomposedTaskSpec, "title" | "prompt">): boolean {
+    return CONTEXT_RESOLUTION_RE.test(`${task.title}\n${task.prompt}`);
+  }
+
+  private isSynthesisTask(task: Pick<DecomposedTaskSpec, "title" | "prompt">): boolean {
+    return SYNTHESIS_TASK_RE.test(`${task.title}\n${task.prompt}`);
   }
 
   private collapseDiscoveryOnlyTasks(tasks: ReadonlyArray<DecomposedTaskSpec>): ReadonlyArray<DecomposedTaskSpec> {
@@ -5202,8 +5259,8 @@ export class FactoryService {
       `4. Memory Script: ${payload.memoryScriptPath}`,
       `5. Repo skills from the manifest, especially any execution or permissions landscape notes`,
       `Use current-objective inspection only if the packet or memory script is insufficient, and run these sequentially, not in parallel:`,
-      `- receipt factory inspect ${state.objectiveId} --json --panel receipts`,
-      `- receipt factory inspect ${state.objectiveId} --json --panel debug`,
+      `- ${FACTORY_CLI_PREFIX} factory inspect ${shellQuote(state.objectiveId)} --json --panel receipts`,
+      `- ${FACTORY_CLI_PREFIX} factory inspect ${shellQuote(state.objectiveId)} --json --panel debug`,
       ``,
       `## Memory Access`,
       `Use the layered memory script at ${payload.memoryScriptPath} instead of raw memory dumps.`,
@@ -5216,12 +5273,14 @@ export class FactoryService {
       ``,
       `## Result Contract`,
       `Write JSON to ${payload.resultPath} with:`,
-      `{ "outcome": "approved" | "changes_requested" | "blocked", "summary": string, "handoff": string, "report"?: { "conclusion": string, "evidence"?: [{ "title": string, "summary": string, "detail"?: string }], "scriptsRun"?: [{ "command": string, "summary"?: string, "status"?: "ok" | "warning" | "error" }], "disagreements"?: string[], "nextSteps"?: string[] } }`,
+      state.objectiveMode === "investigation"
+        ? `{ "outcome": "approved" | "changes_requested" | "blocked", "summary": string, "handoff": string, "report": { "conclusion": string, "evidence": [{ "title": string, "summary": string, "detail": string | null }], "scriptsRun": [{ "command": string, "summary": string | null, "status": "ok" | "warning" | "error" | null }], "disagreements": string[], "nextSteps": string[] } }`
+        : `{ "outcome": "approved" | "changes_requested" | "blocked", "summary": string, "handoff": string }`,
       `Do not write this file yourself. Return exactly that JSON object as your final response and the runtime will persist it to the result path.`,
       `Use "changes_requested" only when more work is clearly needed; use "blocked" only for a hard blocker.`,
       state.objectiveMode === "investigation"
-        ? `For investigation tasks, include the report object and make conclusion/evidence/scripts/next steps concrete.`
-        : `For delivery tasks, the report object is optional.`,
+        ? `For investigation tasks, include every report key. Use [] for empty lists and null for detail, summary, or status when they do not apply.`
+        : `For delivery tasks, return only outcome, summary, and handoff unless a future contract explicitly asks for more.`,
       ``,
       `## Starting Hint`,
       memorySummary || "No durable task memory yet.",
@@ -5325,10 +5384,10 @@ export class FactoryService {
             input.objective.latestDecision ? `- Latest decision: ${input.objective.latestDecision.summary}` : "",
             input.objective.blockedExplanation ? `- Blocked explanation: ${input.objective.blockedExplanation.summary}` : "",
             `- If the packet and memory script are still insufficient, inspect the objective sequentially (not in parallel):`,
-            `- receipt factory inspect ${input.objective.objectiveId} --json --panel receipts`,
-            `- receipt factory inspect ${input.objective.objectiveId} --json --panel debug`,
-            objectiveStreamRef ? `- receipt inspect ${objectiveStreamRef}` : "",
-            objectiveStreamRef ? `- receipt trace ${objectiveStreamRef}` : "",
+            `- ${FACTORY_CLI_PREFIX} factory inspect ${shellQuote(input.objective.objectiveId)} --json --panel receipts`,
+            `- ${FACTORY_CLI_PREFIX} factory inspect ${shellQuote(input.objective.objectiveId)} --json --panel debug`,
+            objectiveStreamRef ? `- ${FACTORY_CLI_PREFIX} inspect ${shellQuote(objectiveStreamRef)}` : "",
+            objectiveStreamRef ? `- ${FACTORY_CLI_PREFIX} trace ${shellQuote(objectiveStreamRef)}` : "",
           ].filter(Boolean).join("\n")
         : [
             `- Use the packet, repo files, and memory first. This probe is not a Factory objective and should not call receipt factory inspect.`,

@@ -743,6 +743,87 @@ test("factory decomposition: search-only discovery steps collapse into implement
     { title: "Verify the /factory page still renders cleanly", dependsOn: ["task_01"] },
   ]);
 });
+
+test("factory investigation decomposition: provider-gated tasks depend on context resolution and synthesis waits for evidence", async () => {
+  const dataDir = await createTempDir("receipt-factory-investigation-decomposition");
+  const repoRoot = await createSourceRepo();
+  const queue = jsonlQueue({ runtime: createJobRuntime(dataDir), stream: "jobs" });
+  const llmStructured = async <Schema extends ZodTypeAny>(opts: {
+    readonly schemaName: string;
+    readonly schema: Schema;
+  }): Promise<{ readonly parsed: ZodInfer<Schema>; readonly raw: string }> => {
+    const payload = {
+      tasks: [
+        {
+          title: "Identify which cloud/storage system and credentials context applies",
+          prompt: "Determine what 'buckets' refers to and what account/project/region scope to use.",
+          workerType: "codex",
+          dependsOn: [],
+        },
+        {
+          title: "Gather bucket list via provider CLI/API (AWS S3)",
+          prompt: "If the context is AWS: use AWS CLI to list all S3 buckets and count them.",
+          workerType: "codex",
+          dependsOn: [],
+        },
+        {
+          title: "Gather bucket list via provider CLI/API (GCP GCS)",
+          prompt: "If the context is GCP: use gcloud or gsutil to list buckets and count them.",
+          workerType: "codex",
+          dependsOn: [],
+        },
+        {
+          title: "Gather bucket list via provider CLI/API (Azure)",
+          prompt: "If the context is Azure: enumerate storage containers and count them.",
+          workerType: "codex",
+          dependsOn: [],
+        },
+        {
+          title: "Synthesize results and produce final bucket count report",
+          prompt: "Compile the authoritative count and summarize exclusions.",
+          workerType: "codex",
+          dependsOn: [],
+        },
+      ],
+    };
+    return {
+      parsed: opts.schema.parse(payload),
+      raw: JSON.stringify(payload),
+    };
+  };
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime: createJobRuntime(dataDir),
+    sse: new SseHub(),
+    codexExecutor: { run: async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "" }) },
+    llmStructured,
+    repoRoot,
+    profileRoot: process.cwd(),
+  });
+
+  const created = await service.createObjective({
+    title: "Count buckets",
+    prompt: "how many buckets do i have",
+    objectiveMode: "investigation",
+    severity: 2,
+    checks: ["git status --short"],
+    profileId: "infrastructure",
+  });
+  expect(created.phase).toBe("preparing_repo");
+
+  await runObjectiveStartup(service, created.objectiveId);
+  const planned = await service.getObjective(created.objectiveId);
+  const tasks = planned.tasks.map((task) => ({ title: task.title, dependsOn: task.dependsOn }));
+  expect(tasks).toEqual([
+    { title: "Identify which cloud/storage system and credentials context applies", dependsOn: [] },
+    { title: "Gather bucket list via provider CLI/API (AWS S3)", dependsOn: ["task_01"] },
+    { title: "Gather bucket list via provider CLI/API (GCP GCS)", dependsOn: ["task_01"] },
+    { title: "Gather bucket list via provider CLI/API (Azure)", dependsOn: ["task_01"] },
+    { title: "Synthesize results and produce final bucket count report", dependsOn: ["task_01", "task_02", "task_03", "task_04"] },
+  ]);
+});
+
 test("factory chat island: renders chat rows and work cards", () => {
   const markup = factoryChatIsland({
     activeProfileId: "generalist",
