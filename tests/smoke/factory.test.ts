@@ -30,6 +30,7 @@ import { agentRunStream } from "../../src/agents/agent.streams";
 import { FactoryService } from "../../src/services/factory-service";
 import { factoryChatSessionStream, factoryChatStream } from "../../src/services/factory-chat-profiles";
 import { factoryChatIsland, factoryChatShell, factorySidebarIsland } from "../../src/views/factory-chat";
+import { factoryInspectorIsland } from "../../src/views/factory-inspector";
 import type { BranchStore, Receipt, Store } from "@receipt/core/types";
 
 const stream = "factory/objectives/demo";
@@ -1200,6 +1201,28 @@ test("factory sidebar island: blank chat treats old objectives as recent threads
 });
 
 test("factory chat shell: sidebar and inspector avoid agent-refresh churn", () => {
+  const plan = [
+    {
+      taskId: "task_03",
+      title: "Validate cost-driver inventory",
+      status: "blocked",
+      workerType: "codex",
+      dependsOn: [],
+      blockedReason: "ELB inventory is incomplete because DescribeLoadBalancers is denied.",
+      isActive: false,
+      isReady: false,
+    },
+    {
+      taskId: "task_04",
+      title: "Synthesize consumption insights and recommendations",
+      status: "pending",
+      workerType: "codex",
+      dependsOn: ["task_03"],
+      latestSummary: "Waiting for validated inventory evidence before synthesis can start.",
+      isActive: false,
+      isReady: false,
+    },
+  ] as const;
   const markup = factoryChatShell({
     activeProfileId: "generalist",
     activeProfileLabel: "Generalist",
@@ -1207,6 +1230,16 @@ test("factory chat shell: sidebar and inspector avoid agent-refresh churn", () =
     chat: {
       activeProfileId: "generalist",
       activeProfileLabel: "Generalist",
+      selectedThread: {
+        objectiveId: "objective_demo",
+        title: "Demo objective",
+        status: "blocked",
+        phase: "blocked",
+        summary: "Demo summary",
+        debugLink: "/debug",
+        receiptsLink: "/receipts",
+        plan,
+      },
       items: [],
     },
     nav: {
@@ -1221,13 +1254,59 @@ test("factory chat shell: sidebar and inspector avoid agent-refresh churn", () =
       selectedObjective: {
         objectiveId: "objective_demo",
         title: "Demo objective",
-        status: "executing",
-        phase: "executing",
+        status: "blocked",
+        phase: "blocked",
         summary: "Demo summary",
         debugLink: "/debug",
         receiptsLink: "/receipts",
+        plan,
       },
+      activeRun: {
+        runId: "run_demo",
+        profileLabel: "Generalist",
+        status: "completed",
+        summary: "Run completed after auto-continuing.",
+        updatedAt: 15,
+      },
+      tasks: plan.map((task) => ({
+        ...task,
+        taskKind: "planned",
+        prompt: task.title,
+        baseCommit: "abc1234",
+        skillBundlePaths: [],
+        contextRefs: [],
+        artifactRefs: {},
+        createdAt: 1,
+        workspaceExists: false,
+        workspaceDirty: false,
+      })),
     },
+  });
+  const inspectorMarkup = factoryInspectorIsland({
+    panel: "execution",
+    jobs: [],
+    selectedObjective: {
+      objectiveId: "objective_demo",
+      title: "Demo objective",
+      status: "blocked",
+      phase: "blocked",
+      summary: "Demo summary",
+      debugLink: "/debug",
+      receiptsLink: "/receipts",
+      plan,
+    },
+    tasks: plan.map((task) => ({
+      ...task,
+      taskKind: "planned",
+      prompt: task.title,
+      baseCommit: "abc1234",
+      skillBundlePaths: [],
+      contextRefs: [],
+      artifactRefs: {},
+      createdAt: 1,
+      workspaceExists: false,
+      workspaceDirty: false,
+    })),
   });
 
   expect(markup).toMatch(/id="factory-chat"[^>]+sse:agent-refresh throttle:180ms/);
@@ -1241,6 +1320,13 @@ test("factory chat shell: sidebar and inspector avoid agent-refresh churn", () =
   expect(markup).toContain("&quot;name&quot;:&quot;help&quot;");
   expect(markup).toMatch(/id="factory-composer-completions"[^>]+role="listbox"/);
   expect(markup).toMatch(/id="factory-composer-submit"[^>]+min-h-\[88px\]/);
+  expect(markup).toContain("Objective blocked");
+  expect(markup).toContain("Run completed");
+  expect(markup).toContain("Plan");
+  expect(markup).toContain("Validate cost-driver inventory");
+  expect(markup).toContain("Waiting on task_03: Validate cost-driver inventory");
+  expect(inspectorMarkup).toContain("Validate cost-driver inventory");
+  expect(inspectorMarkup).toContain("Synthesize consumption insights and recommendations");
 });
 
 test("factory chat items: structured supervisor snapshots render as live child state instead of raw JSON", () => {

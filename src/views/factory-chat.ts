@@ -39,6 +39,7 @@ const renderMarkdown = (raw: string): string => {
 
 import type {
   FactoryChatObjectiveNav,
+  FactoryPlanTaskCard,
   FactorySelectedObjectiveCard,
   FactoryWorkCard,
   FactoryChatItem,
@@ -91,13 +92,13 @@ const renderShellStatusPills = (model: FactoryChatShellModel): string => {
   const objective = model.inspector.selectedObjective;
   if (objective) {
     const phaseLabel = displayLabel(objective.phase) || displayLabel(objective.status) || "active";
-    pills.push(shellPill(phaseLabel, toneForValue(objective.phase || objective.status)));
+    pills.push(shellPill(`Objective ${phaseLabel}`, toneForValue(objective.phase || objective.status)));
     if (typeof objective.queuePosition === "number") pills.push(shellPill(`Queue #${objective.queuePosition}`, "warning"));
   }
   if (model.inspector.activeCodex) {
     pills.push(shellPill(`Codex ${displayLabel(model.inspector.activeCodex.status) || "active"}`, toneForValue(model.inspector.activeCodex.status)));
   } else if (model.inspector.activeRun?.status) {
-    pills.push(shellPill(displayLabel(model.inspector.activeRun.status), toneForValue(model.inspector.activeRun.status)));
+    pills.push(shellPill(`Run ${displayLabel(model.inspector.activeRun.status) || "active"}`, toneForValue(model.inspector.activeRun.status)));
   }
   return pills.join("");
 };
@@ -333,12 +334,63 @@ const renderLiveCodexExecution = (model: FactoryChatIslandModel): string => {
   </section>`;
 };
 
+const describePlanDependencies = (
+  task: FactoryPlanTaskCard,
+  taskById: ReadonlyMap<string, FactoryPlanTaskCard>,
+): string | undefined => {
+  if (task.dependsOn.length === 0) return undefined;
+  const labels = task.dependsOn.map((taskId) => {
+    const dependency = taskById.get(taskId);
+    return dependency ? `${taskId}: ${dependency.title}` : taskId;
+  });
+  if (task.status === "pending") return `Waiting on ${labels.join(", ")}`;
+  return `Depends on ${labels.join(", ")}`;
+};
+
+const renderObjectivePlan = (thread?: FactorySelectedObjectiveCard): string => {
+  const plan = thread?.plan;
+  if (!plan || plan.length === 0) return "";
+  const taskById = new Map(plan.map((task) => [task.taskId, task] as const));
+  return `<section class="space-y-2">
+    <div class="flex items-center justify-between gap-2">
+      <div class="${sectionLabelClass}">Plan</div>
+      <div class="text-[11px] text-muted-foreground">${esc(`${plan.length}`)}</div>
+    </div>
+    <div class="space-y-2">
+      ${plan.map((task, index) => {
+        const dependencyText = describePlanDependencies(task, taskById);
+        return `<section class="${softPanelClass} px-4 py-3">
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-background text-[10px] font-semibold text-muted-foreground">${index + 1}</span>
+                <div class="min-w-0 text-sm font-semibold text-foreground truncate">${esc(task.title)}</div>
+              </div>
+              <div class="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                <span>${esc(task.taskId)}</span>
+                <span>${esc(displayLabel(task.workerType) || task.workerType)}</span>
+                ${task.isActive ? `<span class="font-medium text-primary">Active</span>` : ""}
+                ${task.isReady ? `<span class="font-medium text-success">Ready</span>` : ""}
+              </div>
+              ${dependencyText ? `<div class="mt-2 text-xs leading-5 text-muted-foreground">${esc(dependencyText)}</div>` : ""}
+              ${task.latestSummary ? `<div class="mt-2 text-xs leading-5 text-foreground">${esc(task.latestSummary)}</div>` : ""}
+              ${task.blockedReason ? `<div class="mt-2 text-xs leading-5 text-warning">${esc(task.blockedReason)}</div>` : ""}
+            </div>
+            ${badge(displayLabel(task.status), toneForValue(task.status))}
+          </div>
+        </section>`;
+      }).join("")}
+    </div>
+  </section>`;
+};
+
 const renderCenterWorkbench = (model: FactoryChatIslandModel): string => {
   const thread = model.selectedThread;
   const jobs = model.jobs ?? [];
   const hasLiveWork = Boolean(model.activeRun || model.activeCodex || (model.liveChildren?.length ?? 0) > 0);
   const liveCodexSection = renderLiveCodexExecution(model);
-  if (!thread && !hasLiveWork && jobs.length === 0 && !liveCodexSection) return "";
+  const planSection = renderObjectivePlan(thread);
+  if (!thread && !hasLiveWork && jobs.length === 0 && !liveCodexSection && !planSection) return "";
   return `<section class="space-y-2">
     <section class="${softPanelClass} px-4 py-2.5">
       <div class="flex flex-wrap items-center justify-between gap-2">
@@ -347,10 +399,11 @@ const renderCenterWorkbench = (model: FactoryChatIslandModel): string => {
           ${thread?.nextAction ? `<div class="hidden sm:block text-xs text-muted-foreground truncate">${esc(thread.nextAction)}</div>` : ""}
         </div>
         <div class="flex shrink-0 items-center gap-1.5">
-          ${thread ? badge(displayLabel(thread.phase || thread.status), toneForValue(thread.phase || thread.status)) : ""}
+          ${thread ? badge(`Objective ${displayLabel(thread.phase || thread.status)}`, toneForValue(thread.phase || thread.status)) : ""}
         </div>
       </div>
     </section>
+    ${planSection}
     ${liveCodexSection}
   </section>`;
 };

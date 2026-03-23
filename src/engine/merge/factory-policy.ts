@@ -1,5 +1,6 @@
 import {
   buildFactoryProjection,
+  factoryActivatableTasks,
   factoryReadyTasks,
   type FactoryCandidateRecord,
   type FactoryState,
@@ -51,6 +52,7 @@ const NEEDS_REASSIGN_RE = /\b(worker|specialist|codex|ownership)\b/i;
 export const MAX_CONSECUTIVE_TASK_FAILURES = 5;
 const TASK_RETRY_BASE_MS = 30_000;
 const TASK_RETRY_MAX_MS = 600_000;
+const NON_RETRYABLE_BLOCK_RE = /\b(accessdenied|access denied|not authorized to perform|no identity-based policy|permission denied|unauthorized|forbidden|credentials?|auth(?:entication|orization)?(?:\s+failed)?|iam)\b/i;
 
 const taskRetryBackoffMs = (failures: number): number =>
   Math.min(TASK_RETRY_BASE_MS * Math.pow(2, Math.max(0, failures - 1)), TASK_RETRY_MAX_MS);
@@ -116,6 +118,18 @@ const isDiscoveryOnlyTask = (task: Pick<FactoryTaskRecord, "title" | "prompt">):
 
 const blockReason = (task: FactoryTaskRecord): string =>
   task.blockedReason ?? task.latestSummary ?? `Task ${task.taskId} is blocked.`;
+
+const isNonRetryableBlockedTask = (task: FactoryTaskRecord): boolean =>
+  NON_RETRYABLE_BLOCK_RE.test(blockReason(task));
+
+const hasBlockedFrontier = (state: FactoryState): boolean =>
+  state.taskOrder
+    .map((taskId) => state.graph.nodes[taskId])
+    .filter((task): task is FactoryTaskRecord => Boolean(task))
+    .some((task) => task.status === "blocked")
+  && factoryReadyTasks(state).length === 0
+  && state.graph.activeNodeIds.length === 0
+  && factoryActivatableTasks(state).length === 0;
 
 const buildMutationActions = (
   state: FactoryState,
@@ -199,6 +213,7 @@ const buildMutationActions = (
         continue;
       }
       if (task.blockedReason?.startsWith("Policy blocked:")) continue;
+      if (isNonRetryableBlockedTask(task)) continue;
       if (isTaskCircuitBroken(state, task.taskId)) continue;
       if (isTaskInBackoff(state, task, now)) continue;
       actions.push({
@@ -323,7 +338,7 @@ export const buildFactoryDecisionSet = (
     && projection.readyTasks.length === 0
     && projection.activeTasks.length === 0
     && state.integration.status === "idle"
-    && projection.tasks.every((task) => ["blocked", "superseded"].includes(task.status))
+    && hasBlockedFrontier(state)
   ) {
     const blocked = state.taskOrder
       .map((taskId) => state.graph.nodes[taskId])

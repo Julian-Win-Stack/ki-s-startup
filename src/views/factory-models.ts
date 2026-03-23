@@ -58,6 +58,19 @@ export type FactorySelectedObjectiveCard = {
   readonly latestDecisionSummary?: string;
   readonly latestDecisionAt?: number;
   readonly tokensUsed?: number;
+  readonly plan?: ReadonlyArray<FactoryPlanTaskCard>;
+};
+
+export type FactoryPlanTaskCard = {
+  readonly taskId: string;
+  readonly title: string;
+  readonly status: string;
+  readonly workerType: string;
+  readonly dependsOn: ReadonlyArray<string>;
+  readonly latestSummary?: string;
+  readonly blockedReason?: string;
+  readonly isActive: boolean;
+  readonly isReady: boolean;
 };
 
 export type FactoryLiveCodexCard = {

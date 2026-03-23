@@ -9,7 +9,7 @@ import type { ZodTypeAny, infer as ZodInfer } from "zod";
 
 import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl";
 import { jsonlQueue, type QueueJob } from "../../src/adapters/jsonl-queue";
-import type { CodexExecutorInput } from "../../src/adapters/codex-executor";
+import { CodexControlSignalError, type CodexExecutorInput, type CodexRunControl } from "../../src/adapters/codex-executor";
 import { createRuntime } from "@receipt/core/runtime";
 import { SseHub } from "../../src/framework/sse-hub";
 import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../../src/modules/job";
@@ -67,7 +67,10 @@ const createFactoryService = async (opts: {
     readonly schemaName: string;
     readonly schema: Schema;
   }) => Promise<{ readonly parsed: ZodInfer<Schema>; readonly raw: string }>;
-  readonly codexRun: (input: CodexExecutorInput) => Promise<{ readonly stdout: string; readonly stderr: string; readonly lastMessage?: string }>;
+  readonly codexRun: (
+    input: CodexExecutorInput,
+    control?: CodexRunControl,
+  ) => Promise<{ readonly stdout: string; readonly stderr: string; readonly lastMessage?: string }>;
   readonly seedRepo?: (repoRoot: string) => Promise<void>;
   readonly cloudExecutionContextProvider?: () => Promise<FactoryCloudExecutionContext>;
 }): Promise<{
@@ -83,9 +86,9 @@ const createFactoryService = async (opts: {
     jobRuntime: createJobRuntime(dataDir),
     sse: new SseHub(),
     codexExecutor: {
-      run: async (input) => {
+      run: async (input, control) => {
         await fs.writeFile(input.promptPath, input.prompt, "utf-8");
-        const result = await opts.codexRun(input);
+        const result = await opts.codexRun(input, control);
         await fs.writeFile(input.stdoutPath, result.stdout, "utf-8");
         await fs.writeFile(input.stderrPath, result.stderr, "utf-8");
         if (result.lastMessage) await fs.writeFile(input.lastMessagePath, result.lastMessage, "utf-8");
@@ -176,6 +179,119 @@ test("factory investigation: no-diff reports complete without integration and sy
   expect(detail.recentReceipts.some((receipt) => receipt.type === "investigation.synthesized")).toBe(true);
   expect(detail.recentReceipts.some((receipt) => receipt.type === "candidate.produced")).toBe(false);
   expect(detail.evidenceCards.some((card) => card.kind === "report" && card.receiptType === "investigation.synthesized")).toBe(true);
+}, 120_000);
+
+test("factory investigation: blocked results with a structured report are treated as partial reports and still synthesize", async () => {
+  const { service, queue } = await createFactoryService({
+    llmStructured: async <Schema extends ZodTypeAny>(input: { readonly schema: Schema }) => ({
+      parsed: input.schema.parse({
+        tasks: [
+          { title: "Inventory spend drivers", prompt: "Inspect AWS inventory and note access gaps.", workerType: "codex", dependsOn: [] },
+        ],
+      }),
+      raw: "",
+    }),
+    codexRun: async () => {
+      const structured = {
+        outcome: "blocked",
+        summary: "Inventory is incomplete because some AWS read APIs were denied.",
+        handoff: "Summarize the confirmed findings and the access gaps for the operator.",
+        report: {
+          conclusion: "Partial AWS evidence was collected, but ELB and CloudWatch access gaps left the inventory incomplete.",
+          evidence: [{ title: "EC2 inventory", summary: "Instance and EBS counts were collected successfully.", detail: null }],
+          scriptsRun: [{ command: "bash .receipt/factory/task_01_inventory.sh", summary: "Collected partial AWS inventory and captured denied APIs.", status: "warning" }],
+          disagreements: [],
+          nextSteps: ["Grant read-only access for the denied services and rerun the inventory if deeper attribution is required."],
+        },
+      };
+      const raw = JSON.stringify(structured);
+      return { stdout: raw, stderr: "", lastMessage: raw };
+    },
+  });
+
+  const created = await service.createObjective({
+    title: "Investigate spend drivers with partial AWS access",
+    prompt: "Investigate the likely AWS spend drivers and summarize any permission gaps.",
+    objectiveMode: "investigation",
+    severity: 2,
+    checks: ["true"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const [taskJob] = await objectiveTaskJobs(queue, created.objectiveId);
+  expect(taskJob).toBeTruthy();
+  await service.runTask(taskJob!.payload as FactoryTaskJobPayload);
+
+  const detail = await service.getObjective(created.objectiveId);
+  expect(detail.status).toBe("completed");
+  expect(detail.tasks[0]?.status).toBe("approved");
+  expect(detail.investigation.synthesized?.report.conclusion).toContain("access gaps");
+  expect(detail.recentReceipts.some((receipt) => receipt.type === "task.blocked")).toBe(false);
+  expect(detail.recentReceipts.some((receipt) => receipt.type === "investigation.reported")).toBe(true);
+  expect(detail.recentReceipts.some((receipt) => receipt.type === "investigation.synthesized")).toBe(true);
+}, 120_000);
+
+test("factory investigation: supervisor restart guidance reruns the task with appended instructions", async () => {
+  let runCount = 0;
+  const prompts: string[] = [];
+  const { service, queue } = await createFactoryService({
+    llmStructured: async <Schema extends ZodTypeAny>(input: { readonly schema: Schema }) => ({
+      parsed: input.schema.parse({
+        tasks: [
+          { title: "Validate inventory", prompt: "Validate inventory and summarize blockers clearly.", workerType: "codex", dependsOn: [] },
+        ],
+      }),
+      raw: "",
+    }),
+    codexRun: async (input) => {
+      prompts.push(input.prompt);
+      runCount += 1;
+      if (runCount === 1) {
+        throw new CodexControlSignalError({
+          kind: "restart",
+          note: "Focus only on the inventory task and return the structured result now.",
+        }, {
+          exitCode: null,
+          signal: "SIGTERM",
+          stdout: "",
+          stderr: "",
+          lastMessage: undefined,
+        });
+      }
+      const raw = JSON.stringify({
+        outcome: "approved",
+        summary: "Collected the current inventory.",
+        handoff: "Ready for synthesis.",
+        report: {
+          conclusion: "Inventory completed after supervisor guidance tightened the scope.",
+          evidence: [{ title: "Inventory", summary: "The scoped inventory completed successfully.", detail: null }],
+          scriptsRun: [{ command: "bash .receipt/factory/task_01_inventory.sh", summary: "Collected scoped inventory evidence.", status: "ok" }],
+          disagreements: [],
+          nextSteps: [],
+        },
+      });
+      return { stdout: raw, stderr: "", lastMessage: raw };
+    },
+  });
+
+  const created = await service.createObjective({
+    title: "Investigate scoped inventory",
+    prompt: "Investigate the current inventory and summarize the result.",
+    objectiveMode: "investigation",
+    severity: 2,
+    checks: ["true"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const [taskJob] = await objectiveTaskJobs(queue, created.objectiveId);
+  expect(taskJob).toBeTruthy();
+  await service.runTask(taskJob!.payload as FactoryTaskJobPayload);
+
+  const detail = await service.getObjective(created.objectiveId);
+  expect(detail.status).toBe("completed");
+  expect(runCount).toBe(2);
+  expect(prompts[1] ?? "").toContain("## Supervisor Guidance");
+  expect(prompts[1] ?? "").toContain("Focus only on the inventory task and return the structured result now.");
 }, 120_000);
 
 test("factory investigation: conflicting reports spawn reconciliation and complete from the reconciled result", async () => {

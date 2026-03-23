@@ -86,6 +86,9 @@ test("factory cloud context: auto-discovers EC2 queryable regions for the active
     expect(context.guidance).toContain(
       "For cross-region EC2 inventory in this account, use only the mounted queryable regions and skip not-opted-in regions instead of treating their failures as global credential problems.",
     );
+    expect(context.guidance).toContain(
+      "Mounted AWS caller identity and region scope do not guarantee every service API is authorized. Treat service-specific AccessDenied results separately from account-wide auth failures.",
+    );
   } finally {
     if (priorAwsProfile === undefined) delete process.env.AWS_PROFILE;
     else process.env.AWS_PROFILE = priorAwsProfile;

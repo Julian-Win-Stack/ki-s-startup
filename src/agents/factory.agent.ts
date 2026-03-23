@@ -1529,6 +1529,17 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           latestDecisionSummary: selectedObjective.latestDecision?.summary,
           latestDecisionAt: selectedObjective.latestDecision?.at,
           tokensUsed: selectedObjective.tokensUsed,
+          plan: selectedObjective.tasks.map((task) => ({
+            taskId: task.taskId,
+            title: task.title,
+            status: task.status,
+            workerType: task.workerType,
+            dependsOn: task.dependsOn,
+            latestSummary: task.latestSummary,
+            blockedReason: task.blockedReason,
+            isActive: task.status === "running" || task.status === "reviewing",
+            isReady: task.status === "ready",
+          })),
         }
       : undefined;
 
@@ -1560,6 +1571,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       liveChildren,
       activeRun,
       jobs: relevantJobs,
+      tasks: selectedObjective?.tasks,
     };
     return {
       activeProfileId: resolved.root.id,
@@ -2012,11 +2024,14 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 // Ignore if not initialized
               }
             } else if (panel === "execution") {
-              try {
-                const detail = await service.getObjective(objectiveId);
-                tasks = detail.tasks;
-              } catch (e) {
-                // Ignore if not initialized
+              tasks = model.inspector.tasks;
+              if (!tasks) {
+                try {
+                  const detail = await service.getObjective(objectiveId);
+                  tasks = detail.tasks;
+                } catch (e) {
+                  // Ignore if not initialized
+                }
               }
             }
           }

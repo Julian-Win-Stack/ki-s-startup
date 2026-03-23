@@ -313,6 +313,37 @@ test("factory policy: maxCandidatePassesPerTask blocks rework after the configur
   expect(detail.tasks[0]?.blockedReason ?? "").toMatch(/maxCandidatePassesPerTask/);
 });
 
+test("factory objective detail: blocked explanations name downstream tasks waiting on the blocked DAG node", async () => {
+  const { service, queue } = await createFactoryService({
+    codexOutcome: "blocked",
+    llmStructured: async <Schema extends ZodTypeAny>(input: { readonly schema: Schema }) => ({
+      parsed: input.schema.parse({
+        tasks: [
+          { title: "Inventory spend drivers", prompt: "Query AWS inventory.", workerType: "codex", dependsOn: [] },
+          { title: "Synthesize recommendations", prompt: "Summarize the inventory findings.", workerType: "codex", dependsOn: ["task_01"] },
+        ],
+      }),
+      raw: "",
+    }),
+  });
+
+  const created = await service.createObjective({
+    title: "Blocked dependency summary objective",
+    prompt: "Investigate AWS spend drivers and summarize the blockers.",
+    objectiveMode: "investigation",
+    checks: ["git status --short"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const job = await latestFactoryJob(queue, created.objectiveId, "factory.task.run");
+  await service.runTask(job.payload as FactoryTaskJobPayload);
+
+  const detail = await service.getObjective(created.objectiveId);
+  expect(detail.status).toBe("blocked");
+  expect(detail.blockedExplanation?.summary ?? "").toContain("Waiting tasks:");
+  expect(detail.blockedExplanation?.summary ?? "").toContain("task_02 depends on task_01");
+});
+
 test("factory policy: base-commit check failures are treated as inherited on the first candidate pass", async () => {
   const { service, queue } = await createFactoryService({ codexOutcome: "approved" });
 
@@ -588,4 +619,161 @@ test("factory mutation policy: aggressiveness and cooldown gate semantic mutatio
     dispatchLimit: 0,
   }).actions.filter((action) => action.type === "update_dependencies" || action.type === "reassign_task" || action.type === "unblock_task" || action.type === "split_task" || action.type === "supersede_task");
   expect(cooldownActions).toEqual([]);
+});
+
+test("factory policy: hard IAM blockers do not auto-unblock and block the objective frontier instead", () => {
+  const baseCreatedAt = Date.now();
+  const state = buildState([
+    {
+      type: "objective.created",
+      objectiveId: "objective_hard_block",
+      title: "Hard blocker",
+      prompt: "Investigate spend drivers.",
+      channel: "results",
+      baseHash: "abc1234",
+      checks: ["bun run build"],
+      checksSource: "explicit",
+      profile: DEFAULT_FACTORY_OBJECTIVE_PROFILE,
+      policy: normalizeFactoryObjectivePolicy(),
+      createdAt: baseCreatedAt,
+    },
+    {
+      type: "task.added",
+      objectiveId: "objective_hard_block",
+      createdAt: baseCreatedAt + 1,
+      task: {
+        nodeId: "task_03",
+        taskId: "task_03",
+        taskKind: "planned",
+        title: "Inventory spend drivers",
+        prompt: "Query ELB, EBS, NAT, and CloudWatch.",
+        workerType: "codex",
+        baseCommit: "abc1234",
+        dependsOn: [],
+        status: "pending",
+        skillBundlePaths: [],
+        contextRefs: [],
+        artifactRefs: {},
+        createdAt: baseCreatedAt + 1,
+      },
+    },
+    {
+      type: "task.added",
+      objectiveId: "objective_hard_block",
+      createdAt: baseCreatedAt + 2,
+      task: {
+        nodeId: "task_04",
+        taskId: "task_04",
+        taskKind: "planned",
+        title: "Synthesize recommendations",
+        prompt: "Combine the inventory findings.",
+        workerType: "codex",
+        baseCommit: "abc1234",
+        dependsOn: ["task_03"],
+        status: "pending",
+        skillBundlePaths: [],
+        contextRefs: [],
+        artifactRefs: {},
+        createdAt: baseCreatedAt + 2,
+      },
+    },
+    {
+      type: "task.ready",
+      objectiveId: "objective_hard_block",
+      taskId: "task_03",
+      readyAt: baseCreatedAt + 3,
+    },
+    {
+      type: "task.blocked",
+      objectiveId: "objective_hard_block",
+      taskId: "task_03",
+      reason: "AccessDenied: User is not authorized to perform elasticloadbalancing:DescribeLoadBalancers because no identity-based policy allows the action.",
+      blockedAt: baseCreatedAt + 4,
+    },
+  ]);
+
+  const actions = buildFactoryDecisionSet(state, {
+    now: baseCreatedAt + 5,
+    dispatchLimit: 0,
+  }).actions;
+
+  expect(actions.some((action) => action.type === "unblock_task")).toBe(false);
+  expect(actions.some((action) => action.type === "block_objective" && action.taskId === "task_03")).toBe(true);
+});
+
+test("factory reducer: blocked task clears the latest running candidate status", () => {
+  const baseCreatedAt = Date.now();
+  const state = buildState([
+    {
+      type: "objective.created",
+      objectiveId: "objective_candidate_block",
+      title: "Candidate blocker",
+      prompt: "Investigate spend drivers.",
+      channel: "results",
+      baseHash: "abc1234",
+      checks: ["bun run build"],
+      checksSource: "explicit",
+      profile: DEFAULT_FACTORY_OBJECTIVE_PROFILE,
+      policy: normalizeFactoryObjectivePolicy(),
+      createdAt: baseCreatedAt,
+    },
+    {
+      type: "task.added",
+      objectiveId: "objective_candidate_block",
+      createdAt: baseCreatedAt + 1,
+      task: {
+        nodeId: "task_03",
+        taskId: "task_03",
+        taskKind: "planned",
+        title: "Inventory spend drivers",
+        prompt: "Query ELB, EBS, NAT, and CloudWatch.",
+        workerType: "codex",
+        baseCommit: "abc1234",
+        dependsOn: [],
+        status: "pending",
+        skillBundlePaths: [],
+        contextRefs: [],
+        artifactRefs: {},
+        createdAt: baseCreatedAt + 1,
+      },
+    },
+    {
+      type: "candidate.created",
+      objectiveId: "objective_candidate_block",
+      createdAt: baseCreatedAt + 2,
+      candidate: {
+        candidateId: "task_03_candidate_01",
+        taskId: "task_03",
+        status: "planned",
+        baseCommit: "abc1234",
+        checkResults: [],
+        artifactRefs: {},
+        createdAt: baseCreatedAt + 2,
+        updatedAt: baseCreatedAt + 2,
+      },
+    },
+    {
+      type: "task.dispatched",
+      objectiveId: "objective_candidate_block",
+      taskId: "task_03",
+      candidateId: "task_03_candidate_01",
+      jobId: "job_task_03",
+      workspaceId: "ws_task_03",
+      workspacePath: "/tmp/ws_task_03",
+      skillBundlePaths: [],
+      contextRefs: [],
+      startedAt: baseCreatedAt + 3,
+    },
+    {
+      type: "task.blocked",
+      objectiveId: "objective_candidate_block",
+      taskId: "task_03",
+      reason: "AccessDenied: User is not authorized to perform elasticloadbalancing:DescribeLoadBalancers because no identity-based policy allows the action.",
+      blockedAt: baseCreatedAt + 4,
+    },
+  ]);
+
+  expect(state.graph.nodes.task_03?.status).toBe("blocked");
+  expect(state.candidates.task_03_candidate_01?.status).toBe("changes_requested");
+  expect(state.candidates.task_03_candidate_01?.latestReason).toContain("DescribeLoadBalancers");
 });

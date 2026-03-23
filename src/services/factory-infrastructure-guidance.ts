@@ -6,6 +6,8 @@ const AWS_ACCOUNT_SCOPE_HELPER = "skills/factory-infrastructure-aws/scripts/aws-
 const BUCKET_PROMPT_RE = /\b(bucket|buckets|s3)\b/i;
 const INVENTORY_PROMPT_RE = /\b(how many|count|list|show|inventory|enumerate|what are|which)\b/i;
 const COST_PROMPT_RE = /\b(cost|costs|pricing|price|spend)\b/i;
+const AWS_MULTI_SERVICE_RE = /\b(ec2|ebs|snapshot|snapshots|s3|rds|nat|load balancer|load balancers|elb|cloudwatch|eks|elastic ip|elastic ips)\b/gi;
+const FAIL_FAST_DENIED_RE = /fail fast if any aws cli call is denied and report exact error\.?/i;
 
 export type InfrastructureDecomposedTask = {
   readonly taskId: string;
@@ -17,6 +19,34 @@ export type InfrastructureDecomposedTask = {
 
 export const infrastructureDefaultsToAws = (profileId: string | undefined): boolean =>
   profileId === INFRASTRUCTURE_PROFILE_ID;
+
+const countAwsServiceMentions = (prompt: string): number => {
+  const services = new Set(
+    (prompt.match(AWS_MULTI_SERVICE_RE) ?? [])
+      .map((service) => service.trim().toLowerCase()),
+  );
+  return services.size;
+};
+
+const isBroadAwsMultiServiceInventoryPrompt = (prompt: string): boolean => {
+  if (!INVENTORY_PROMPT_RE.test(prompt) && !COST_PROMPT_RE.test(prompt)) return false;
+  if (/\bbroad multi-service\b|\bkey spend services\b|\bcost contributors\b/i.test(prompt)) return true;
+  return countAwsServiceMentions(prompt) >= 3;
+};
+
+export const rewriteInfrastructureTaskPromptForExecution = (input: {
+  readonly profileId: string | undefined;
+  readonly objectiveMode: FactoryObjectiveMode;
+  readonly taskPrompt: string;
+}): string => {
+  if (!infrastructureDefaultsToAws(input.profileId) || input.objectiveMode !== "investigation") return input.taskPrompt;
+  if (!FAIL_FAST_DENIED_RE.test(input.taskPrompt)) return input.taskPrompt;
+  if (!isBroadAwsMultiServiceInventoryPrompt(input.taskPrompt)) return input.taskPrompt;
+  return input.taskPrompt.replace(
+    FAIL_FAST_DENIED_RE,
+    "If AWS CLI account access or region-scope discovery fails, stop immediately and report the exact error. Otherwise capture exact per-service AccessDenied results and continue with the remaining allowed services; only treat a denied API as blocking when that service is central to the requested evidence.",
+  );
+};
 
 const isSimpleAwsBucketInvestigation = (
   objectivePrompt: string,
@@ -35,6 +65,7 @@ export const buildInfrastructureDecompositionGuidance = (input: {
     "For routine AWS inventory or counting requests against one resource family, prefer a single Codex task that writes a deterministic script, runs it, and interprets the result.",
     "Do not split simple AWS S3 inventory into separate provider-resolution, methodology, and synthesis tasks.",
     "If AWS CLI access fails, fail fast with the exact AWS CLI error instead of exploring other providers or asking the user to restate scope.",
+    "Differentiate account-level AWS access failures from one denied service API. For broad multi-service inventory, prefer tasks that report per-service AccessDenied gaps and continue on the remaining allowed services when the denied API is not the primary scope.",
     "For cross-region AWS inventory, treat the mounted cloud context as authoritative for the current account/profile and any discovered region scope instead of blindly querying every AWS region.",
     "Only create multiple tasks when the objective clearly requires multi-service correlation, reconciliation, fleet-wide fanout, or materially different evidence streams.",
   ];
@@ -66,9 +97,11 @@ export const renderInfrastructureTaskExecutionGuidance = (input: {
       ? [
           `For AWS tasks, capture \`aws sts get-caller-identity\` in the script first so account scope is explicit in the evidence.`,
           `Prefer fail-fast AWS CLI settings like \`AWS_PAGER=''\`, \`AWS_MAX_ATTEMPTS=1\`, \`AWS_RETRY_MODE=standard\`, and \`AWS_EC2_METADATA_DISABLED=true\`.`,
+          `Treat a successful \`sts get-caller-identity\` as proof of mounted account scope only, not proof that every downstream AWS service API is authorized.`,
           `For region-scoped AWS inventory, do not blindly loop raw \`aws ec2 describe-regions --all-regions\` output.`,
           `Use the mounted AWS region scope from the context pack when present, or run \`bash ${AWS_ACCOUNT_SCOPE_HELPER}\` first to discover the current account's queryable EC2 regions.`,
           `Treat \`not-opted-in\` regions as skipped scope, not as a global credential failure, and report skipped regions separately when they matter to the investigation.`,
+          `For broad multi-service AWS inventory, capture exact per-service \`AccessDenied\` results and continue with the remaining allowed services when the denied API is not central to the task. Only stop immediately on account-scope/auth failures, region-scope discovery failures, or when the denied service is the core requested evidence.`,
         ]
       : []),
   ];

@@ -35,9 +35,12 @@ Keep infrastructure investigations AWS-only for now. If the prompt is ambiguous 
 - Default to a small deterministic shell script for provider-sensitive or repeated AWS CLI work. The script should fail fast, emit machine-readable output when practical, and make the exact evidence path reproducible.
 - Capture `aws sts get-caller-identity` in the script before resource queries so the account scope is explicit in the evidence.
 - For fail-fast behavior, prefer `AWS_PAGER=''`, `AWS_MAX_ATTEMPTS=1`, `AWS_RETRY_MODE=standard`, and `AWS_EC2_METADATA_DISABLED=true`.
+- Distinguish account-level AWS access failures from per-service IAM denials. A working `sts get-caller-identity` only proves the mounted identity is usable; it does not prove every `Describe*` or `List*` API is allowed.
 - For regional AWS services such as EC2, do not blindly iterate raw `aws ec2 describe-regions --all-regions` output.
 - Treat only `opt-in-not-required` and `opted-in` regions as queryable for cross-region EC2 inventory. Skip `not-opted-in` regions and report them separately when relevant.
 - If an EC2 call fails in a `not-opted-in` region, treat that as region scope for the current account, not as proof that the overall AWS credentials are globally invalid.
+- For broad multi-service inventory or cost-validation tasks, capture exact `AccessDenied` errors per service and continue collecting evidence from the remaining allowed services when the denied API is not the core task scope.
+- If access gaps still leave you with usable evidence, return a final investigation report that says the inventory is incomplete due to permissions; reserve a hard blocked outcome for zero-evidence failures that prevent a meaningful report.
 - Use `scripts/aws-account-scope.sh` when you need a reusable JSON snapshot of the current AWS account, profile, and EC2 region scope before writing the task-specific script.
 - If the script succeeds and answers the task, stop and return the final JSON result immediately. Do not spend extra turns reformatting already-valid AWS CLI JSON or running optional follow-up checks.
 - Record the script path and invocation in `report.scriptsRun`, then explain the output in plain language.

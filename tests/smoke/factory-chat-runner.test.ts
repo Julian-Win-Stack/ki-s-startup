@@ -56,6 +56,9 @@ const createFactoryServiceStub = (overrides: Partial<Record<string, unknown>> = 
     title: "Objective demo",
     status: "active",
     phase: "executing",
+    objectiveMode: "delivery",
+    severity: 2,
+    reconciliationStatus: "none",
     latestSummary: "Investigating the sidebar objective.",
     nextAction: "React the current objective.",
     integration: {
@@ -151,6 +154,63 @@ const createFactoryServiceStub = (overrides: Partial<Record<string, unknown>> = 
     integration: { status: "idle", queuedCandidateIds: [] },
   }),
   ...overrides,
+});
+
+const enqueueRunningFactoryTaskJob = async (queue: ReturnType<typeof jsonlQueue>, input: {
+  readonly jobId: string;
+  readonly objectiveId: string;
+  readonly taskId: string;
+  readonly candidateId: string;
+  readonly runId?: string;
+}): Promise<QueueJob> => {
+  const created = await queue.enqueue({
+    jobId: input.jobId,
+    agentId: "codex",
+    lane: "collect",
+    sessionKey: `factory-task:${input.objectiveId}:${input.taskId}:${input.candidateId}`,
+    singletonMode: "allow",
+    maxAttempts: 1,
+    payload: {
+      kind: "factory.task.run",
+      objectiveId: input.objectiveId,
+      taskId: input.taskId,
+      candidateId: input.candidateId,
+      parentRunId: input.runId,
+      stream: "agents/factory/demo",
+    },
+  });
+  const leased = await queue.leaseNext({ workerId: "tester", leaseMs: 30_000, agentId: "codex" });
+  if (!leased || leased.id !== created.id) throw new Error("failed to lease queued codex task job");
+  return leased;
+};
+
+const makeSupervisorObjectiveDetail = (input: {
+  readonly objectiveId: string;
+  readonly objectiveMode?: "delivery" | "investigation";
+  readonly tasks: ReadonlyArray<Record<string, unknown>>;
+  readonly latestSummary?: string;
+}) => ({
+  objectiveId: input.objectiveId,
+  title: "Objective demo",
+  status: "active",
+  phase: "executing",
+  objectiveMode: input.objectiveMode ?? "delivery",
+  severity: 2,
+  reconciliationStatus: "none",
+  latestSummary: input.latestSummary ?? "Objective work is in progress.",
+  nextAction: "Wait for the active task to finish.",
+  integration: {
+    status: "idle",
+    queuedCandidateIds: [],
+  },
+  latestDecision: {
+    summary: "Focus on the current frontier task.",
+    at: Date.now(),
+    source: "runtime",
+  },
+  blockedExplanation: undefined,
+  evidenceCards: [],
+  tasks: input.tasks,
 });
 
 const createAgentRuntime = (dataDir: string) =>
@@ -504,6 +564,548 @@ test("factory chat runner: status.read tools expose codex logs, objective status
   expect(observations.find((event) => event.tool === "factory.status" && "output" in event)?.output ?? "").toContain('"latestDecision"');
   expect(observations.find((event) => event.tool === "factory.receipts" && "output" in event)?.output ?? "").toContain('"receipts"');
   expect(observations.find((event) => event.tool === "factory.output" && "output" in event)?.output ?? "").toContain('Streaming live output.');
+});
+
+test("factory chat runner: active supervisor only monitors healthy objective-backed codex work", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-supervisor-healthy");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  const objectiveId = "objective_supervisor_healthy";
+  const taskId = "task_01";
+  const candidateId = "candidate_01";
+  const job = await enqueueRunningFactoryTaskJob(queue, {
+    jobId: "job_supervisor_healthy",
+    objectiveId,
+    taskId,
+    candidateId,
+  });
+  let liveTick = 0;
+  await writeProfile(profileRoot, {
+    id: "software",
+    label: "Software",
+    default: true,
+    capabilities: ["status.read"],
+    mode: "supervisor",
+    allowPollingWhileChildRunning: true,
+    finalWhileChildRunning: "allow",
+  });
+
+  const actions = [
+    {
+      thought: "wait on the active objective",
+      action: {
+        type: "tool",
+        name: "factory.status",
+        input: JSON.stringify({ objectiveId, waitForChangeMs: 220 }),
+        text: null,
+      },
+    },
+    {
+      thought: "respond",
+      action: {
+        type: "final",
+        name: null,
+        input: "{}",
+        text: "The objective is still running.",
+      },
+    },
+  ];
+
+  const service = createFactoryServiceStub({
+    getObjective: async () => makeSupervisorObjectiveDetail({
+      objectiveId,
+      tasks: [{
+        taskId,
+        title: "Validate inventory",
+        prompt: "Validate inventory",
+        status: "running",
+        workerType: "codex",
+        dependsOn: [],
+        candidateId,
+        jobId: job.id,
+      }],
+    }),
+    getObjectiveDebug: async () => ({
+      activeJobs: [job],
+      taskWorktrees: [],
+      integrationWorktree: undefined,
+      latestContextPacks: [],
+    }),
+    getObjectiveLiveOutput: async () => ({
+      objectiveId,
+      focusKind: "task",
+      focusId: taskId,
+      title: "Validate inventory",
+      status: "running",
+      active: true,
+      summary: "Streaming live output.",
+      taskId,
+      candidateId,
+      jobId: job.id,
+      lastMessage: `progress-${++liveTick}`,
+      stdoutTail: `stdout-${liveTick}`,
+      stderrTail: "",
+    }),
+  });
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_supervisor_healthy",
+    problem: "Keep an eye on the running objective.",
+    profileId: "software",
+    objectiveId,
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: service as never,
+    repoRoot,
+    profileRoot,
+    extraConfig: {
+      supervisor: {
+        pollMs: 20,
+        steerAfterMs: 80,
+        abortAfterMs: 180,
+      },
+    },
+  });
+
+  expect(result.status).toBe("completed");
+  const refreshed = await queue.getJob(job.id);
+  expect(refreshed?.commands).toHaveLength(0);
+});
+
+test("factory chat runner: active supervisor steers a stalled objective-backed codex task once without duplicates", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-supervisor-steer");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  const objectiveId = "objective_supervisor_steer";
+  const taskId = "task_03";
+  const candidateId = "candidate_03";
+  const job = await enqueueRunningFactoryTaskJob(queue, {
+    jobId: "job_supervisor_steer",
+    objectiveId,
+    taskId,
+    candidateId,
+  });
+  await writeProfile(profileRoot, {
+    id: "software",
+    label: "Software",
+    default: true,
+    capabilities: ["status.read"],
+    mode: "supervisor",
+    allowPollingWhileChildRunning: true,
+    finalWhileChildRunning: "allow",
+  });
+
+  const actions = [
+    {
+      thought: "wait on the active objective",
+      action: {
+        type: "tool",
+        name: "factory.status",
+        input: JSON.stringify({ objectiveId, waitForChangeMs: 240 }),
+        text: null,
+      },
+    },
+    {
+      thought: "respond",
+      action: {
+        type: "final",
+        name: null,
+        input: "{}",
+        text: "The objective is still running.",
+      },
+    },
+  ];
+
+  const service = createFactoryServiceStub({
+    getObjective: async () => makeSupervisorObjectiveDetail({
+      objectiveId,
+      tasks: [{
+        taskId,
+        title: "Validate cost-driver inventory",
+        prompt: "Validate cost-driver inventory",
+        status: "running",
+        workerType: "codex",
+        dependsOn: [],
+        candidateId,
+        jobId: job.id,
+      }, {
+        taskId: "task_04",
+        title: "Synthesize consumption insights and recommendations",
+        prompt: "Synthesize consumption insights and recommendations",
+        status: "pending",
+        workerType: "codex",
+        dependsOn: [taskId],
+      }],
+    }),
+    getObjectiveDebug: async () => ({
+      activeJobs: [job],
+      taskWorktrees: [],
+      integrationWorktree: undefined,
+      latestContextPacks: [],
+    }),
+    getObjectiveLiveOutput: async () => ({
+      objectiveId,
+      focusKind: "task",
+      focusId: taskId,
+      title: "Validate cost-driver inventory",
+      status: "running",
+      active: true,
+      summary: "Still waiting on the same task output.",
+      taskId,
+      candidateId,
+      jobId: job.id,
+      lastMessage: "no progress yet",
+      stdoutTail: "no progress yet",
+      stderrTail: "",
+    }),
+  });
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_supervisor_steer",
+    problem: "Supervise the running infrastructure task.",
+    profileId: "software",
+    objectiveId,
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: service as never,
+    repoRoot,
+    profileRoot,
+    extraConfig: {
+      supervisor: {
+        pollMs: 20,
+        steerAfterMs: 60,
+        abortAfterMs: 500,
+      },
+    },
+  });
+
+  expect(result.status).toBe("completed");
+  const refreshed = await queue.getJob(job.id);
+  const commands = refreshed?.commands.filter((command) => command.command === "steer") ?? [];
+  expect(commands).toHaveLength(1);
+  expect(commands[0]?.payload.problem).toContain("Focus only on task_03: Validate cost-driver inventory.");
+  expect(commands[0]?.payload.problem).toContain("task_04 (Synthesize consumption insights and recommendations)");
+});
+
+test("factory chat runner: active supervisor follows up on historical infrastructure-style access gaps instead of spinning", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-supervisor-follow-up");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  const objectiveId = historicalInfrastructureObjectiveId;
+  const taskId = "task_03";
+  const candidateId = "task_03_candidate_02";
+  const job = await enqueueRunningFactoryTaskJob(queue, {
+    jobId: "job_supervisor_follow_up",
+    objectiveId,
+    taskId,
+    candidateId,
+  });
+  await writeProfile(profileRoot, {
+    id: "infrastructure",
+    label: "Infrastructure",
+    default: true,
+    capabilities: ["status.read"],
+    mode: "supervisor",
+    allowPollingWhileChildRunning: true,
+    finalWhileChildRunning: "allow",
+  });
+
+  const actions = [
+    {
+      thought: "wait on the active objective",
+      action: {
+        type: "tool",
+        name: "factory.status",
+        input: JSON.stringify({ objectiveId, waitForChangeMs: 220 }),
+        text: null,
+      },
+    },
+    {
+      thought: "respond",
+      action: {
+        type: "final",
+        name: null,
+        input: "{}",
+        text: "The objective is still running.",
+      },
+    },
+  ];
+
+  const service = createFactoryServiceStub({
+    listObjectiveReceipts: async () =>
+      historicalInfrastructureObjectiveReceipts.map((receipt, index) => ({
+        type: receipt.type,
+        hash: `historical_${index}`,
+        ts: "createdAt" in receipt
+          ? receipt.createdAt
+          : "startedAt" in receipt
+            ? receipt.startedAt
+            : "completedAt" in receipt
+              ? receipt.completedAt
+              : Date.now(),
+        summary: receipt.type,
+      })),
+    getObjective: async () => makeSupervisorObjectiveDetail({
+      objectiveId,
+      objectiveMode: "investigation",
+      tasks: [{
+        taskId,
+        title: "Resource-side validation inventory for key spend services",
+        prompt: "Inspect key spend services and note access gaps.",
+        status: "running",
+        workerType: "codex",
+        dependsOn: [],
+        candidateId,
+        jobId: job.id,
+      }, {
+        taskId: "task_04",
+        title: "Synthesize consumption insights and actionable recommendations",
+        prompt: "Summarize the findings.",
+        status: "pending",
+        workerType: "codex",
+        dependsOn: [taskId],
+      }],
+    }),
+    getObjectiveDebug: async () => ({
+      activeJobs: [job],
+      taskWorktrees: [],
+      integrationWorktree: undefined,
+      latestContextPacks: [],
+    }),
+    getObjectiveLiveOutput: async () => ({
+      objectiveId,
+      focusKind: "task",
+      focusId: taskId,
+      title: "Resource-side validation inventory for key spend services",
+      status: "running",
+      active: true,
+      summary: "Inventory is incomplete because ELB access is denied.",
+      taskId,
+      candidateId,
+      jobId: job.id,
+      lastMessage: "DescribeLoadBalancers failed with AccessDenied.",
+      stdoutTail: "",
+      stderrTail: "User is not authorized to perform: elasticloadbalancing:DescribeLoadBalancers",
+    }),
+  });
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/historical-infra-loop",
+    runId: "run_supervisor_follow_up",
+    problem: "Supervise the historical infrastructure follow-up.",
+    profileId: "infrastructure",
+    objectiveId,
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: service as never,
+    repoRoot,
+    profileRoot,
+    extraConfig: {
+      supervisor: {
+        pollMs: 20,
+        steerAfterMs: 500,
+        abortAfterMs: 800,
+      },
+    },
+  });
+
+  expect(result.status).toBe("completed");
+  const refreshed = await queue.getJob(job.id);
+  const followUps = refreshed?.commands.filter((command) => command.command === "follow_up") ?? [];
+  expect(followUps).toHaveLength(1);
+  expect(followUps[0]?.payload.note).toContain("partial investigation report");
+  expect(followUps[0]?.payload.note).toContain("exact denied services/actions");
+  expect(followUps[0]?.payload.note).toContain("task_04 (Synthesize consumption insights and actionable recommendations)");
+});
+
+test("factory chat runner: active supervisor aborts a repeatedly stalled child and re-enters objective control", async () => {
+  const dataDir = await createTempDir("receipt-factory-chat-supervisor-abort");
+  const repoRoot = await createTempDir("receipt-factory-chat-repo");
+  const profileRoot = await createTempDir("receipt-factory-chat-profile-root");
+  const agentRuntime = createAgentRuntime(dataDir);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createMemoryStub();
+  const objectiveId = "objective_supervisor_abort";
+  const taskId = "task_03";
+  const candidateId = "candidate_03";
+  const job = await enqueueRunningFactoryTaskJob(queue, {
+    jobId: "job_supervisor_abort",
+    objectiveId,
+    taskId,
+    candidateId,
+  });
+  await writeProfile(profileRoot, {
+    id: "software",
+    label: "Software",
+    default: true,
+    capabilities: ["status.read"],
+    mode: "supervisor",
+    allowPollingWhileChildRunning: true,
+    finalWhileChildRunning: "allow",
+  });
+
+  let reactCalls = 0;
+  setTimeout(() => {
+    void queue.cancel(job.id, "simulate supervisor-handled worker stop", "test");
+  }, 320);
+
+  const actions = [
+    {
+      thought: "wait on the active objective",
+      action: {
+        type: "tool",
+        name: "factory.status",
+        input: JSON.stringify({ objectiveId, waitForChangeMs: 520 }),
+        text: null,
+      },
+    },
+    {
+      thought: "respond",
+      action: {
+        type: "final",
+        name: null,
+        input: "{}",
+        text: "The objective is still running.",
+      },
+    },
+  ];
+
+  const service = createFactoryServiceStub({
+    getObjective: async () => makeSupervisorObjectiveDetail({
+      objectiveId,
+      tasks: [{
+        taskId,
+        title: "Validate cost-driver inventory",
+        prompt: "Validate cost-driver inventory",
+        status: "running",
+        workerType: "codex",
+        dependsOn: [],
+        candidateId,
+        jobId: job.id,
+      }, {
+        taskId: "task_04",
+        title: "Synthesize consumption insights and recommendations",
+        prompt: "Synthesize consumption insights and recommendations",
+        status: "pending",
+        workerType: "codex",
+        dependsOn: [taskId],
+      }],
+    }),
+    getObjectiveDebug: async () => ({
+      activeJobs: [job],
+      taskWorktrees: [],
+      integrationWorktree: undefined,
+      latestContextPacks: [],
+    }),
+    getObjectiveLiveOutput: async () => ({
+      objectiveId,
+      focusKind: "task",
+      focusId: taskId,
+      title: "Validate cost-driver inventory",
+      status: "running",
+      active: true,
+      summary: "Still waiting on the same task output.",
+      taskId,
+      candidateId,
+      jobId: job.id,
+      lastMessage: "no progress yet",
+      stdoutTail: "no progress yet",
+      stderrTail: "",
+    }),
+    reactObjective: async () => {
+      reactCalls += 1;
+      return undefined;
+    },
+  });
+
+  const result = await runFactoryChat({
+    stream: "agents/factory/demo",
+    runId: "run_supervisor_abort",
+    problem: "Supervise the stalled child until it is aborted.",
+    profileId: "software",
+    objectiveId,
+    config: FACTORY_CHAT_DEFAULT_CONFIG,
+    runtime: agentRuntime,
+    llmText: async () => "",
+    llmStructured: async ({ schema }) => {
+      const next = actions.shift();
+      if (!next) throw new Error("no scripted action left");
+      return { parsed: schema.parse(next), raw: JSON.stringify(next) };
+    },
+    model: "test-model",
+    apiReady: true,
+    memoryTools,
+    delegationTools: createNoopDelegationTools(),
+    workspaceRoot: repoRoot,
+    queue,
+    factoryService: service as never,
+    repoRoot,
+    profileRoot,
+    extraConfig: {
+      supervisor: {
+        pollMs: 20,
+        steerAfterMs: 120,
+        abortAfterMs: 220,
+      },
+    },
+  });
+
+  expect(result.status).toBe("completed");
+  const refreshed = await queue.getJob(job.id);
+  expect(refreshed?.commands.filter((command) => command.command === "steer")).toHaveLength(1);
+  expect(refreshed?.commands.filter((command) => command.command === "abort")).toHaveLength(1);
+  expect(reactCalls).toBeGreaterThan(0);
 });
 
 test("factory chat runner: agent.delegate queues work and agent.status sees the queued job", async () => {

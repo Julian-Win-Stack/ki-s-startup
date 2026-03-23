@@ -662,6 +662,18 @@ const updateCandidate = (
   };
 };
 
+const latestTaskCandidate = (
+  state: FactoryState,
+  taskId: string,
+): FactoryCandidateRecord | undefined => {
+  for (let index = state.candidateOrder.length - 1; index >= 0; index -= 1) {
+    const candidateId = state.candidateOrder[index];
+    const candidate = state.candidates[candidateId];
+    if (candidate?.taskId === taskId) return candidate;
+  }
+  return undefined;
+};
+
 const upsertCandidate = (
   state: FactoryState,
   candidate: FactoryCandidateRecord,
@@ -1395,12 +1407,21 @@ export const reduceFactory: Reducer<FactoryState, FactoryEvent> = (state, event)
       const prev = state.graph.nodes[event.taskId];
       const wasDispatch = prev?.status === "running" || prev?.status === "reviewing";
       const prevFailures = state.consecutiveFailuresByTask[event.taskId] ?? 0;
-      return {
-        ...setActiveTaskIds(updateTask(state, event.taskId, {
+      let next = updateTask(state, event.taskId, {
           status: "blocked",
           blockedReason: event.reason,
           completedAt: event.blockedAt,
-        }), active, event.blockedAt),
+        });
+      const candidate = latestTaskCandidate(next, event.taskId);
+      if (candidate && (candidate.status === "running" || candidate.status === "awaiting_review")) {
+        next = updateCandidate(next, candidate.candidateId, {
+          status: "changes_requested",
+          latestReason: event.reason,
+          updatedAt: event.blockedAt,
+        });
+      }
+      return {
+        ...setActiveTaskIds(next, active, event.blockedAt),
         latestSummary: event.reason,
         consecutiveFailuresByTask: wasDispatch
           ? { ...state.consecutiveFailuresByTask, [event.taskId]: prevFailures + 1 }

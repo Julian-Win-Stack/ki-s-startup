@@ -36,6 +36,9 @@ test("factory infrastructure aws skill: documents region-aware account scope han
   expect(skill).toContain("cloudExecutionContext.aws.ec2RegionScope");
   expect(skill).toContain("scripts/aws-account-scope.sh");
   expect(skill).toContain("Skip `not-opted-in` regions");
+  expect(skill).toContain("Distinguish account-level AWS access failures from per-service IAM denials.");
+  expect(skill).toContain("capture exact `AccessDenied` errors per service and continue collecting evidence");
+  expect(skill).toContain("return a final investigation report that says the inventory is incomplete due to permissions");
   expect(helper).toContain("aws sts get-caller-identity");
   expect(helper).toContain("describe-regions --all-regions");
   expect(helper).toContain("\"ec2RegionScope\"");

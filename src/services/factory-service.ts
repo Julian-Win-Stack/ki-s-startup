@@ -9,7 +9,7 @@ import { z } from "zod";
 
 import { jsonBranchStore, jsonlStore } from "../adapters/jsonl";
 import type { JsonlQueue, QueueJob } from "../adapters/jsonl-queue";
-import { type CodexExecutor, type CodexRunControl } from "../adapters/codex-executor";
+import { CodexControlSignalError, type CodexExecutor, type CodexRunControl } from "../adapters/codex-executor";
 import { HubGit } from "../adapters/hub-git";
 import type { MemoryTools } from "../adapters/memory-tools";
 import {
@@ -59,6 +59,7 @@ import { resolveFactoryCloudExecutionContext } from "./factory-cloud-targeting";
 import {
   buildInfrastructureDecompositionGuidance,
   normalizeInfrastructureInvestigationTasks,
+  rewriteInfrastructureTaskPromptForExecution,
   renderInfrastructureTaskExecutionGuidance,
 } from "./factory-infrastructure-guidance";
 import {
@@ -98,6 +99,7 @@ const resolveRepoRoot = (repoRoot?: string): string =>
   || process.cwd();
 const DISCOVERY_ONLY_RE = /\b(search|locate|identify|inspect|find|trace|look\s+for|determine|record)\b/i;
 const DIFF_PRODUCING_RE = /\b(edit|change|update|remove|add|implement|write|modify|refactor|fix|test|verify|run|create)\b/i;
+const MAX_FACTORY_SUPERVISOR_RESTARTS = 3;
 const FACTORY_TASK_RESULT_SCHEMA = {
   type: "object",
   properties: {
@@ -108,6 +110,27 @@ const FACTORY_TASK_RESULT_SCHEMA = {
   required: ["outcome", "summary", "handoff"],
   additionalProperties: false,
 } as const;
+
+const withSupervisorGuidance = (
+  prompt: string,
+  notes: ReadonlyArray<string>,
+): string => {
+  if (notes.length === 0) return prompt;
+  const guidance = notes
+    .map((note) => note.trim())
+    .filter(Boolean)
+    .map((note, index) => `${index + 1}. ${note}`)
+    .join("\n");
+  if (!guidance) return prompt;
+  return [
+    prompt,
+    "",
+    "## Supervisor Guidance",
+    guidance,
+    "",
+    "Honor the latest supervisor guidance above before doing more work. If you already have enough evidence to answer the task, stop and return the structured result now.",
+  ].join("\n");
+};
 const FACTORY_INVESTIGATION_REPORT_SCHEMA = {
   type: "object",
   properties: {
@@ -2216,7 +2239,8 @@ export class FactoryService {
         finalProjection.tasks.length > 0
         && finalProjection.readyTasks.length === 0
         && finalProjection.activeTasks.length === 0
-        && finalProjection.tasks.every((task) => ["blocked", "superseded"].includes(task.status))
+        && factoryActivatableTasks(state).length === 0
+        && finalProjection.tasks.some((task) => task.status === "blocked")
       );
 
       if (investigationReady) {
@@ -2358,7 +2382,6 @@ export class FactoryService {
     if (rebuiltPacket || !manifestPresent) {
       await this.writeTaskPacket(state, task, parsed.candidateId, parsed.workspacePath);
     }
-    const renderedPrompt = await this.renderTaskPrompt(state, task, parsed);
     const receiptBinDir = await this.ensureWorkspaceReceiptCli(parsed.workspacePath);
     const resultSchemaPath = this.taskResultSchemaPath(parsed.resultPath);
     await fs.mkdir(path.dirname(resultSchemaPath), { recursive: true });
@@ -2367,32 +2390,55 @@ export class FactoryService {
       JSON.stringify(parsed.objectiveMode === "investigation" ? FACTORY_INVESTIGATION_TASK_RESULT_SCHEMA : FACTORY_TASK_RESULT_SCHEMA, null, 2),
       "utf-8",
     );
-    const execution = await this.codexExecutor.run({
-      prompt: renderedPrompt,
-      workspacePath: parsed.workspacePath,
-      promptPath: parsed.promptPath,
-      lastMessagePath: parsed.lastMessagePath,
-      stdoutPath: parsed.stdoutPath,
-      stderrPath: parsed.stderrPath,
-      model: FACTORY_TASK_CODEX_MODEL,
-      outputSchemaPath: resultSchemaPath,
-      completionSignalPath: parsed.lastMessagePath,
-      completionQuietMs: 1_500,
-      reasoningEffort: severityWorkerReasoningEffort(parsed.profile.rootProfileId, parsed.objectiveMode, parsed.severity, task.taskKind),
-      sandboxMode: parsed.profile.rootProfileId === "infrastructure" ? "danger-full-access" : undefined,
-      isolateCodexHome: true,
-      objectiveId: parsed.objectiveId,
-      taskId: parsed.taskId,
-      candidateId: parsed.candidateId,
-      integrationRef: parsed.integrationRef,
-      contextRefs: parsed.contextRefs,
-      skillBundlePaths: parsed.skillBundlePaths,
-      repoSkillPaths: parsed.repoSkillPaths,
-      env: {
-        DATA_DIR: this.dataDir,
-        PATH: prependPath(receiptBinDir, process.env.PATH),
-      },
-    }, control);
+    const supervisorNotes: string[] = [];
+    let execution: Awaited<ReturnType<CodexExecutor["run"]>> | undefined;
+    for (;;) {
+      const renderedPrompt = withSupervisorGuidance(
+        await this.renderTaskPrompt(state, task, parsed),
+        supervisorNotes,
+      );
+      try {
+        execution = await this.codexExecutor.run({
+          prompt: renderedPrompt,
+          workspacePath: parsed.workspacePath,
+          promptPath: parsed.promptPath,
+          lastMessagePath: parsed.lastMessagePath,
+          stdoutPath: parsed.stdoutPath,
+          stderrPath: parsed.stderrPath,
+          model: FACTORY_TASK_CODEX_MODEL,
+          outputSchemaPath: resultSchemaPath,
+          completionSignalPath: parsed.lastMessagePath,
+          completionQuietMs: 1_500,
+          reasoningEffort: severityWorkerReasoningEffort(parsed.profile.rootProfileId, parsed.objectiveMode, parsed.severity, task.taskKind),
+          sandboxMode: parsed.profile.rootProfileId === "infrastructure" ? "danger-full-access" : undefined,
+          isolateCodexHome: true,
+          objectiveId: parsed.objectiveId,
+          taskId: parsed.taskId,
+          candidateId: parsed.candidateId,
+          integrationRef: parsed.integrationRef,
+          contextRefs: parsed.contextRefs,
+          skillBundlePaths: parsed.skillBundlePaths,
+          repoSkillPaths: parsed.repoSkillPaths,
+          env: {
+            DATA_DIR: this.dataDir,
+            PATH: prependPath(receiptBinDir, process.env.PATH),
+          },
+        }, control);
+        break;
+      } catch (err) {
+        if (err instanceof CodexControlSignalError && err.signal.kind === "restart") {
+          const note = optionalTrimmedString(err.signal.note)
+            ?? "Supervisor requested a restart with tighter scope and a clearer finish condition.";
+          supervisorNotes.push(note);
+          if (supervisorNotes.length > MAX_FACTORY_SUPERVISOR_RESTARTS) {
+            throw new Error(`factory task restart budget exhausted after ${MAX_FACTORY_SUPERVISOR_RESTARTS} supervisor restarts`);
+          }
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (!execution) throw new Error("factory task execution produced no result");
     const taskResult = await this.resolveTaskWorkerResult(parsed.resultPath, execution);
     await fs.writeFile(parsed.resultPath, JSON.stringify(taskResult, null, 2), "utf-8");
     await this.applyTaskWorkerResult(parsed, taskResult);
@@ -2414,8 +2460,9 @@ export class FactoryService {
     const outcome = optionalTrimmedString(rawResult.outcome) ?? "approved";
     const completedAt = Date.now();
     const isInvestigation = state.objectiveMode === "investigation";
+    const hasStructuredInvestigationReport = isInvestigation && isRecord(rawResult.report);
 
-    if (outcome === "blocked") {
+    if (outcome === "blocked" && !hasStructuredInvestigationReport) {
       await this.emitObjective(payload.objectiveId, {
         type: "task.blocked",
         objectiveId: payload.objectiveId,
@@ -2501,7 +2548,13 @@ export class FactoryService {
         evidenceCommit: committed?.hash,
         reportedAt: completedAt,
       });
-      await this.commitTaskMemory(state, task, payload.candidateId, summary, "investigation_reported");
+      await this.commitTaskMemory(
+        state,
+        task,
+        payload.candidateId,
+        summary,
+        outcome === "blocked" ? "investigation_reported_partial" : "investigation_reported",
+      );
       return;
     }
 
@@ -3319,6 +3372,7 @@ export class FactoryService {
       readonly candidateId?: string;
     }>,
   ): FactoryObjectiveCard["blockedExplanation"] | undefined {
+    const dependentSummary = this.blockedDependentSummary(state);
     if (!state.blockedReason && state.status !== "blocked" && state.integration.status !== "conflicted") return undefined;
     const match = [...receipts]
       .reverse()
@@ -3330,16 +3384,41 @@ export class FactoryService {
       );
     if (!match) {
       return state.blockedReason
-        ? { summary: state.blockedReason }
+        ? { summary: [state.blockedReason, dependentSummary].filter(Boolean).join(" ") }
         : undefined;
     }
     return {
-      summary: match.summary,
+      summary: [match.summary, dependentSummary].filter(Boolean).join(" "),
       taskId: match.taskId,
       candidateId: match.candidateId,
       receiptType: match.type,
       receiptHash: match.hash,
     };
+  }
+
+  private blockedDependentSummary(state: FactoryState): string | undefined {
+    const blockedTaskIds = new Set(
+      state.taskOrder
+        .map((taskId) => state.graph.nodes[taskId])
+        .filter((task): task is FactoryTaskRecord => Boolean(task) && task.status === "blocked")
+        .map((task) => task.taskId),
+    );
+    if (blockedTaskIds.size === 0) return undefined;
+    const waiting = state.taskOrder
+      .map((taskId) => state.graph.nodes[taskId])
+      .filter((task): task is FactoryTaskRecord => Boolean(task) && task.status === "pending")
+      .map((task) => ({
+        taskId: task.taskId,
+        blockedBy: task.dependsOn.filter((depId) => blockedTaskIds.has(depId)),
+      }))
+      .filter((task) => task.blockedBy.length > 0);
+    if (waiting.length === 0) return undefined;
+    const preview = waiting
+      .slice(0, 3)
+      .map((task) => `${task.taskId} depends on ${task.blockedBy.join(", ")}`)
+      .join("; ");
+    const extra = waiting.length > 3 ? ` (+${waiting.length - 3} more)` : "";
+    return `Waiting tasks: ${preview}${extra}.`;
   }
 
   private buildEvidenceCards(
@@ -4367,6 +4446,7 @@ export class FactoryService {
     state: FactoryState,
     task: FactoryTaskRecord,
     candidateId: string,
+    taskPrompt = task.prompt,
   ): Promise<FactoryContextPack> {
     const contextPackBuiltAt = Date.now();
     const chain = await this.runtime.chain(objectiveStream(state.objectiveId));
@@ -4530,7 +4610,7 @@ export class FactoryService {
       task: {
         taskId: task.taskId,
         title: task.title,
-        prompt: task.prompt,
+        prompt: taskPrompt,
         workerType: task.workerType,
         status: task.status,
         candidateId,
@@ -4795,8 +4875,9 @@ export class FactoryService {
     state: FactoryState,
     task: FactoryTaskRecord,
     candidateId: string,
+    taskPrompt = task.prompt,
   ): ReadonlyArray<FactoryMemoryScopeSpec> {
-    const baseQuery = `${state.title}\n${task.title}\n${task.prompt}`;
+    const baseQuery = `${state.title}\n${task.title}\n${taskPrompt}`;
     const scopes: FactoryMemoryScopeSpec[] = [
       {
         key: "agent",
@@ -4889,12 +4970,13 @@ export class FactoryService {
     readonly contextRefs: ReadonlyArray<GraphRef>;
   }> {
     const profile = this.workerTaskProfile(this.objectiveProfileForState(state));
+    const taskPrompt = this.effectiveTaskPrompt(state, task);
     const files = this.taskFilePaths(workspacePath, task.taskId);
     await fs.mkdir(path.dirname(files.manifestPath), { recursive: true });
     await fs.rm(files.resultPath, { force: true });
     const repoSkillPaths = await this.collectRepoSkillPaths();
-    const memoryScopes = this.memoryScopesForTask(state, task, candidateId);
-    const contextPack = await this.buildTaskContextPack(state, task, candidateId);
+    const memoryScopes = this.memoryScopesForTask(state, task, candidateId, taskPrompt);
+    const contextPack = await this.buildTaskContextPack(state, task, candidateId, taskPrompt);
     const sharedArtifactRefs = contextPack.contextSources.sharedArtifactRefs;
     const skillBundle = {
       objectiveId: state.objectiveId,
@@ -4921,7 +5003,7 @@ export class FactoryService {
       task: {
         taskId: task.taskId,
         title: task.title,
-        prompt: task.prompt,
+        prompt: taskPrompt,
         workerType: task.workerType,
         baseCommit: pinnedBaseCommit ?? this.resolveTaskBaseCommit(state, task),
         dependsOn: task.dependsOn,
@@ -4958,7 +5040,7 @@ export class FactoryService {
       taskId: task.taskId,
       candidateId,
       contextPackPath: files.contextPackPath,
-      defaultQuery: `${state.title}\n${task.title}\n${task.prompt}`,
+      defaultQuery: `${state.title}\n${task.title}\n${taskPrompt}`,
       defaultLimit: 6,
       defaultMaxChars: 2400,
       scopes: memoryScopes,
@@ -5319,6 +5401,7 @@ export class FactoryService {
     payload: FactoryTaskJobPayload,
   ): Promise<string> {
     const cloudExecutionContext = await this.loadObjectiveCloudExecutionContext(payload.profile.rootProfileId);
+    const taskPrompt = this.effectiveTaskPrompt(state, task);
     const infrastructureTaskGuidance = renderInfrastructureTaskExecutionGuidance({
       profileId: payload.profile.rootProfileId,
       objectiveMode: state.objectiveMode,
@@ -5334,7 +5417,7 @@ export class FactoryService {
       .filter((candidate): candidate is FactoryTaskRecord => Boolean(candidate) && candidate.dependsOn.includes(task.taskId))
       .map((candidate) => `- ${candidate.taskId}: ${candidate.title}`)
       .join("\n") || "- none";
-    const memorySummary = await this.loadMemorySummary(`factory/objectives/${state.objectiveId}/tasks/${task.taskId}`, task.prompt);
+    const memorySummary = await this.loadMemorySummary(`factory/objectives/${state.objectiveId}/tasks/${task.taskId}`, taskPrompt);
     const validationSection = this.renderTaskValidationSection(state, task);
     return [
       `# Factory Task`,
@@ -5353,7 +5436,7 @@ export class FactoryService {
       state.prompt,
       ``,
       `## Task Prompt`,
-      task.prompt,
+      taskPrompt,
       ``,
       `## Dependencies`,
       dependencySummaries,
@@ -5420,12 +5503,23 @@ export class FactoryService {
       `Do not write this file yourself. Return exactly that JSON object as your final response and the runtime will persist it to the result path.`,
       `Use "changes_requested" only when more work is clearly needed; use "blocked" only for a hard blocker.`,
       state.objectiveMode === "investigation"
-        ? `For investigation tasks, include every report key. Use [] for empty lists and null for detail, summary, or status when they do not apply.`
+        ? `For investigation tasks, include every report key. Use [] for empty lists and null for detail, summary, or status when they do not apply. If you gathered any durable evidence, return a report even when access gaps or partial blockers prevent full completion; reserve "blocked" for zero-evidence hard failures that prevent a meaningful report.`
         : `For delivery tasks, return only outcome, summary, and handoff unless a future contract explicitly asks for more.`,
       ``,
       `## Starting Hint`,
       memorySummary || "No durable task memory yet.",
     ].join("\n");
+  }
+
+  private effectiveTaskPrompt(
+    state: FactoryState,
+    task: Pick<FactoryTaskRecord, "prompt">,
+  ): string {
+    return rewriteInfrastructureTaskPromptForExecution({
+      profileId: this.objectiveProfileForState(state).rootProfileId,
+      objectiveMode: state.objectiveMode,
+      taskPrompt: task.prompt,
+    });
   }
 
   private renderTaskValidationSection(state: FactoryState, task: FactoryTaskRecord): string[] {

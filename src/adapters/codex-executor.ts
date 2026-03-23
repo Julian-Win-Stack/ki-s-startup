@@ -41,8 +41,14 @@ export type CodexRunResult = {
   readonly tokensUsed?: number;
 };
 
+export type CodexControlSignal = {
+  readonly kind: "abort" | "restart";
+  readonly note?: string;
+};
+
 export type CodexRunControl = {
   readonly shouldAbort?: () => Promise<boolean>;
+  readonly pollSignal?: () => Promise<CodexControlSignal | undefined>;
 };
 
 export type CodexExecutor = {
@@ -68,6 +74,18 @@ export class CodexExecutionError extends Error {
   }
 }
 
+export class CodexControlSignalError extends Error {
+  readonly signal: CodexControlSignal;
+  readonly result: CodexRunResult;
+
+  constructor(signal: CodexControlSignal, result: CodexRunResult) {
+    super(signal.kind === "restart" ? "codex exec restart requested" : "codex exec aborted");
+    this.name = "CodexControlSignalError";
+    this.signal = signal;
+    this.result = result;
+  }
+}
+
 type LocalCodexExecutorOptions = {
   readonly bin?: string;
   readonly timeoutMs?: number;
@@ -79,12 +97,12 @@ const delay = (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
-const fileHasContent = async (targetPath: string): Promise<boolean> => {
+const fileContentMtimeMs = async (targetPath: string): Promise<number | undefined> => {
   try {
     const stat = await fsp.stat(targetPath);
-    return stat.size > 0;
+    return stat.size > 0 ? stat.mtimeMs : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 };
 
@@ -203,6 +221,7 @@ export class LocalCodexExecutor implements CodexExecutor {
       let stderr = "";
       let lastOutputAt = Date.now();
       let completionTriggered = false;
+      let controlSignal: CodexControlSignal | undefined;
       const stdoutFile = fs.createWriteStream(input.stdoutPath, { flags: "a", encoding: "utf-8" });
       const stderrFile = fs.createWriteStream(input.stderrPath, { flags: "a", encoding: "utf-8" });
 
@@ -231,20 +250,33 @@ export class LocalCodexExecutor implements CodexExecutor {
 
       const completionSignalPath = input.completionSignalPath?.trim();
       const completionQuietMs = Math.max(250, input.completionQuietMs ?? 1_000);
+      const prefersStructuredCompletion = Boolean(input.outputSchemaPath);
       let completionKillTimer: NodeJS.Timeout | undefined;
       const completionLoop = completionSignalPath
         ? (async () => {
+          let completionSignalMtimeMs: number | undefined;
+          let completionStableSince: number | undefined;
           while (child.exitCode === null && !child.killed && !completionTriggered) {
-            if (
-              await fileHasContent(completionSignalPath)
-              && Date.now() - lastOutputAt >= completionQuietMs
-            ) {
-              completionTriggered = true;
-              child.kill("SIGTERM");
-              completionKillTimer = setTimeout(() => {
-                if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
-              }, Math.min(2_000, completionQuietMs));
-              return;
+            const signalMtimeMs = await fileContentMtimeMs(completionSignalPath);
+            if (signalMtimeMs !== undefined) {
+              if (signalMtimeMs !== completionSignalMtimeMs) {
+                completionSignalMtimeMs = signalMtimeMs;
+                completionStableSince = Date.now();
+              }
+              const outputQuiet = Date.now() - lastOutputAt >= completionQuietMs;
+              const completionStable = completionStableSince !== undefined
+                && Date.now() - completionStableSince >= completionQuietMs;
+              if (outputQuiet || (prefersStructuredCompletion && completionStable)) {
+                completionTriggered = true;
+                child.kill("SIGTERM");
+                completionKillTimer = setTimeout(() => {
+                  if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
+                }, Math.min(2_000, completionQuietMs));
+                return;
+              }
+            } else {
+              completionSignalMtimeMs = undefined;
+              completionStableSince = undefined;
             }
             await delay(Math.min(250, completionQuietMs));
           }
@@ -252,10 +284,18 @@ export class LocalCodexExecutor implements CodexExecutor {
         : undefined;
 
       const shouldAbort = control?.shouldAbort;
-      const abortLoop = shouldAbort
+      const pollSignal = control?.pollSignal;
+      const abortLoop = shouldAbort || pollSignal
         ? (async () => {
           while (child.exitCode === null && !child.killed) {
-            if (await shouldAbort()) {
+            const nextSignal = pollSignal ? await pollSignal() : undefined;
+            if (nextSignal) {
+              controlSignal = nextSignal;
+              child.kill("SIGTERM");
+              return;
+            }
+            if (shouldAbort && await shouldAbort()) {
+              controlSignal = { kind: "abort" };
               child.kill("SIGTERM");
               return;
             }
@@ -295,8 +335,18 @@ export class LocalCodexExecutor implements CodexExecutor {
       await completionLoop;
       await abortLoop;
       if (timedOut) {
+        if (prefersStructuredCompletion && (result.lastMessage?.trim() || result.stdout.trim())) {
+          return {
+            ...result,
+            exitCode: 0,
+            signal: null,
+          };
+        }
         const elapsed = Date.now() - startedAt;
         throw new Error(`codex exec timed out after ${elapsed}ms`);
+      }
+      if (controlSignal) {
+        throw new CodexControlSignalError(controlSignal, result);
       }
       if (result.signal === "SIGTERM") {
         throw new Error("codex exec aborted");

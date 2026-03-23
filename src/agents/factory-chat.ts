@@ -52,6 +52,13 @@ export const FACTORY_CHAT_DEFAULT_CONFIG: FactoryChatRunConfig = {
 };
 
 const FACTORY_CHAT_ITERATION_LADDER = [8, 12, 16, 24, 32, 40] as const;
+const FACTORY_SUPERVISOR_ACCESS_DENIED_RE = /\b(accessdenied|access denied|accessdeniedexception|not authorized to perform|is not authorized)\b/i;
+const DEFAULT_FACTORY_SUPERVISOR_POLICY = {
+  enabled: true,
+  pollMs: 1_500,
+  steerAfterMs: 90_000,
+  abortAfterMs: 240_000,
+} as const;
 
 export type FactoryChatRunInput = Omit<AgentRunInput, "config" | "prompts" | "llmStructured"> & {
   readonly config: FactoryChatRunConfig;
@@ -101,6 +108,7 @@ const FACTORY_CHAT_LOOP_TEMPLATE = [
   "- If a completed objective already contains the answer in `factory.status`, `factory.receipts`, or `factory.output`, answer directly instead of dispatching new work just to restate saved results.",
   "- Before `react`, `promote`, `cancel`, or duplicate dispatch, ground the decision in the current situation, receipts, or live output.",
   "- When child work is already active, prefer `codex.status`, `factory.status`, or `factory.output` with `waitForChangeMs` so you wait for real progress instead of tight polling.",
+  "- In supervisor mode, use the current DAG node and dependency state as the source of truth. If a child drifts or stalls, steer it back to the active task or let the built-in supervisor finish the intervention.",
   "- If investigation reports disagree or reconciliation is pending, do not finalize yet. Inspect status/receipts and wait for the objective to align or block.",
   "",
   "For final answers to the user:",
@@ -205,6 +213,21 @@ const tryParseJsonRecord = (value: string | undefined): Record<string, unknown> 
   }
 };
 
+const clampSupervisorMs = (value: unknown, fallback: number, min: number): number =>
+  typeof value === "number" && Number.isFinite(value)
+    ? Math.max(min, Math.floor(value))
+    : fallback;
+
+const resolveFactorySupervisorPolicy = (value: unknown): FactorySupervisorPolicy => {
+  const record = asRecord(value);
+  return {
+    enabled: record?.enabled === false ? false : DEFAULT_FACTORY_SUPERVISOR_POLICY.enabled,
+    pollMs: clampSupervisorMs(record?.pollMs, DEFAULT_FACTORY_SUPERVISOR_POLICY.pollMs, 50),
+    steerAfterMs: clampSupervisorMs(record?.steerAfterMs, DEFAULT_FACTORY_SUPERVISOR_POLICY.steerAfterMs, 100),
+    abortAfterMs: clampSupervisorMs(record?.abortAfterMs, DEFAULT_FACTORY_SUPERVISOR_POLICY.abortAfterMs, 200),
+  };
+};
+
 const nextId = (prefix: string): string =>
   `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -229,6 +252,69 @@ const summarizeObjective = (detail: Awaited<ReturnType<FactoryService["getObject
   latestCommitHash: detail.latestCommitHash,
   link: `/factory?objective=${encodeURIComponent(detail.objectiveId)}`,
 });
+
+type FactorySupervisorPolicy = {
+  readonly enabled: boolean;
+  readonly pollMs: number;
+  readonly steerAfterMs: number;
+  readonly abortAfterMs: number;
+};
+
+type FactorySupervisorTrackedState = {
+  readonly fingerprint?: string;
+  readonly lastChangedAt: number;
+  readonly steerSentAt?: number;
+  readonly followUpSentAt?: number;
+  readonly abortSentAt?: number;
+  readonly reactedAfterAbort?: boolean;
+};
+
+type FactorySupervisorWaitingTask = {
+  readonly taskId: string;
+  readonly title: string;
+  readonly status: string;
+};
+
+type FactorySupervisorTaskSnapshot = {
+  readonly objectiveId: string;
+  readonly objectiveMode: string;
+  readonly taskId: string;
+  readonly title: string;
+  readonly prompt: string;
+  readonly workerType: string;
+  readonly status: string;
+  readonly jobStatus?: string;
+  readonly candidateId: string;
+  readonly jobId: string;
+  readonly latestSummary?: string;
+  readonly blockedReason?: string;
+  readonly dependsOn: ReadonlyArray<string>;
+  readonly waitingDependents: ReadonlyArray<FactorySupervisorWaitingTask>;
+  readonly output?: {
+    readonly status?: string;
+    readonly summary?: string;
+    readonly lastMessage?: string;
+    readonly stdoutTail?: string;
+    readonly stderrTail?: string;
+  };
+};
+
+type FactorySupervisorAction =
+  | {
+      readonly command: "steer";
+      readonly payload: { readonly problem: string };
+      readonly summary: string;
+    }
+  | {
+      readonly command: "follow_up";
+      readonly payload: { readonly note: string };
+      readonly summary: string;
+    }
+  | {
+      readonly command: "abort";
+      readonly payload: { readonly reason: string };
+      readonly summary: string;
+    };
 
 const deriveObjectiveTitle = (prompt: string): string => {
   const compact = prompt.replace(/\s+/g, " ").trim();
@@ -429,6 +515,13 @@ const buildFactorySituation = async (input: {
       lines.push(`Mode: ${detail.objectiveMode} · severity ${detail.severity} · reconciliation ${detail.reconciliationStatus}`);
       if (detail.latestDecision?.summary) lines.push(`Latest decision: ${detail.latestDecision.summary}`);
       if (detail.blockedExplanation?.summary) lines.push(`Blocked: ${detail.blockedExplanation.summary}`);
+      const planPreview = detail.tasks.slice(0, 6).map((task) =>
+        `- ${task.taskId} [${task.status}] ${task.title}${(task.dependsOn ?? []).length > 0 ? ` · depends on ${(task.dependsOn ?? []).join(", ")}` : ""}`
+      );
+      if (planPreview.length > 0) {
+        lines.push("Plan:");
+        lines.push(...planPreview);
+      }
       const activeJobs = debug.activeJobs.slice(0, 3);
       if (activeJobs.length > 0) {
         lines.push("Active jobs:");
@@ -464,6 +557,232 @@ const buildFactorySituation = async (input: {
     lines.push("No active objective or child work.");
   }
   return lines.join("\n");
+};
+
+const supervisorFingerprint = (snapshot: FactorySupervisorTaskSnapshot): string =>
+  JSON.stringify({
+    status: snapshot.status,
+    jobStatus: snapshot.jobStatus,
+    latestSummary: snapshot.latestSummary,
+    blockedReason: snapshot.blockedReason,
+    output: snapshot.output,
+  });
+
+const supervisorPermissionGapText = (snapshot: FactorySupervisorTaskSnapshot): string =>
+  [
+    snapshot.latestSummary,
+    snapshot.blockedReason,
+    snapshot.output?.summary,
+    snapshot.output?.lastMessage,
+    snapshot.output?.stdoutTail,
+    snapshot.output?.stderrTail,
+  ].filter(Boolean).join("\n");
+
+const describeWaitingDependents = (tasks: ReadonlyArray<FactorySupervisorWaitingTask>): string | undefined => {
+  if (tasks.length === 0) return undefined;
+  return tasks.map((task) => `${task.taskId} (${task.title})`).join(", ");
+};
+
+export const decideFactorySupervisorAction = (input: {
+  readonly snapshot: FactorySupervisorTaskSnapshot;
+  readonly state: FactorySupervisorTrackedState;
+  readonly now: number;
+  readonly policy: FactorySupervisorPolicy;
+}): FactorySupervisorAction | undefined => {
+  const permissionGapText = supervisorPermissionGapText(input.snapshot);
+  const waitingDependents = describeWaitingDependents(input.snapshot.waitingDependents);
+  if (
+    input.snapshot.objectiveMode === "investigation"
+    && FACTORY_SUPERVISOR_ACCESS_DENIED_RE.test(permissionGapText)
+    && !input.state.followUpSentAt
+  ) {
+    const note = [
+      `Return the best partial investigation report you can for ${input.snapshot.taskId}: ${input.snapshot.title}.`,
+      "Do not keep retrying denied AWS APIs or unrelated side checks.",
+      "Summarize the evidence already collected, list the exact denied services/actions, and mark those gaps as incomplete because of access issues.",
+      waitingDependents ? `Call out that downstream work is waiting on this task: ${waitingDependents}.` : undefined,
+    ].filter(Boolean).join(" ");
+    return {
+      command: "follow_up",
+      payload: { note },
+      summary: `Asked ${input.snapshot.taskId} to finish with a partial report instead of spinning on access gaps.`,
+    };
+  }
+
+  const staleForMs = Math.max(0, input.now - input.state.lastChangedAt);
+  if (staleForMs >= input.policy.abortAfterMs && !input.state.abortSentAt && (input.state.steerSentAt || input.state.followUpSentAt)) {
+    const reason = [
+      `No meaningful progress remained on ${input.snapshot.taskId}: ${input.snapshot.title} after supervisor intervention.`,
+      "Abort this child so Factory can re-evaluate the DAG, redispatch if needed, or settle the correct blocked state.",
+      waitingDependents ? `Downstream tasks waiting on this node: ${waitingDependents}.` : undefined,
+    ].filter(Boolean).join(" ");
+    return {
+      command: "abort",
+      payload: { reason },
+      summary: `Aborting ${input.snapshot.taskId} after the child stayed unhealthy past the no-progress window.`,
+    };
+  }
+
+  if (staleForMs >= input.policy.steerAfterMs && !input.state.steerSentAt) {
+    const problem = [
+      `Focus only on ${input.snapshot.taskId}: ${input.snapshot.title}.`,
+      "Use the mounted packet, receipts, and task contract already in the worktree.",
+      "Do not drift into unrelated repo inspection, repeated git/status checks, or optional follow-up probes.",
+      "Either return the required structured result now or clearly report the blocker with exact evidence.",
+      waitingDependents ? `Finish this node cleanly because downstream tasks are waiting: ${waitingDependents}.` : undefined,
+    ].filter(Boolean).join(" ");
+    return {
+      command: "steer",
+      payload: { problem },
+      summary: `Steering ${input.snapshot.taskId} back to its current DAG node and finish criteria.`,
+    };
+  }
+
+  return undefined;
+};
+
+const buildFactorySupervisorTaskSnapshot = async (input: {
+  readonly detail: Awaited<ReturnType<FactoryService["getObjective"]>>;
+  readonly task: Awaited<ReturnType<FactoryService["getObjective"]>>["tasks"][number];
+  readonly job: QueueJob;
+  readonly factoryService: FactoryService;
+}): Promise<FactorySupervisorTaskSnapshot> => {
+  const dependents = input.detail.tasks
+    .filter((candidate) => candidate.dependsOn.includes(input.task.taskId))
+    .filter((candidate) => candidate.status === "pending" || candidate.status === "ready")
+    .map((candidate) => ({
+      taskId: candidate.taskId,
+      title: candidate.title,
+      status: candidate.status,
+    }));
+  const output = await input.factoryService.getObjectiveLiveOutput(input.detail.objectiveId, "task", input.task.taskId).catch(() => undefined);
+  return {
+    objectiveId: input.detail.objectiveId,
+    objectiveMode: input.detail.objectiveMode,
+    taskId: input.task.taskId,
+    title: input.task.title,
+    prompt: input.task.prompt,
+    workerType: input.task.workerType,
+    status: input.task.status,
+    jobStatus: input.job.status,
+    candidateId: input.task.candidateId ?? input.job.id,
+    jobId: input.job.id,
+    latestSummary: input.task.latestSummary,
+    blockedReason: input.task.blockedReason,
+    dependsOn: input.task.dependsOn,
+    waitingDependents: dependents,
+    output: output ? {
+      status: asString(output.status),
+      summary: asString(output.summary),
+      lastMessage: asString(output.lastMessage),
+      stdoutTail: asString(output.stdoutTail),
+      stderrTail: asString(output.stderrTail),
+    } : undefined,
+  };
+};
+
+const startFactoryObjectiveSupervisor = (input: {
+  readonly queue: JsonlQueue;
+  readonly factoryService: FactoryService;
+  readonly getCurrentObjectiveId: () => string | undefined;
+  readonly profile: FactoryChatResolvedProfile;
+  readonly policy: FactorySupervisorPolicy;
+  readonly now: () => number;
+}): { readonly stop: () => Promise<void> } => {
+  let stopped = false;
+  const tracked = new Map<string, FactorySupervisorTrackedState>();
+  const tick = async (): Promise<void> => {
+    const objectiveId = input.getCurrentObjectiveId();
+    if (!objectiveId) return;
+    const detail = await input.factoryService.getObjective(objectiveId).catch(() => undefined);
+    if (!detail || detail.status === "completed" || detail.status === "failed" || detail.status === "canceled") return;
+    const activeTasks = detail.tasks.filter((task) =>
+      task.workerType === "codex"
+      && Boolean(task.jobId)
+      && Boolean(task.candidateId)
+      && (task.status === "running" || task.status === "reviewing")
+    );
+    const activeKeys = new Set<string>();
+    for (const task of activeTasks) {
+      if (!task.jobId) continue;
+      const job = await input.queue.getJob(task.jobId);
+      if (!job) continue;
+      const key = task.candidateId ?? task.jobId;
+      activeKeys.add(key);
+      const now = input.now();
+      const snapshot = await buildFactorySupervisorTaskSnapshot({
+        detail,
+        task,
+        job,
+        factoryService: input.factoryService,
+      });
+      const fingerprint = supervisorFingerprint(snapshot);
+      const previous = tracked.get(key);
+      let nextState: FactorySupervisorTrackedState = previous
+        ? previous
+        : { lastChangedAt: now, fingerprint };
+      if (nextState.fingerprint !== fingerprint) {
+        nextState = {
+          ...nextState,
+          fingerprint,
+          lastChangedAt: now,
+        };
+      }
+      if (!isActiveJobStatus(job.status)) {
+        if (nextState.abortSentAt && !nextState.reactedAfterAbort) {
+          await input.factoryService.reactObjective(objectiveId).catch(() => undefined);
+          nextState = { ...nextState, reactedAfterAbort: true };
+        }
+        tracked.set(key, nextState);
+        continue;
+      }
+      const action = decideFactorySupervisorAction({
+        snapshot,
+        state: nextState,
+        now,
+        policy: input.policy,
+      });
+      if (action) {
+        const queued = await input.queue.queueCommand({
+          jobId: job.id,
+          command: action.command,
+          payload: action.payload,
+          by: "factory.supervisor",
+        });
+        if (queued) {
+          nextState = action.command === "steer"
+            ? { ...nextState, steerSentAt: now }
+            : action.command === "follow_up"
+              ? { ...nextState, followUpSentAt: now }
+              : { ...nextState, abortSentAt: now };
+        }
+      }
+      tracked.set(key, nextState);
+    }
+    for (const [key, state] of tracked) {
+      if (activeKeys.has(key)) continue;
+      if (state.reactedAfterAbort || input.now() - state.lastChangedAt > input.policy.abortAfterMs * 2) {
+        tracked.delete(key);
+      }
+    }
+  };
+  const loop = (async () => {
+    while (!stopped) {
+      try {
+        await tick();
+      } catch {
+        // Keep supervision best-effort; the main chat run remains authoritative.
+      }
+      if (stopped) break;
+      await delay(input.policy.pollMs);
+    }
+  })();
+  return {
+    stop: async () => {
+      stopped = true;
+      await loop;
+    },
+  };
 };
 
 const codexJobSnapshot = async (job: QueueJob, dataDir?: string): Promise<Record<string, unknown>> => {
@@ -1287,6 +1606,8 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
   const resolvedStream = resolvedChatId
     ? factoryChatSessionStream(repoRoot, resolvedProfile.root.id, resolvedChatId)
     : asString(input.stream) ?? factoryChatStream(repoRoot, resolvedProfile.root.id, input.objectiveId);
+  const supervisorPolicy = resolveFactorySupervisorPolicy(asRecord(input.extraConfig)?.supervisor);
+  const now = input.now ?? Date.now;
   let currentObjectiveId = input.objectiveId;
   const getCurrentObjectiveId = (): string | undefined => currentObjectiveId;
   const setCurrentObjectiveId = (objectiveId: string | undefined): void => {
@@ -1445,76 +1766,88 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
       }],
     };
   };
-  return runAgent({
-    ...input,
-    config: {
-      ...input.config,
-      memoryScope: resolvedMemoryScope,
-    },
-    prompts: {
-      system: resolvedProfile.systemPrompt,
-      user: { loop: FACTORY_CHAT_LOOP_TEMPLATE },
-    },
-    promptHash: resolvedProfile.promptHash,
-    promptPath: resolvedProfile.promptPath,
-    workflowId: FACTORY_CHAT_WORKFLOW_ID,
-    workflowVersion: FACTORY_CHAT_WORKFLOW_VERSION,
-    toolAllowlist: resolvedProfile.toolAllowlist,
-    startupEvents: [
-      {
-        type: "profile.selected",
-        runId: input.runId,
-        agentId: "orchestrator",
-        profileId: resolvedProfile.root.id,
-        reason: resolvedProfile.selectionReason,
-      },
-      ...(input.objectiveId
-        ? [{
-            type: "thread.bound" as const,
-            runId: input.runId,
-            agentId: "orchestrator",
-            objectiveId: input.objectiveId,
-            ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
-            reason: "startup" as const,
-          }]
-        : []),
-      {
-        type: "profile.resolved",
-        runId: input.runId,
-        agentId: "orchestrator",
-        rootProfileId: resolvedProfile.root.id,
-        importedProfileIds: resolvedProfile.imports.map((profile) => profile.id),
-        profilePaths: resolvedProfile.profilePaths,
-        fileHashes: resolvedProfile.fileHashes,
-        resolvedHash: resolvedProfile.resolvedHash,
-      },
-    ],
-    extraConfig: {
-      ...(input.extraConfig ?? {}),
-      repoRoot,
-      profileRoot,
-      repoKey,
-      repoMemoryScope: repoMemoryScope(repoKey),
-      profileMemoryScope: resolvedMemoryScope,
-      profileId: resolvedProfile.root.id,
-      objectiveId: input.objectiveId,
-      importedProfiles: resolvedProfile.imports.map((profile) => profile.id),
-      resolvedProfileHash: resolvedProfile.resolvedHash,
-      orchestrationPolicy: resolvedProfile.orchestration,
-      stream: resolvedStream,
-    },
-    promptContextBuilder: async () => ({
-      situation: await buildFactorySituation({
+  const supervisor = resolvedProfile.orchestration.executionMode === "supervisor" && supervisorPolicy.enabled
+    ? startFactoryObjectiveSupervisor({
         queue: input.queue,
-        runId: input.runId,
-        stream: input.stream,
-        profile: resolvedProfile,
-        getCurrentObjectiveId,
         factoryService: input.factoryService,
-        dataDir: input.dataDir,
+        getCurrentObjectiveId,
+        profile: resolvedProfile,
+        policy: supervisorPolicy,
+        now,
+      })
+    : undefined;
+  try {
+    return await runAgent({
+      ...input,
+      config: {
+        ...input.config,
+        memoryScope: resolvedMemoryScope,
+      },
+      prompts: {
+        system: resolvedProfile.systemPrompt,
+        user: { loop: FACTORY_CHAT_LOOP_TEMPLATE },
+      },
+      promptHash: resolvedProfile.promptHash,
+      promptPath: resolvedProfile.promptPath,
+      workflowId: FACTORY_CHAT_WORKFLOW_ID,
+      workflowVersion: FACTORY_CHAT_WORKFLOW_VERSION,
+      toolAllowlist: resolvedProfile.toolAllowlist,
+      startupEvents: [
+        {
+          type: "profile.selected",
+          runId: input.runId,
+          agentId: "orchestrator",
+          profileId: resolvedProfile.root.id,
+          reason: resolvedProfile.selectionReason,
+        },
+        ...(input.objectiveId
+          ? [{
+              type: "thread.bound" as const,
+              runId: input.runId,
+              agentId: "orchestrator",
+              objectiveId: input.objectiveId,
+              ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
+              reason: "startup" as const,
+            }]
+          : []),
+        {
+          type: "profile.resolved",
+          runId: input.runId,
+          agentId: "orchestrator",
+          rootProfileId: resolvedProfile.root.id,
+          importedProfileIds: resolvedProfile.imports.map((profile) => profile.id),
+          profilePaths: resolvedProfile.profilePaths,
+          fileHashes: resolvedProfile.fileHashes,
+          resolvedHash: resolvedProfile.resolvedHash,
+        },
+      ],
+      extraConfig: {
+        ...(input.extraConfig ?? {}),
+        repoRoot,
+        profileRoot,
+        repoKey,
+        repoMemoryScope: repoMemoryScope(repoKey),
+        profileMemoryScope: resolvedMemoryScope,
+        profileId: resolvedProfile.root.id,
+        objectiveId: input.objectiveId,
+        importedProfiles: resolvedProfile.imports.map((profile) => profile.id),
+        resolvedProfileHash: resolvedProfile.resolvedHash,
+        orchestrationPolicy: resolvedProfile.orchestration,
+        stream: resolvedStream,
+        supervisor: supervisorPolicy,
+      },
+      promptContextBuilder: async () => ({
+        situation: await buildFactorySituation({
+          queue: input.queue,
+          runId: input.runId,
+          stream: input.stream,
+          profile: resolvedProfile,
+          getCurrentObjectiveId,
+          factoryService: input.factoryService,
+          dataDir: input.dataDir,
+        }),
       }),
-    }),
-    extraToolSpecs: {
+      extraToolSpecs: {
       "agent.delegate": "{\"agentId\": string, \"task\": string, \"config\"?: object} — Queue a Receipt-native subagent and return its live job handle immediately.",
       "agent.status": "{\"jobId\": string} — Inspect a queued or running child job and return its latest normalized state. Do not pass the current factory job id.",
       "jobs.list": "{\"limit\"?: number, \"status\"?: string, \"includeCompleted\"?: boolean} — List recent jobs related to the current Factory skill chat.",
@@ -1531,14 +1864,17 @@ export const runFactoryChat = async (input: FactoryChatRunInput): Promise<AgentR
       "factory.receipts": "{\"objectiveId\"?: string, \"taskId\"?: string, \"candidateId\"?: string, \"types\"?: string[], \"limit\"?: number} — Inspect a bounded objective-scoped receipt slice for the current project.",
       "profile.handoff": "{\"profileId\": string, \"reason\"?: string} — Hand off the conversation to another Factory skill chat.",
       ...(input.extraToolSpecs ?? {}),
-    },
-    extraTools,
-    finalizer: createFactoryChatFinalizer({
-      queue: input.queue,
-      profile: resolvedProfile,
-    }),
-    onIterationBudgetExhausted,
-  });
+      },
+      extraTools,
+      finalizer: createFactoryChatFinalizer({
+        queue: input.queue,
+        profile: resolvedProfile,
+      }),
+      onIterationBudgetExhausted,
+    });
+  } finally {
+    await supervisor?.stop();
+  }
 };
 
 const DIRECT_CODEX_MUTATION_MESSAGE = "Direct Codex probes are read-only. This work needs code changes; create or react a Factory objective instead.";

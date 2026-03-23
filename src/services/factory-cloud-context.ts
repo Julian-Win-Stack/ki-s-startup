@@ -322,6 +322,9 @@ export const scanFactoryCloudExecutionContext = async (
     aws?.callerIdentity
       ? `AWS bucket listing is global for the active account ${aws.callerIdentity.accountId}; region is secondary unless the objective asks for regional filtering.`
       : "",
+    aws?.callerIdentity
+      ? "Mounted AWS caller identity and region scope do not guarantee every service API is authorized. Treat service-specific AccessDenied results separately from account-wide auth failures."
+      : "",
     buildAwsEc2RegionScopeGuidance(aws?.ec2RegionScope),
   ].filter(Boolean);
   const summaryParts = [
