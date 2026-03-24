@@ -1674,6 +1674,34 @@ test("factory chat island: normalizes plain report scaffolding into markdown hea
   expect(markup).toContain("<li>cloudscore1</li>");
 });
 
+test("factory chat island: promotes parenthetical headings, bolds list lead-ins, and uses the assistant response card", () => {
+  const markup = factoryChatIsland({
+    activeProfileId: "infrastructure",
+    activeProfileLabel: "Infrastructure",
+    items: [{
+      key: "a2",
+      kind: "assistant",
+      body: [
+        "Conclusion",
+        "",
+        "CloudTrail event history is blocked by access controls.",
+        "",
+        "Next (smallest unblock)",
+        "",
+        "Provide one of:",
+        "",
+        "- Permission: cloudtrail:LookupEvents",
+        "- CloudTrail S3 log bucket + prefix",
+      ].join("\n"),
+      meta: "completed",
+    }],
+  });
+
+  expect(markup).toContain("factory-response");
+  expect(markup).toMatch(/<h[1-4]>Next \(smallest unblock\)<\/h[1-4]>/);
+  expect(markup).toContain("<strong>Provide one of:</strong>");
+});
+
 test("factory sidebar island: humanizes objective slot labels and avoids repeating status in the compact meta row", () => {
   const markup = factorySidebarIsland({
     activeProfileId: "software",
@@ -1959,6 +1987,113 @@ test("factory route: running task workbench renders above the transcript and aut
   expect(body).toContain("panel=live");
   expect(body).toContain("data-focus-kind=\"task\"");
   expect(body).toContain("data-focus-id=\"task_01\"");
+});
+
+test("factory route: recent agent thinking steps surface in the live thread shell", async () => {
+  const objectiveId = "objective_live";
+  const liveObjective = makeRunningWorkbenchObjectiveDetail(objectiveId);
+  const profileId = "generalist";
+  const runId = "run_live_reasoning";
+  const stream = factoryChatStream(process.cwd(), profileId, objectiveId);
+  const app = createRouteTestApp({
+    agentEvents: {
+      [stream]: [{
+        type: "problem.set",
+        runId,
+        problem: "Summarize cost drivers for the active thread.",
+        agentId: "orchestrator",
+      }],
+      [agentRunStream(stream, runId)]: [
+        {
+          type: "problem.set",
+          runId,
+          problem: "Summarize cost drivers for the active thread.",
+          agentId: "orchestrator",
+        },
+        {
+          type: "iteration.started",
+          runId,
+          iteration: 1,
+          agentId: "orchestrator",
+        },
+        {
+          type: "thought.logged",
+          runId,
+          iteration: 1,
+          agentId: "orchestrator",
+          content: "Wait for the objective's worker to finish and then summarize cost drivers.",
+        },
+        {
+          type: "action.planned",
+          runId,
+          iteration: 1,
+          agentId: "orchestrator",
+          actionType: "tool",
+          name: "factory.status",
+          input: { objectiveId },
+        },
+        {
+          type: "tool.called",
+          runId,
+          iteration: 1,
+          agentId: "orchestrator",
+          tool: "factory.status",
+          input: { objectiveId },
+          summary: "Checking thread status.",
+        },
+        {
+          type: "tool.observed",
+          runId,
+          iteration: 1,
+          agentId: "orchestrator",
+          tool: "factory.status",
+          truncated: false,
+          output: JSON.stringify({
+            objectiveId,
+            status: "executing",
+            summary: "Task worker is still running.",
+          }),
+        },
+        {
+          type: "memory.slice",
+          runId,
+          iteration: 1,
+          agentId: "orchestrator",
+          scope: "factory/objectives/objective_live",
+          query: "recent cost driver receipts",
+          chars: 380,
+          itemCount: 2,
+          truncated: false,
+        },
+        {
+          type: "validation.report",
+          runId,
+          iteration: 1,
+          agentId: "orchestrator",
+          gate: "thread_active",
+          ok: true,
+          summary: "Thread still has active work.",
+          target: objectiveId,
+        },
+      ],
+    },
+    service: {
+      listObjectives: async () => [
+        liveObjective as unknown as Awaited<ReturnType<FactoryService["listObjectives"]>>[number],
+      ],
+      getObjective: async () => liveObjective,
+    },
+  });
+
+  const response = await app.request(`http://receipt.test/factory?profile=${profileId}&thread=${objectiveId}`);
+  const body = await response.text();
+
+  expect(response.status).toBe(200);
+  expect(body).toMatch(/What(?:&#39;|')s Happening/);
+  expect(body).toContain("Thinking");
+  expect(body).toMatch(/Wait for the objective(?:&#39;|')s worker to finish and then summarize cost drivers\./);
+  expect(body).toContain("Task worker is still running.");
+  expect(body).toContain("Thread still has active work.");
 });
 
 test("factory route: explicit task focus survives in the running task workbench query state", async () => {

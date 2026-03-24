@@ -2,6 +2,8 @@
 
 @source "../views/ui.ts";
 @source "../views/factory-chat.ts";
+@source "../views/factory-inspector.ts";
+@source "../views/factory-live-steps.ts";
 @source "../views/factory-mission-control.ts";
 @source "../views/receipt.ts";
 
@@ -235,40 +237,86 @@
     background: transparent;
   }
 
+  .factory-response {
+    position: relative;
+    overflow: hidden;
+    border-radius: 1.25rem;
+    box-shadow:
+      0 22px 44px -28px rgb(15 23 42 / 0.42),
+      0 1px 0 0 rgb(255 255 255 / 0.06) inset;
+  }
+
+  .factory-response::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 3px;
+    background:
+      linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--primary) 70%, transparent),
+        color-mix(in srgb, var(--info) 55%, transparent)
+      );
+    opacity: 0.95;
+  }
+
+  .factory-response__body {
+    @apply px-5 py-4 sm:px-6 sm:py-5;
+    background:
+      radial-gradient(circle at top left, rgb(255 255 255 / 0.045), transparent 42%),
+      linear-gradient(180deg, rgb(255 255 255 / 0.03), transparent 30%);
+  }
+
   .factory-markdown {
-    @apply text-[14px] leading-relaxed text-foreground font-sans;
+    @apply text-[15px] leading-7 text-foreground font-sans;
+  }
+
+  .factory-markdown > :first-child {
+    @apply mt-0;
+  }
+
+  .factory-markdown > :last-child {
+    @apply mb-0;
   }
 
   .factory-markdown h1,
   .factory-markdown h2,
   .factory-markdown h3,
   .factory-markdown h4 {
-    @apply mt-6 mb-3 text-foreground tracking-tight;
+    @apply text-foreground tracking-tight;
   }
   
   .factory-markdown h1 {
-    @apply text-lg font-semibold;
+    @apply mt-1 mb-4 text-xl font-semibold leading-tight;
   }
   
   .factory-markdown h2 {
-    @apply text-base font-semibold;
+    @apply mt-8 mb-3 border-t border-border/70 pt-5 text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground;
+  }
+
+  .factory-markdown > h2:first-child {
+    @apply mt-0 border-t-0 pt-0;
   }
   
   .factory-markdown h3 {
-    @apply text-[15px] font-medium;
+    @apply mt-6 mb-2 text-[15px] font-semibold;
   }
 
   .factory-markdown h4 {
-    @apply text-[14px] font-medium uppercase tracking-[0.08em] text-muted-foreground;
+    @apply mt-5 mb-2 text-[13px] font-semibold uppercase tracking-[0.16em] text-muted-foreground;
   }
 
   .factory-markdown p {
     @apply my-3 text-foreground;
   }
 
+  .factory-markdown > p:first-of-type {
+    @apply text-[16px] leading-7 text-foreground;
+  }
+
   .factory-markdown ul,
   .factory-markdown ol {
-    @apply my-3 pl-6 space-y-1.5;
+    @apply my-4 pl-5 space-y-2;
   }
 
   .factory-markdown ul {
@@ -281,6 +329,10 @@
 
   .factory-markdown li {
     @apply leading-relaxed;
+  }
+
+  .factory-markdown li > p {
+    @apply my-1.5;
   }
 
   .factory-markdown table {
@@ -311,7 +363,7 @@
   }
 
   .factory-markdown blockquote {
-    @apply my-4 border-l-[3px] border-primary/40 bg-primary/5 pl-4 py-2 pr-4 rounded-r-lg text-muted-foreground italic text-[13.5px];
+    @apply my-4 rounded-2xl border border-primary/15 bg-primary/5 px-4 py-3 text-[14px] text-muted-foreground;
   }
 
   .factory-markdown pre {
@@ -319,7 +371,7 @@
   }
 
   .factory-markdown code {
-    @apply rounded-[4px] border border-border/60 bg-muted/80 px-[0.3em] py-[0.15em] text-[0.85em] font-mono text-foreground font-medium;
+    @apply rounded-md border border-border/45 bg-muted/70 px-[0.34em] py-[0.16em] text-[0.84em] font-mono text-foreground;
   }
 
   .factory-markdown pre code {

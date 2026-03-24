@@ -1,4 +1,5 @@
 import { esc, sectionLabelClass, softPanelClass, badge, statPill, formatTs, shortHash, ghostButtonClass, dangerButtonClass } from "./ui";
+import { renderFactoryRunSteps } from "./factory-live-steps";
 import type {
   FactoryInspectorModel,
   FactoryInspectorRouteModel,
@@ -265,9 +266,14 @@ const renderExecutionPanel = (model: FactoryInspectorModel): string => {
 
 const renderLivePanel = (model: FactoryInspectorModel): string => {
   if (model.objectiveMissing) return renderMissingObjectivePanel(model);
+  const liveSteps = renderFactoryRunSteps(model.activeRun, {
+    title: "What's Happening",
+    subtitle: "Recent supervisor steps for the currently selected thread.",
+  });
   if (model.workbench?.focus) {
     return `<div class="space-y-3 px-3 py-3 md:px-4">
       ${renderFocusedOutput(model, "Focused Live Output")}
+      ${liveSteps}
       ${model.workbench.jobs.length ? `<div class="space-y-2">
         <div class="${sectionLabelClass}">Recent Jobs</div>
         ${model.workbench.jobs.map((job) => `<a href="/factory${inspectorQuery(model, { focusKind: 'job', focusId: job.jobId, jobId: job.jobId })}" class="block ${softPanelClass} p-3 transition hover:bg-accent">
@@ -282,7 +288,7 @@ const renderLivePanel = (model: FactoryInspectorModel): string => {
       </div>` : ""}
     </div>`;
   }
-  if (!model.activeCodex && (!model.liveChildren || model.liveChildren.length === 0)) {
+  if (!liveSteps && !model.activeCodex && (!model.liveChildren || model.liveChildren.length === 0)) {
     return `<div class="space-y-3 px-3 py-3 md:px-4 text-sm text-muted-foreground">No live execution currently running.</div>`;
   }
 
@@ -320,6 +326,7 @@ const renderLivePanel = (model: FactoryInspectorModel): string => {
   }
 
   return `<div class="space-y-3 px-3 py-3 md:px-4">
+    ${liveSteps}
     <div class="${sectionLabelClass} mb-2">Live Output</div>
     ${cards.join('\n')}
   </div>`;

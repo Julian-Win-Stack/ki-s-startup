@@ -103,7 +103,34 @@ export type FactoryLiveRunCard = {
   readonly updatedAt?: number;
   readonly lastToolName?: string;
   readonly lastToolSummary?: string;
+  readonly steps?: ReadonlyArray<FactoryRunStep>;
   readonly link?: string;
+};
+
+export type FactoryRunStepKind =
+  | "thought"
+  | "action"
+  | "tool"
+  | "memory"
+  | "validation";
+
+export type FactoryRunStepTone =
+  | "neutral"
+  | "info"
+  | "success"
+  | "warning"
+  | "danger";
+
+export type FactoryRunStep = {
+  readonly key: string;
+  readonly kind: FactoryRunStepKind;
+  readonly label: string;
+  readonly summary: string;
+  readonly detail?: string;
+  readonly meta?: string;
+  readonly tone: FactoryRunStepTone;
+  readonly at?: number;
+  readonly active?: boolean;
 };
 
 export type FactoryProfileSectionView = {

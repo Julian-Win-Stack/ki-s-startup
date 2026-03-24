@@ -58,6 +58,7 @@ import type {
   FactoryNavModel,
   FactoryInspectorModel,
   FactoryInspectorTabsModel,
+  FactoryRunStep,
 } from "../views/factory-models";
 import type { QueueJob } from "../adapters/jsonl-queue";
 import { deriveObjectiveTitle, parseComposerDraft } from "../factory-cli/composer";
@@ -916,6 +917,224 @@ const reverseFind = <T,>(items: ReadonlyArray<T>, predicate: (item: T) => boolea
   return undefined;
 };
 
+const truncateInline = (value: string, max = 220): string => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  return normalized.length > max
+    ? `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…`
+    : normalized;
+};
+
+const stepMeta = (iteration: number): string => `Step ${iteration}`;
+
+const toneFromStatusLike = (value: string | undefined): FactoryRunStep["tone"] => {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return "neutral";
+  if ([
+    "completed",
+    "ready",
+    "approved",
+    "success",
+    "succeeded",
+    "healthy",
+    "ok",
+  ].includes(normalized)) return "success";
+  if ([
+    "failed",
+    "failure",
+    "error",
+    "blocked",
+    "conflicted",
+    "canceled",
+    "cancelled",
+    "needs_attention",
+    "unhealthy",
+  ].includes(normalized)) return "danger";
+  if ([
+    "queued",
+    "pending",
+    "waiting",
+    "planning",
+    "idle",
+    "degraded",
+  ].includes(normalized)) return "warning";
+  if ([
+    "running",
+    "executing",
+    "active",
+    "leased",
+    "processing",
+    "reviewing",
+    "in_progress",
+  ].includes(normalized)) return "info";
+  return "neutral";
+};
+
+const summarizeToolObservation = (output: string): {
+  readonly summary?: string;
+  readonly detail?: string;
+  readonly tone?: FactoryRunStep["tone"];
+} => {
+  const parsed = tryParseJson(output);
+  if (!parsed) {
+    const summary = truncateInline(output);
+    return summary ? { summary } : {};
+  }
+  const status = asString(parsed.status);
+  const summary = asString(parsed.summary)
+    ?? asString(parsed.message)
+    ?? asString(parsed.note)
+    ?? asString(parsed.lastMessage)
+    ?? asString(parsed.error)
+    ?? compactJsonValue(parsed);
+  const title = asString(parsed.title);
+  const detail = title && summary !== title
+    ? `Target: ${truncateInline(title, 120)}`
+    : undefined;
+  return {
+    summary: summary ? truncateInline(summary) : undefined,
+    detail,
+    tone: toneFromStatusLike(status ?? asString(parsed.error)),
+  };
+};
+
+const buildActiveRunSteps = (
+  runId: string,
+  runChain: AgentRunChain,
+): ReadonlyArray<FactoryRunStep> => {
+  const steps: FactoryRunStep[] = [];
+  const toolStepIndex = new Map<string, number>();
+
+  for (const receipt of runChain) {
+    const event = receipt.body;
+    switch (event.type) {
+      case "thought.logged": {
+        const summary = truncateInline(event.content, 260);
+        if (!summary) break;
+        steps.push({
+          key: `${runId}-thought-${receipt.hash}`,
+          kind: "thought",
+          label: "Thinking",
+          summary,
+          meta: stepMeta(event.iteration),
+          tone: "info",
+          at: receipt.ts,
+        });
+        break;
+      }
+      case "action.planned": {
+        const summary = event.actionType === "final"
+          ? "Preparing the reply."
+          : event.name
+            ? `Planning ${humanizeKey(event.name)}.`
+            : "Planning the next tool call.";
+        const detail = compactJsonValue(event.input);
+        steps.push({
+          key: `${runId}-action-${receipt.hash}`,
+          kind: "action",
+          label: "Plan",
+          summary,
+          detail: detail ? truncateInline(detail, 200) : undefined,
+          meta: stepMeta(event.iteration),
+          tone: event.actionType === "final" ? "success" : "neutral",
+          at: receipt.ts,
+        });
+        break;
+      }
+      case "tool.called": {
+        steps.push({
+          key: `${runId}-tool-${receipt.hash}`,
+          kind: "tool",
+          label: "Tool",
+          summary: truncateInline(event.summary ?? `Running ${humanizeKey(event.tool)}.`),
+          detail: compactJsonValue(event.input),
+          meta: stepMeta(event.iteration),
+          tone: event.error ? "danger" : "info",
+          at: receipt.ts,
+        });
+        toolStepIndex.set(`${event.iteration}:${event.tool}`, steps.length - 1);
+        break;
+      }
+      case "tool.observed": {
+        const summary = summarizeToolObservation(event.output);
+        const lookupKey = `${event.iteration}:${event.tool}`;
+        const index = toolStepIndex.get(lookupKey);
+        if (typeof index === "number") {
+          const prior = steps[index];
+          if (prior) {
+            steps[index] = {
+              ...prior,
+              summary: summary.summary ?? prior.summary,
+              detail: summary.detail ?? prior.detail,
+              tone: summary.tone ?? prior.tone,
+              at: receipt.ts,
+            };
+            break;
+          }
+        }
+        steps.push({
+          key: `${runId}-tool-observed-${receipt.hash}`,
+          kind: "tool",
+          label: "Tool",
+          summary: summary.summary ?? `Updated ${humanizeKey(event.tool)}.`,
+          detail: summary.detail,
+          meta: stepMeta(event.iteration),
+          tone: summary.tone ?? "info",
+          at: receipt.ts,
+        });
+        break;
+      }
+      case "memory.slice": {
+        const summary = event.itemCount > 0
+          ? `Loaded ${event.itemCount.toLocaleString()} memory item${event.itemCount === 1 ? "" : "s"} from ${event.scope}.`
+          : `Checked ${event.scope}.`;
+        const detailParts = [
+          event.query ? `Query: ${truncateInline(event.query, 120)}` : undefined,
+          `${event.chars.toLocaleString()} chars`,
+          event.truncated ? "truncated" : undefined,
+        ].filter((part): part is string => Boolean(part));
+        steps.push({
+          key: `${runId}-memory-${receipt.hash}`,
+          kind: "memory",
+          label: "Memory",
+          summary,
+          detail: detailParts.length > 0 ? detailParts.join(" · ") : undefined,
+          meta: stepMeta(event.iteration),
+          tone: "neutral",
+          at: receipt.ts,
+        });
+        break;
+      }
+      case "validation.report": {
+        const detailParts = [
+          event.target ? `Target: ${event.target}` : undefined,
+          event.details ? truncateInline(event.details, 200) : undefined,
+        ].filter((part): part is string => Boolean(part));
+        steps.push({
+          key: `${runId}-validation-${receipt.hash}`,
+          kind: "validation",
+          label: event.ok ? "Validated" : "Check",
+          summary: truncateInline(event.summary, 260),
+          detail: detailParts.length > 0 ? detailParts.join(" · ") : undefined,
+          meta: stepMeta(event.iteration),
+          tone: event.ok ? "success" : "danger",
+          at: receipt.ts,
+        });
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  const recentSteps = steps.slice(-8);
+  return recentSteps.map((step, index) => (
+    index === recentSteps.length - 1
+      ? { ...step, active: true }
+      : step
+  ));
+};
+
 export const buildChatItemsForRun = (
   runId: string,
   chain: Awaited<ReturnType<Runtime<AgentCmd, AgentEvent, AgentState>["chain"]>>,
@@ -1439,6 +1658,7 @@ const summarizeActiveRunCard = (
     lastToolSummary: latestFailedChild
       ? `${latestFailedChild.id}: ${summarizeJob(latestFailedChild)}`
       : state.lastTool?.summary ?? state.lastTool?.error,
+    steps: buildActiveRunSteps(input.runId, input.runChain),
     link: buildChatLink({
       profileId: input.profileId,
       chatId: input.chatId,
