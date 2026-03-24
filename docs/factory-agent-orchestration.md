@@ -331,6 +331,37 @@ The worker-facing memory scopes include:
 
 The generated memory script is the main worker interface for recall and compaction.
 
+```mermaid
+flowchart TD
+  Factory["Factory service"] --> Packet["Task packet in .receipt/factory/\nmanifest + context-pack + memory-scopes + memory.cjs"]
+  Packet --> Worker["Codex worker"]
+
+  Worker -->|"bun <taskId>.memory.cjs context/objective"| PackRead["Read context-pack.json directly"]
+  Worker -->|"bun <taskId>.memory.cjs overview/scope/search/read/commit"| ReceiptCli["receipt CLI shim\nsame DATA_DIR as controller"]
+
+  ReceiptCli --> MemoryCli["CLI memory tools"]
+  MemoryCli --> Scope["Selected scope\nmemory/<scope>"]
+  Scope --> EmbedGate{"OPENAI_API_KEY set?"}
+
+  EmbedGate -->|"yes"| Semantic["Semantic retrieval\ntext-embedding-3-small"]
+  Semantic --> Cache["Per-scope embeddings cache\n<dataDir>/memory/*.embeddings.json"]
+  Semantic --> Ranked["Cosine-ranked entries"]
+
+  EmbedGate -->|"no"| Keyword["Keyword fallback\nmatch query terms in entry text/tags"]
+
+  PackRead --> Output["Bounded worker context"]
+  Ranked --> Output
+  Keyword --> Output
+  Output --> Worker
+```
+
+In other words:
+
+- `context` and `objective` are packet reads, not live memory queries
+- `overview`, `scope`, `search`, `read`, and `commit` go through `receipt memory ...`
+- the packet keeps the worker on scoped memory instead of broad receipt discovery
+- embeddings are enabled by default when `OPENAI_API_KEY` is present; otherwise the worker falls back to keyword retrieval
+
 This matters because the orchestration layer stays receipt-backed, while the task worker still gets bounded, queryable context instead of a giant prompt transcript.
 
 ## Orchestration Loop

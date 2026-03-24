@@ -328,6 +328,111 @@ test("factory runtime: blocked tasks stay blocked instead of spawning mutation f
   expect(detail.blockedReason ?? "").toMatch(/No runnable tasks remained|blocked/i);
 }, 120_000);
 
+test("factory runtime: transient blocked tasks retry once automatically before asking for help", async () => {
+  const dataDir = await createTempDir("receipt-factory-autonomous-retry");
+  const repoRoot = await createSourceRepo();
+  const queue = jsonlQueue({ runtime: createJobRuntime(dataDir), stream: "jobs" });
+  let runs = 0;
+  const codexExecutor: CodexExecutor = {
+    run: async (input) => {
+      runs += 1;
+      await fs.writeFile(input.promptPath, input.prompt, "utf-8");
+      await fs.writeFile(input.stdoutPath, "", "utf-8");
+      await fs.writeFile(input.stderrPath, "", "utf-8");
+      const structured = {
+        outcome: "blocked",
+        summary: "Task runner timed out unexpectedly while Codex was preparing the result.",
+        handoff: "Retry the task once because the failure looks transient.",
+      };
+      const raw = JSON.stringify(structured);
+      await fs.writeFile(input.lastMessagePath, raw, "utf-8");
+      return { exitCode: 0, signal: null, stdout: raw, stderr: "", lastMessage: raw };
+    },
+  };
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime: createJobRuntime(dataDir),
+    sse: new SseHub(),
+    codexExecutor,
+    memoryTools: createMemoryToolsForTest(dataDir),
+    repoRoot,
+  });
+
+  const created = await service.createObjective({
+    title: "Autonomous retry objective",
+    prompt: "Retry one clearly transient failure automatically.",
+    checks: ["git status --short"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const firstJob = await findLatestFactoryJob(queue, created.objectiveId);
+  expect(firstJob.candidateId).toBe("task_01_candidate_01");
+  await service.runTask(firstJob);
+
+  const secondJob = await findLatestFactoryJob(queue, created.objectiveId);
+  expect(secondJob.candidateId).toBe("task_01_candidate_02");
+
+  const detail = await service.getObjective(created.objectiveId);
+  expect(detail.status).toBe("executing");
+  expect(detail.recentReceipts.some((receipt) =>
+    receipt.type === "rebracket.applied" && receipt.summary.includes("retry_task_01")
+  )).toBe(true);
+  expect(detail.tasks.find((task) => task.taskId === "task_01")?.status).toBe("running");
+  expect(runs).toBe(1);
+}, 120_000);
+
+test("factory runtime: blocked tasks can record an explicit ask-human decision", async () => {
+  const dataDir = await createTempDir("receipt-factory-ask-human");
+  const repoRoot = await createSourceRepo();
+  const queue = jsonlQueue({ runtime: createJobRuntime(dataDir), stream: "jobs" });
+  const codexExecutor: CodexExecutor = {
+    run: async (input) => {
+      await fs.writeFile(input.promptPath, input.prompt, "utf-8");
+      await fs.writeFile(input.stdoutPath, "", "utf-8");
+      await fs.writeFile(input.stderrPath, "", "utf-8");
+      const structured = {
+        outcome: "blocked",
+        summary: "Need the operator to choose the API contract before implementation can continue.",
+        handoff: "Ask the human to choose the contract, then retry with that decision.",
+      };
+      const raw = JSON.stringify(structured);
+      await fs.writeFile(input.lastMessagePath, raw, "utf-8");
+      return { exitCode: 0, signal: null, stdout: raw, stderr: "", lastMessage: raw };
+    },
+  };
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime: createJobRuntime(dataDir),
+    sse: new SseHub(),
+    codexExecutor,
+    memoryTools: createMemoryToolsForTest(dataDir),
+    repoRoot,
+  });
+
+  const created = await service.createObjective({
+    title: "Ask human objective",
+    prompt: "If the worker needs a product decision, record that explicitly.",
+    checks: ["git status --short"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const firstJob = await findLatestFactoryJob(queue, created.objectiveId);
+  await service.runTask(firstJob);
+
+  const jobs = await queue.listJobs({ limit: 20 });
+  const taskJobs = jobs.filter((job) => job.payload.kind === "factory.task.run" && job.payload.objectiveId === created.objectiveId);
+  expect(taskJobs).toHaveLength(1);
+
+  const detail = await service.getObjective(created.objectiveId);
+  expect(detail.status).toBe("blocked");
+  expect(detail.latestDecision?.selectedActionId).toBe("ask_human_task_01");
+  expect(detail.latestDecision?.summary ?? "").toContain("Human input requested for task_01");
+  expect(detail.blockedReason ?? "").toContain("Human input requested for task_01");
+  expect(detail.tasks.find((task) => task.taskId === "task_01")?.status).toBe("blocked");
+}, 120_000);
+
 test("factory candidate lineage: rework dispatch mints a fresh candidate id", async () => {
   const dataDir = await createTempDir("receipt-factory-candidate-lineage");
   const repoRoot = await createSourceRepo();

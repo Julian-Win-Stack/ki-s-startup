@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 import { createMemoryTools, decideMemory, initialMemoryState, reduceMemory, type MemoryCmd, type MemoryEvent, type MemoryState } from "./adapters/memory-tools";
+import { embed } from "./adapters/openai";
 import { jsonBranchStore, jsonlStore } from "./adapters/jsonl";
 import { jsonlQueue } from "./adapters/jsonl-queue";
 import type { Flags } from "./cli.types";
@@ -138,6 +139,7 @@ const getMemoryTools = () => {
   return createMemoryTools({
     dir: DATA_DIR,
     runtime,
+    embed: process.env.OPENAI_API_KEY?.trim() ? embed : undefined,
   });
 };
 

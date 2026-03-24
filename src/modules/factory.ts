@@ -274,6 +274,10 @@ export type FactoryIntegrationRecord = {
   readonly lastSummary?: string;
   readonly conflictReason?: string;
   readonly promotedCommit?: string;
+  readonly prUrl?: string;
+  readonly prNumber?: number;
+  readonly headRefName?: string;
+  readonly baseRefName?: string;
   readonly updatedAt: number;
 };
 
@@ -608,6 +612,18 @@ const normalizeCandidateOrder = (
 
 const normalizeIntegration = (value: unknown, updatedAt: number): FactoryIntegrationRecord => {
   if (!isRecord(value)) return emptyIntegration(updatedAt);
+  const prUrl = typeof value.prUrl === "string" && value.prUrl.trim().length > 0
+    ? value.prUrl.trim()
+    : undefined;
+  const prNumber = typeof value.prNumber === "number" && Number.isFinite(value.prNumber)
+    ? Math.max(0, Math.floor(value.prNumber))
+    : undefined;
+  const headRefName = typeof value.headRefName === "string" && value.headRefName.trim().length > 0
+    ? value.headRefName.trim()
+    : undefined;
+  const baseRefName = typeof value.baseRefName === "string" && value.baseRefName.trim().length > 0
+    ? value.baseRefName.trim()
+    : undefined;
   return {
     ...emptyIntegration(updatedAt),
     ...value,
@@ -617,6 +633,10 @@ const normalizeIntegration = (value: unknown, updatedAt: number): FactoryIntegra
     validationResults: Array.isArray(value.validationResults)
       ? value.validationResults as ReadonlyArray<FactoryCheckResult>
       : [],
+    prUrl,
+    prNumber,
+    headRefName,
+    baseRefName,
     updatedAt: typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt) ? value.updatedAt : updatedAt,
   };
 };
@@ -1118,6 +1138,10 @@ export type FactoryEvent =
       readonly candidateId: string;
       readonly promotedCommit: string;
       readonly summary: string;
+      readonly prUrl?: string;
+      readonly prNumber?: number;
+      readonly headRefName?: string;
+      readonly baseRefName?: string;
       readonly promotedAt: number;
     }
   | {
@@ -1646,6 +1670,10 @@ export const reduceFactory: Reducer<FactoryState, FactoryEvent> = (state, event)
           status: "promoted",
           promotedCommit: event.promotedCommit,
           lastSummary: event.summary,
+          prUrl: event.prUrl ?? state.integration.prUrl,
+          prNumber: event.prNumber ?? state.integration.prNumber,
+          headRefName: event.headRefName ?? state.integration.headRefName,
+          baseRefName: event.baseRefName ?? state.integration.baseRefName,
           updatedAt: event.promotedAt,
         },
       };

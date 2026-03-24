@@ -143,9 +143,15 @@ const renderOverviewPanel = (model: FactoryInspectorModel): string => {
       ${statPill("Slot State", obj.slotState + (obj.queuePosition ? ` (q${obj.queuePosition})` : ''))}
       ${statPill("Tasks", `${obj.activeTaskCount ?? 0} active / ${obj.readyTaskCount ?? 0} ready / ${obj.taskCount ?? 0} total`)}
       ${statPill("Head Commit", shortHash(obj.latestCommitHash) || "None")}
+      ${statPill("Pull Request", obj.prNumber ? `#${obj.prNumber}` : obj.prUrl ? "Opened" : "None")}
       ${statPill("Checks", obj.checks?.length ? `${obj.checks.length} checks` : "None")}
       ${obj.tokensUsed ? statPill("Codex Tokens", obj.tokensUsed.toLocaleString()) : ''}
     </div>
+
+    ${obj.prUrl ? `
+    <div class="text-sm text-muted-foreground">
+      ${esc(obj.prUrl)}
+    </div>` : ''}
 
     ${obj.nextAction ? `
     <div class="flex flex-col gap-1.5 pt-2">

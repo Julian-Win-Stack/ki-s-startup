@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   discoverFactoryChatProfiles,
@@ -160,4 +161,23 @@ test("factory chat profiles: objective stream key nests under the selected profi
   expect(factoryChatStream(repoRoot, "software")).toBe(
     `agents/factory/${repoKeyForRoot(repoRoot)}/software`,
   );
+});
+
+test("factory chat profiles: checked-in software profile resolves worktree delivery and publish-first completion guidance", async () => {
+  const repoRoot = await createTempDir("receipt-factory-target-repo");
+  const profileRoot = fileURLToPath(new URL("../../", import.meta.url));
+
+  const resolved = await resolveFactoryChatProfile({
+    repoRoot,
+    profileRoot,
+    requestedId: "software",
+  });
+
+  expect(resolved.root.id).toBe("software");
+  expect(resolved.objectivePolicy.defaultObjectiveMode).toBe("delivery");
+  expect(resolved.objectivePolicy.defaultValidationMode).toBe("repo_profile");
+  expect(resolved.objectivePolicy.defaultTaskExecutionMode).toBe("worktree");
+  expect(resolved.objectivePolicy.maxParallelChildren).toBe(1);
+  expect(resolved.systemPrompt).toContain("published or clearly blocked");
+  expect(resolved.systemPrompt).toContain("PR link");
 });

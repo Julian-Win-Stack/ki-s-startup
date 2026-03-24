@@ -18,7 +18,12 @@ import {
   type FactoryState,
 } from "../../src/modules/factory";
 import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../../src/modules/job";
-import { FactoryService, type FactoryIntegrationJobPayload, type FactoryTaskJobPayload } from "../../src/services/factory-service";
+import {
+  FactoryService,
+  type FactoryIntegrationJobPayload,
+  type FactoryIntegrationPublishJobPayload,
+  type FactoryTaskJobPayload,
+} from "../../src/services/factory-service";
 
 const execFileAsync = promisify(execFile);
 
@@ -66,7 +71,7 @@ const createJobRuntime = (dataDir: string) =>
 const latestFactoryJob = async (
   queue: ReturnType<typeof jsonlQueue>,
   objectiveId: string,
-  kind: "factory.task.run" | "factory.integration.validate",
+  kind: "factory.task.run" | "factory.integration.validate" | "factory.integration.publish",
 ): Promise<QueueJob> => {
   const jobs = await queue.listJobs({ limit: 40 });
   const match = jobs
@@ -78,6 +83,7 @@ const latestFactoryJob = async (
 
 const createFactoryService = async (opts?: {
   readonly codexOutcome?: "approved" | "changes_requested" | "blocked";
+  readonly publishMode?: "success" | "missing_metadata" | "error";
 }): Promise<{
   readonly service: FactoryService;
   readonly queue: ReturnType<typeof jsonlQueue>;
@@ -87,6 +93,7 @@ const createFactoryService = async (opts?: {
   const repoRoot = await createSourceRepo();
   const queue = jsonlQueue({ runtime: createJobRuntime(dataDir), stream: "jobs" });
   const codexOutcome = opts?.codexOutcome ?? "approved";
+  const publishMode = opts?.publishMode ?? "success";
   const service = new FactoryService({
     dataDir,
     queue,
@@ -97,6 +104,28 @@ const createFactoryService = async (opts?: {
         await fs.writeFile(input.promptPath, input.prompt, "utf-8");
         await fs.writeFile(input.stdoutPath, "", "utf-8");
         await fs.writeFile(input.stderrPath, "", "utf-8");
+        if (input.taskId === "publish") {
+          if (publishMode === "error") {
+            throw new Error("gh pr create failed: GraphQL permission denied");
+          }
+          const publishStructured = publishMode === "missing_metadata"
+            ? {
+                summary: "Attempted to publish the PR but the final metadata was incomplete.",
+                prNumber: 17,
+                headRefName: "codex/objective-demo",
+                baseRefName: "main",
+              }
+            : {
+                summary: "Published PR #17.",
+                prUrl: "https://github.com/example/receipt/pull/17",
+                prNumber: 17,
+                headRefName: "codex/objective-demo",
+                baseRefName: "main",
+              };
+          const raw = JSON.stringify(publishStructured);
+          await fs.writeFile(input.lastMessagePath, raw, "utf-8");
+          return { exitCode: 0, signal: null, stdout: raw, stderr: "", lastMessage: raw };
+        }
         await fs.writeFile(path.join(input.workspacePath, "POLICY_TEST.txt"), `${codexOutcome}:${input.candidateId ?? "candidate"}\n`, "utf-8");
         const structured = {
           outcome: codexOutcome,
@@ -213,6 +242,7 @@ test("factory policy: objectives stay single-task by default and still normalize
   const created = await service.createObjective({
     title: "Dispatch cap objective",
     prompt: "Create three independent tasks.",
+    profileId: "software",
     policy: {
       throttles: { maxDispatchesPerReact: 1 },
     },
@@ -223,6 +253,8 @@ test("factory policy: objectives stay single-task by default and still normalize
 
   expect(ready.policy.concurrency.maxActiveTasks).toBe(4);
   expect(ready.policy.throttles.maxDispatchesPerReact).toBe(1);
+  expect(ready.profile.rootProfileId).toBe("software");
+  expect(ready.profile.objectivePolicy.defaultTaskExecutionMode).toBe("worktree");
   expect(ready.activeTaskCount).toBe(1);
   expect(ready.readyTaskCount).toBe(0);
   expect(ready.taskCount).toBe(1);
@@ -343,6 +375,68 @@ test("factory policy: autoPromote false stops at ready_to_promote until promotio
   const published = await service.getObjective(created.objectiveId);
   expect(published.status).toBe("completed");
   expect(published.integration.status).toBe("promoted");
+});
+
+test("factory policy: software delivery objectives auto-publish and expose PR metadata", async () => {
+  const { service, queue } = await createFactoryService({ codexOutcome: "approved" });
+
+  const created = await service.createObjective({
+    title: "Software publish objective",
+    prompt: "Ship the fix through a PR.",
+    profileId: "software",
+    checks: ["git status --short"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const taskJob = await latestFactoryJob(queue, created.objectiveId, "factory.task.run");
+  await service.runTask(taskJob.payload as FactoryTaskJobPayload);
+  const validateJob = await latestFactoryJob(queue, created.objectiveId, "factory.integration.validate");
+  await service.runIntegrationValidation(validateJob.payload as FactoryIntegrationJobPayload);
+
+  const publishJob = await latestFactoryJob(queue, created.objectiveId, "factory.integration.publish");
+  const publishResult = await service.runIntegrationPublish(publishJob.payload as FactoryIntegrationPublishJobPayload);
+  expect(publishResult.status).toBe("completed");
+
+  const published = await service.getObjective(created.objectiveId);
+  const debug = await service.getObjectiveDebug(created.objectiveId);
+  expect(published.status).toBe("completed");
+  expect(published.profile.rootProfileId).toBe("software");
+  expect(published.integration.status).toBe("promoted");
+  expect(published.prUrl).toBe("https://github.com/example/receipt/pull/17");
+  expect(published.prNumber).toBe(17);
+  expect(published.integration.prUrl).toBe("https://github.com/example/receipt/pull/17");
+  expect(published.integration.prNumber).toBe(17);
+  expect(debug.prUrl).toBe("https://github.com/example/receipt/pull/17");
+  expect(debug.prNumber).toBe(17);
+});
+
+test("factory policy: publish failures block the objective when PR metadata is missing", async () => {
+  const { service, queue } = await createFactoryService({
+    codexOutcome: "approved",
+    publishMode: "missing_metadata",
+  });
+
+  const created = await service.createObjective({
+    title: "Software publish failure objective",
+    prompt: "Do not treat publish as complete without a PR link.",
+    profileId: "software",
+    checks: ["git status --short"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const taskJob = await latestFactoryJob(queue, created.objectiveId, "factory.task.run");
+  await service.runTask(taskJob.payload as FactoryTaskJobPayload);
+  const validateJob = await latestFactoryJob(queue, created.objectiveId, "factory.integration.validate");
+  await service.runIntegrationValidation(validateJob.payload as FactoryIntegrationJobPayload);
+  const publishJob = await latestFactoryJob(queue, created.objectiveId, "factory.integration.publish");
+  const publishResult = await service.runIntegrationPublish(publishJob.payload as FactoryIntegrationPublishJobPayload);
+  expect(publishResult.status).toBe("failed");
+
+  const detail = await service.getObjective(created.objectiveId);
+  expect(detail.status).toBe("blocked");
+  expect(detail.integration.status).toBe("conflicted");
+  expect(detail.prUrl).toBeUndefined();
+  expect(detail.blockedReason ?? "").toContain("factory publish result missing valid prUrl");
 });
 
 test("factory policy: integration validation can pass through inherited failures without reconciliation churn", async () => {

@@ -105,6 +105,18 @@ const FACTORY_TASK_RESULT_SCHEMA = {
   required: ["outcome", "summary", "artifacts", "nextAction"],
   additionalProperties: false,
 } as const;
+const FACTORY_PUBLISH_RESULT_SCHEMA = {
+  type: "object",
+  properties: {
+    summary: { type: "string" },
+    prUrl: { type: "string" },
+    prNumber: { type: ["number", "null"] },
+    headRefName: { type: ["string", "null"] },
+    baseRefName: { type: ["string", "null"] },
+  },
+  required: ["summary", "prUrl", "prNumber", "headRefName", "baseRefName"],
+  additionalProperties: false,
+} as const;
 
 const FACTORY_INVESTIGATION_REPORT_SCHEMA = {
   type: "object",
@@ -165,6 +177,10 @@ const FACTORY_TASK_CODEX_MODEL =
   || process.env.HUB_FACTORY_TASK_MODEL?.trim()
   || "gpt-5.4-mini";
 const MAX_CONSECUTIVE_TASK_FAILURES = 5;
+const RETRYABLE_BLOCK_REASON_RE = /\b(factory task failed|lease expired|timed out|timeout|missing structured factory task result|transient|temporary|connection reset|econnreset|spawn|signal|unexpectedly canceled|interrupted)\b/i;
+const NON_RETRYABLE_BLOCK_REASON_RE = /\b(no tracked diff|isolated runtime|cannot run in isolated mode|policy blocked|circuit[- ]broken|integration validation failed)\b/i;
+const HUMAN_INPUT_BLOCK_REASON_RE = /\b(missing (?:dependency |implementation |product |design )?details?|need .*detail|need .*guidance|need .*clarification|choose|which (?:approach|option|api|path)|operator|human|approval|permission denied|access denied|unauthorized|credentials|auth(?:entication|orization)?|forbidden)\b/i;
+const AUTONOMOUS_RETRY_MAX_CANDIDATE_PASSES = 1;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -184,6 +200,14 @@ const clipText = (value: string | undefined, max = 280): string | undefined => {
 };
 const pathExists = async (targetPath: string): Promise<boolean> =>
   fs.access(targetPath).then(() => true).catch(() => false);
+const isValidUrl = (value: string): boolean => {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
 const safeWorkspacePart = (value: string): string =>
   value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
 const tailText = (value: string, maxChars: number): string =>
@@ -495,6 +519,14 @@ type FactoryMemoryScopeSpec = {
   readonly scope: string;
   readonly label: string;
   readonly defaultQuery: string;
+};
+
+type FactoryPublishResult = {
+  readonly summary: string;
+  readonly prUrl: string;
+  readonly prNumber: number | null;
+  readonly headRefName: string | null;
+  readonly baseRefName: string | null;
 };
 
 type FactoryContextTaskNode = {
@@ -2010,6 +2042,103 @@ export class FactoryService {
     return `Policy blocked: ${taskId} circuit-broken after ${failures} consecutive dispatch failures.`;
   }
 
+  private blockedTasksByRecency(state: FactoryState): ReadonlyArray<FactoryTaskRecord> {
+    const timestamp = (task: FactoryTaskRecord): number =>
+      task.completedAt ?? task.reviewingAt ?? task.startedAt ?? task.readyAt ?? task.createdAt;
+    return state.workflow.taskIds
+      .map((taskId) => state.workflow.tasksById[taskId])
+      .filter((task): task is FactoryTaskRecord => Boolean(task) && task.status === "blocked")
+      .sort((left, right) => timestamp(right) - timestamp(left) || right.taskId.localeCompare(left.taskId));
+  }
+
+  private blockedTaskReason(state: FactoryState, task: FactoryTaskRecord): string {
+    return trimmedString(
+      task.blockedReason
+      ?? this.latestTaskCandidate(state, task.taskId)?.latestReason
+      ?? task.latestSummary
+      ?? "Task is blocked."
+    ) ?? "Task is blocked.";
+  }
+
+  private canAutonomouslyRetryBlockedTask(state: FactoryState, task: FactoryTaskRecord): boolean {
+    const reason = this.blockedTaskReason(state, task);
+    if (!reason || NON_RETRYABLE_BLOCK_REASON_RE.test(reason) || HUMAN_INPUT_BLOCK_REASON_RE.test(reason)) return false;
+    if (!RETRYABLE_BLOCK_REASON_RE.test(reason)) return false;
+    if ((state.candidatePassesByTask[task.taskId] ?? 0) > AUTONOMOUS_RETRY_MAX_CANDIDATE_PASSES) return false;
+    if (this.taskReworkPolicyBlockedReason(state, task)) return false;
+    if (this.taskCircuitBreakerReason(state, task.taskId)) return false;
+    return true;
+  }
+
+  private humanDecisionReasonForBlockedTask(state: FactoryState, task: FactoryTaskRecord): string {
+    const reason = this.blockedTaskReason(state, task);
+    if (HUMAN_INPUT_BLOCK_REASON_RE.test(reason)) {
+      return `Human input requested for ${task.taskId}: ${reason}`;
+    }
+    return `Human input requested for ${task.taskId} after autonomous recovery stopped: ${reason}`;
+  }
+
+  private async maybeAutonomousNextStepForBlockedObjective(
+    objectiveId: string,
+    state: FactoryState,
+  ): Promise<"retried" | "asked_human" | "none"> {
+    const blockedTasks = this.blockedTasksByRecency(state)
+      .filter((task) => !this.blockedTaskReason(state, task).startsWith("Policy blocked:"));
+    if (blockedTasks.length === 0) return "none";
+
+    const retryTask = blockedTasks.find((task) => this.canAutonomouslyRetryBlockedTask(state, task));
+    if (retryTask) {
+      const retryReason = this.blockedTaskReason(state, retryTask);
+      const basedOn = await this.currentHeadHash(objectiveId);
+      try {
+        await this.emitObjectiveBatch(objectiveId, [
+          this.runtimeDecisionEvent(
+            state,
+            `retry_${retryTask.taskId}`,
+            `Retry blocked task ${retryTask.taskId} once because the failure looks transient: ${retryReason}`,
+            { basedOn, frontierTaskIds: [retryTask.taskId] },
+          ),
+          {
+            type: "task.unblocked",
+            objectiveId,
+            taskId: retryTask.taskId,
+            readyAt: Date.now(),
+          },
+        ], basedOn);
+        return "retried";
+      } catch (err) {
+        if (err instanceof FactoryStaleObjectiveError) return "none";
+        throw err;
+      }
+    }
+
+    const askTask = blockedTasks[0];
+    if (!askTask) return "none";
+    const askReason = this.humanDecisionReasonForBlockedTask(state, askTask);
+    const basedOn = await this.currentHeadHash(objectiveId);
+    try {
+      await this.emitObjectiveBatch(objectiveId, [
+        this.runtimeDecisionEvent(
+          state,
+          `ask_human_${askTask.taskId}`,
+          askReason,
+          { basedOn, frontierTaskIds: [askTask.taskId] },
+        ),
+        {
+          type: "objective.blocked",
+          objectiveId,
+          reason: askReason,
+          summary: askReason,
+          blockedAt: Date.now(),
+        },
+      ], basedOn);
+      return "asked_human";
+    } catch (err) {
+      if (err instanceof FactoryStaleObjectiveError) return "none";
+      throw err;
+    }
+  }
+
   private async stampCircuitBrokenTasks(state: FactoryState): Promise<void> {
     for (const taskId of state.workflow.taskIds) {
       const task = state.workflow.tasksById[taskId];
@@ -2453,13 +2582,20 @@ export class FactoryService {
       }
 
       if (investigationBlocked && state.status !== "blocked") {
-        await this.emitObjective(objectiveId, {
-          type: "objective.blocked",
-          objectiveId,
-          reason: "No runnable investigation tasks remained.",
-          summary: "Investigation objective is blocked with no runnable tasks.",
-          blockedAt: Date.now(),
-        });
+        const nextStep = await this.maybeAutonomousNextStepForBlockedObjective(objectiveId, state);
+        if (nextStep === "retried") {
+          await this.reactObjective(objectiveId);
+          return;
+        }
+        if (nextStep !== "asked_human") {
+          await this.emitObjective(objectiveId, {
+            type: "objective.blocked",
+            objectiveId,
+            reason: "No runnable investigation tasks remained.",
+            summary: "Investigation objective is blocked with no runnable tasks.",
+            blockedAt: Date.now(),
+          });
+        }
         await this.rebalanceObjectiveSlots();
         return;
       }
@@ -2561,13 +2697,20 @@ export class FactoryService {
         completedAt: Date.now(),
       });
     } else if (emptyBlockedReady) {
-      await this.emitObjective(objectiveId, {
-        type: "objective.blocked",
-        objectiveId,
-        reason: "No runnable tasks remained.",
-        summary: "Factory objective is blocked with no runnable tasks.",
-        blockedAt: Date.now(),
-      });
+      const nextStep = await this.maybeAutonomousNextStepForBlockedObjective(objectiveId, state);
+      if (nextStep === "retried") {
+        await this.reactObjective(objectiveId);
+        return;
+      }
+      if (nextStep !== "asked_human") {
+        await this.emitObjective(objectiveId, {
+          type: "objective.blocked",
+          objectiveId,
+          reason: "No runnable tasks remained.",
+          summary: "Factory objective is blocked with no runnable tasks.",
+          blockedAt: Date.now(),
+        });
+      }
     }
 
     await this.rebalanceObjectiveSlots();
@@ -3235,67 +3378,108 @@ export class FactoryService {
   async runIntegrationPublish(payload: Record<string, unknown>, control?: CodexRunControl): Promise<Record<string, unknown>> {
     const parsed = this.parseIntegrationPublishPayload(payload);
     const state = await this.getObjectiveState(parsed.objectiveId);
-    
+
     const receiptBinDir = await this.ensureWorkspaceReceiptCli(parsed.workspacePath);
     const resultSchemaPath = path.join(path.dirname(parsed.resultPath), "schema.json");
     await fs.mkdir(path.dirname(resultSchemaPath), { recursive: true });
-    await fs.writeFile(resultSchemaPath, JSON.stringify(FACTORY_TASK_RESULT_SCHEMA, null, 2), "utf-8");
+    await fs.writeFile(resultSchemaPath, JSON.stringify(FACTORY_PUBLISH_RESULT_SCHEMA, null, 2), "utf-8");
 
     const memoryConfigPath = path.join(path.dirname(parsed.resultPath), "memory.json");
     await fs.writeFile(memoryConfigPath, JSON.stringify({ scopes: [parsed.memoryScope] }, null, 2), "utf-8");
-
-    const execution = await this.codexExecutor.run({
-      prompt: `Publish the completed objective: ${state.prompt}`,
-      workspacePath: parsed.workspacePath,
-      promptPath: parsed.promptPath,
-      lastMessagePath: parsed.lastMessagePath,
-      stdoutPath: parsed.stdoutPath,
-      stderrPath: parsed.stderrPath,
-      model: FACTORY_TASK_CODEX_MODEL,
-      outputSchemaPath: resultSchemaPath,
-      completionSignalPath: parsed.lastMessagePath,
-      completionQuietMs: 1_500,
-      reasoningEffort: "low",
-      isolateCodexHome: true,
-      objectiveId: parsed.objectiveId,
-      taskId: "publish",
-      candidateId: parsed.candidateId,
-      contextRefs: parsed.contextRefs,
-      skillBundlePaths: parsed.skillBundlePaths,
-      repoSkillPaths: [],
-      env: {
-        DATA_DIR: this.dataDir,
-        PATH: prependPath(receiptBinDir, process.env.PATH),
-      },
-    }, control);
-
-    if (execution.exitCode === 0) {
+    try {
+      const execution = await this.codexExecutor.run({
+        prompt: [
+          "# Factory Integration Publish",
+          "",
+          `Objective ID: ${parsed.objectiveId}`,
+          `Objective Title: ${state.title}`,
+          `Candidate ID: ${parsed.candidateId}`,
+          `Head Commit: ${state.integration.headCommit ?? state.baseHash}`,
+          `Publish Memory Scope: ${parsed.memoryScope}`,
+          "",
+          "## Objective Prompt",
+          state.prompt,
+          "",
+          "## Publish Contract",
+          `Use \`receipt memory summarize factory/objectives/${parsed.objectiveId}\` and \`receipt inspect factory/objectives/${parsed.objectiveId}\` before writing the PR body.`,
+          "Push the current branch, open the PR with gh, then fetch the final PR metadata from the current branch.",
+          "Do not run builds or tests.",
+          "Return exactly one JSON object matching this schema:",
+          `{"summary":"short publish summary","prUrl":"https://github.com/...","prNumber":123,"headRefName":"branch-name","baseRefName":"main"}`,
+          "Use null for prNumber, headRefName, or baseRefName only if GitHub does not return them.",
+        ].join("\n"),
+        workspacePath: parsed.workspacePath,
+        promptPath: parsed.promptPath,
+        lastMessagePath: parsed.lastMessagePath,
+        stdoutPath: parsed.stdoutPath,
+        stderrPath: parsed.stderrPath,
+        model: FACTORY_TASK_CODEX_MODEL,
+        outputSchemaPath: resultSchemaPath,
+        completionSignalPath: parsed.lastMessagePath,
+        completionQuietMs: 1_500,
+        reasoningEffort: "low",
+        isolateCodexHome: true,
+        objectiveId: parsed.objectiveId,
+        taskId: "publish",
+        candidateId: parsed.candidateId,
+        contextRefs: parsed.contextRefs,
+        skillBundlePaths: parsed.skillBundlePaths,
+        repoSkillPaths: [],
+        env: {
+          DATA_DIR: this.dataDir,
+          PATH: prependPath(receiptBinDir, process.env.PATH),
+        },
+      }, control);
+      const publishResult = await this.resolvePublishWorkerResult(parsed, execution);
+      await fs.writeFile(parsed.resultPath, JSON.stringify(publishResult, null, 2), "utf-8");
+      const summary = publishResult.summary;
+      await this.commitPublishMemory(state, parsed.candidateId, `${summary}\nPR: ${publishResult.prUrl}`, ["publish", "succeeded"]);
       await this.emitObjective(parsed.objectiveId, {
         type: "integration.promoted",
         objectiveId: parsed.objectiveId,
         candidateId: parsed.candidateId,
         promotedCommit: state.integration.headCommit ?? state.baseHash,
-        summary: `Published PR successfully.`,
+        summary,
+        prUrl: publishResult.prUrl,
+        prNumber: publishResult.prNumber ?? undefined,
+        headRefName: publishResult.headRefName ?? undefined,
+        baseRefName: publishResult.baseRefName ?? undefined,
         promotedAt: Date.now(),
       });
       await this.emitObjective(parsed.objectiveId, {
         type: "objective.completed",
         objectiveId: parsed.objectiveId,
-        summary: `Factory objective completed. Published PR successfully.`,
+        summary,
         completedAt: Date.now(),
       });
       await this.reactObjective(parsed.objectiveId);
-      return { objectiveId: parsed.objectiveId, status: "completed" };
-    } else {
+      return {
+        objectiveId: parsed.objectiveId,
+        status: "completed",
+        prUrl: publishResult.prUrl,
+        prNumber: publishResult.prNumber,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const reason = `Publishing failed: ${message}`;
+      await this.commitPublishMemory(state, parsed.candidateId, reason, ["publish", "failed"]);
       await this.emitObjective(parsed.objectiveId, {
         type: "integration.conflicted",
         objectiveId: parsed.objectiveId,
         candidateId: parsed.candidateId,
-        reason: `Publishing failed: exit code ${execution.exitCode}`,
+        reason,
+        headCommit: state.integration.headCommit ?? state.baseHash,
         conflictedAt: Date.now(),
       });
+      await this.emitObjective(parsed.objectiveId, {
+        type: "objective.blocked",
+        objectiveId: parsed.objectiveId,
+        reason,
+        summary: reason,
+        blockedAt: Date.now(),
+      });
       await this.reactObjective(parsed.objectiveId);
-      return { objectiveId: parsed.objectiveId, status: "failed" };
+      return { objectiveId: parsed.objectiveId, status: "failed", message: reason };
     }
   }
 
@@ -3574,6 +3758,10 @@ export class FactoryService {
       taskCount: projection.tasks.length,
       integrationStatus: state.integration.status,
       latestCommitHash: state.integration.promotedCommit ?? state.integration.headCommit ?? latestCandidate?.headCommit,
+      prUrl: state.integration.prUrl,
+      prNumber: state.integration.prNumber,
+      headRefName: state.integration.headRefName,
+      baseRefName: state.integration.baseRefName,
       tokensUsed: tokensUsed > 0 ? tokensUsed : undefined,
       profile: this.objectiveProfileForState(state),
     };
@@ -3711,6 +3899,10 @@ export class FactoryService {
       scheduler: detail.scheduler,
       latestDecision: detail.latestDecision,
       nextAction: detail.nextAction,
+      prUrl: detail.prUrl,
+      prNumber: detail.prNumber,
+      headRefName: detail.headRefName,
+      baseRefName: detail.baseRefName,
       profile: detail.profile,
       policy: state.policy,
       contextSources: detail.contextSources,
@@ -5592,6 +5784,22 @@ export class FactoryService {
     return result;
   }
 
+  private async resolvePublishWorkerResult(
+    payload: Pick<FactoryIntegrationPublishJobPayload, "resultPath" | "lastMessagePath">,
+    execution: { readonly lastMessage?: string },
+  ): Promise<FactoryPublishResult> {
+    const rawResult = await fs.readFile(payload.resultPath, "utf-8").catch(() => "");
+    if (rawResult.trim()) return this.parsePublishResult(rawResult);
+    const rawLastMessage = execution.lastMessage?.trim()
+      ? execution.lastMessage
+      : await fs.readFile(payload.lastMessagePath, "utf-8").catch(() => "");
+    const parsed = rawLastMessage ? this.parseJsonObjectCandidate(rawLastMessage) : undefined;
+    if (!parsed) {
+      throw new FactoryServiceError(500, "missing structured factory publish result from codex");
+    }
+    return this.normalizePublishResult(parsed);
+  }
+
   private parseTaskResult(raw: string): Record<string, unknown> {
     if (!raw.trim()) throw new FactoryServiceError(500, "missing factory task result.json");
     let parsed: unknown;
@@ -5602,6 +5810,46 @@ export class FactoryService {
     }
     if (!isRecord(parsed)) throw new FactoryServiceError(500, "factory task result must be an object");
     return parsed;
+  }
+
+  private parsePublishResult(raw: string): FactoryPublishResult {
+    if (!raw.trim()) throw new FactoryServiceError(500, "missing factory publish result.json");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      throw new FactoryServiceError(500, `malformed factory publish result.json: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!isRecord(parsed)) throw new FactoryServiceError(500, "factory publish result must be an object");
+    return this.normalizePublishResult(parsed);
+  }
+
+  private normalizePublishResult(raw: Record<string, unknown>): FactoryPublishResult {
+    const summary = optionalTrimmedString(raw.summary);
+    if (!summary) throw new FactoryServiceError(500, "factory publish result missing summary");
+    const prUrl = optionalTrimmedString(raw.prUrl);
+    if (!prUrl || !isValidUrl(prUrl)) throw new FactoryServiceError(500, "factory publish result missing valid prUrl");
+    const prNumber = raw.prNumber === null
+      ? null
+      : typeof raw.prNumber === "number" && Number.isFinite(raw.prNumber)
+        ? Math.max(0, Math.floor(raw.prNumber))
+        : undefined;
+    if (prNumber === undefined) throw new FactoryServiceError(500, "factory publish result missing prNumber");
+    const headRefName = raw.headRefName === null
+      ? null
+      : optionalTrimmedString(raw.headRefName) ?? undefined;
+    if (headRefName === undefined) throw new FactoryServiceError(500, "factory publish result missing headRefName");
+    const baseRefName = raw.baseRefName === null
+      ? null
+      : optionalTrimmedString(raw.baseRefName) ?? undefined;
+    if (baseRefName === undefined) throw new FactoryServiceError(500, "factory publish result missing baseRefName");
+    return {
+      summary,
+      prUrl,
+      prNumber,
+      headRefName,
+      baseRefName,
+    };
   }
 
   private async ensureWorkspaceReceiptCli(workspacePath: string): Promise<string> {
@@ -5705,6 +5953,36 @@ export class FactoryService {
           scope: `factory/objectives/${state.objectiveId}/integration`,
           text: summary,
           tags: ["factory", ...tags],
+        }),
+      ]);
+    } catch {
+      // memory is auxiliary
+    }
+  }
+
+  private async commitPublishMemory(
+    state: FactoryState,
+    candidateId: string,
+    summary: string,
+    tags: ReadonlyArray<string>,
+  ): Promise<void> {
+    if (!this.memoryTools) return;
+    try {
+      await Promise.all([
+        this.memoryTools.commit({
+          scope: `factory/objectives/${state.objectiveId}`,
+          text: `[publish/${candidateId}] ${summary}`,
+          tags: ["factory", ...tags],
+        }),
+        this.memoryTools.commit({
+          scope: `factory/objectives/${state.objectiveId}/integration`,
+          text: summary,
+          tags: ["factory", "integration", ...tags],
+        }),
+        this.memoryTools.commit({
+          scope: `factory/objectives/${state.objectiveId}/publish`,
+          text: summary,
+          tags: ["factory", "publish", ...tags],
         }),
       ]);
     } catch {

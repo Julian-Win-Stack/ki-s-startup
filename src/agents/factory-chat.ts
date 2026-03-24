@@ -226,6 +226,8 @@ const summarizeObjective = (detail: Awaited<ReturnType<FactoryService["getObject
   summary: detail.latestSummary ?? detail.nextAction ?? detail.title,
   integrationStatus: detail.integration.status,
   latestCommitHash: detail.latestCommitHash,
+  prUrl: detail.prUrl,
+  prNumber: detail.prNumber,
   link: `/factory?objective=${encodeURIComponent(detail.objectiveId)}`,
 });
 

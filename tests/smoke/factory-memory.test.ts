@@ -13,7 +13,12 @@ import { jsonlQueue } from "../../src/adapters/jsonl-queue";
 import { createRuntime } from "@receipt/core/runtime";
 import { SseHub } from "../../src/framework/sse-hub";
 import { decide as decideJob, initial as initialJob, reduce as reduceJob, type JobCmd, type JobEvent, type JobState } from "../../src/modules/job";
-import { FactoryService, type FactoryTaskJobPayload } from "../../src/services/factory-service";
+import {
+  FactoryService,
+  type FactoryIntegrationJobPayload,
+  type FactoryIntegrationPublishJobPayload,
+  type FactoryTaskJobPayload,
+} from "../../src/services/factory-service";
 
 const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -78,6 +83,17 @@ const createTestMemoryTools = (dataDir: string): MemoryTools => {
     dir: dataDir,
     runtime,
   });
+};
+
+const findObjectiveJob = async (
+  queue: ReturnType<typeof jsonlQueue>,
+  objectiveId: string,
+  kind: "factory.task.run" | "factory.integration.validate" | "factory.integration.publish",
+) => {
+  const jobs = await queue.listJobs({ limit: 40 });
+  return jobs
+    .filter((job) => job.payload.kind === kind && job.payload.objectiveId === objectiveId)
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0];
 };
 
 const runReceiptCli = async (
@@ -458,4 +474,184 @@ test("factory investigation synthesis commits a sectioned operator report to obj
     && entry.text.includes("Next Steps\n- Escalate only if deeper service-specific attribution is required."),
   );
   expect(richReport).toBeTruthy();
+}, 120_000);
+
+test("factory publish commits PR metadata to objective, integration, and publish memory", async () => {
+  const dataDir = await createTempDir("receipt-factory-publish-memory");
+  const repoDir = await createSourceRepo();
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createTestMemoryTools(dataDir);
+
+  const codexExecutor: CodexExecutor = {
+    run: async (input) => {
+      await fs.mkdir(path.dirname(input.promptPath), { recursive: true });
+      await fs.writeFile(input.promptPath, input.prompt, "utf-8");
+      await fs.writeFile(input.stdoutPath, "", "utf-8");
+      await fs.writeFile(input.stderrPath, "", "utf-8");
+      if (input.taskId === "publish") {
+        const raw = JSON.stringify({
+          summary: "Published PR #42 for the software objective.",
+          prUrl: "https://github.com/example/receipt/pull/42",
+          prNumber: 42,
+          headRefName: "codex/software-objective",
+          baseRefName: "main",
+        });
+        await fs.writeFile(input.lastMessagePath, raw, "utf-8");
+        return {
+          exitCode: 0,
+          signal: null,
+          stdout: raw,
+          stderr: "",
+          lastMessage: raw,
+        };
+      }
+      await fs.writeFile(path.join(input.workspacePath, "MEMORY_PUBLISH_TEST.txt"), "publish memory coverage\n", "utf-8");
+      const raw = JSON.stringify({
+        outcome: "approved",
+        summary: "Implemented the software change and prepared it for integration.",
+        artifacts: [],
+        nextAction: "Ready for integration.",
+      });
+      await fs.writeFile(input.lastMessagePath, raw, "utf-8");
+      return {
+        exitCode: 0,
+        signal: null,
+        stdout: raw,
+        stderr: "",
+        lastMessage: raw,
+      };
+    },
+  };
+
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime,
+    sse: new SseHub(),
+    codexExecutor,
+    memoryTools,
+    repoRoot: repoDir,
+  });
+
+  const created = await service.createObjective({
+    title: "Publish software objective",
+    prompt: "Implement the change and raise the PR.",
+    profileId: "software",
+    checks: ["git status --short"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const taskJob = await findObjectiveJob(queue, created.objectiveId, "factory.task.run");
+  expect(taskJob).toBeTruthy();
+  await service.runTask(taskJob!.payload as FactoryTaskJobPayload);
+
+  const validateJob = await findObjectiveJob(queue, created.objectiveId, "factory.integration.validate");
+  expect(validateJob).toBeTruthy();
+  await service.runIntegrationValidation(validateJob!.payload as FactoryIntegrationJobPayload);
+
+  const publishJob = await findObjectiveJob(queue, created.objectiveId, "factory.integration.publish");
+  expect(publishJob).toBeTruthy();
+  await service.runIntegrationPublish(publishJob!.payload as FactoryIntegrationPublishJobPayload);
+
+  const objectiveMemory = await memoryTools.read({
+    scope: `factory/objectives/${created.objectiveId}`,
+    limit: 10,
+  });
+  const integrationMemory = await memoryTools.read({
+    scope: `factory/objectives/${created.objectiveId}/integration`,
+    limit: 10,
+  });
+  const publishMemory = await memoryTools.read({
+    scope: `factory/objectives/${created.objectiveId}/publish`,
+    limit: 10,
+  });
+
+  expect(objectiveMemory.some((entry) =>
+    entry.text.includes("[publish/")
+    && entry.text.includes("https://github.com/example/receipt/pull/42")
+  )).toBeTruthy();
+  expect(integrationMemory.some((entry) =>
+    entry.text.includes("Published PR #42 for the software objective.")
+    && entry.text.includes("https://github.com/example/receipt/pull/42")
+  )).toBeTruthy();
+  expect(publishMemory.some((entry) =>
+    entry.text.includes("Published PR #42 for the software objective.")
+    && entry.text.includes("https://github.com/example/receipt/pull/42")
+  )).toBeTruthy();
+}, 120_000);
+
+test("factory publish failures still commit durable blocker notes to publish memory", async () => {
+  const dataDir = await createTempDir("receipt-factory-publish-memory-failure");
+  const repoDir = await createSourceRepo();
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const memoryTools = createTestMemoryTools(dataDir);
+
+  const codexExecutor: CodexExecutor = {
+    run: async (input) => {
+      await fs.mkdir(path.dirname(input.promptPath), { recursive: true });
+      await fs.writeFile(input.promptPath, input.prompt, "utf-8");
+      await fs.writeFile(input.stdoutPath, "", "utf-8");
+      await fs.writeFile(input.stderrPath, "", "utf-8");
+      if (input.taskId === "publish") {
+        throw new Error("gh pr create failed: permission denied");
+      }
+      await fs.writeFile(path.join(input.workspacePath, "MEMORY_PUBLISH_FAILURE.txt"), "publish failure coverage\n", "utf-8");
+      const raw = JSON.stringify({
+        outcome: "approved",
+        summary: "Prepared the delivery candidate for publishing.",
+        artifacts: [],
+        nextAction: "Ready for integration.",
+      });
+      await fs.writeFile(input.lastMessagePath, raw, "utf-8");
+      return {
+        exitCode: 0,
+        signal: null,
+        stdout: raw,
+        stderr: "",
+        lastMessage: raw,
+      };
+    },
+  };
+
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime,
+    sse: new SseHub(),
+    codexExecutor,
+    memoryTools,
+    repoRoot: repoDir,
+  });
+
+  const created = await service.createObjective({
+    title: "Publish failure memory objective",
+    prompt: "Surface publish blockers durably.",
+    profileId: "software",
+    checks: ["git status --short"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const taskJob = await findObjectiveJob(queue, created.objectiveId, "factory.task.run");
+  expect(taskJob).toBeTruthy();
+  await service.runTask(taskJob!.payload as FactoryTaskJobPayload);
+  const validateJob = await findObjectiveJob(queue, created.objectiveId, "factory.integration.validate");
+  expect(validateJob).toBeTruthy();
+  await service.runIntegrationValidation(validateJob!.payload as FactoryIntegrationJobPayload);
+  const publishJob = await findObjectiveJob(queue, created.objectiveId, "factory.integration.publish");
+  expect(publishJob).toBeTruthy();
+  await service.runIntegrationPublish(publishJob!.payload as FactoryIntegrationPublishJobPayload);
+
+  const publishMemory = await memoryTools.read({
+    scope: `factory/objectives/${created.objectiveId}/publish`,
+    limit: 10,
+  });
+  const integrationMemory = await memoryTools.read({
+    scope: `factory/objectives/${created.objectiveId}/integration`,
+    limit: 10,
+  });
+
+  expect(publishMemory.some((entry) => entry.text.includes("gh pr create failed: permission denied"))).toBeTruthy();
+  expect(integrationMemory.some((entry) => entry.text.includes("Publishing failed: gh pr create failed: permission denied"))).toBeTruthy();
 }, 120_000);

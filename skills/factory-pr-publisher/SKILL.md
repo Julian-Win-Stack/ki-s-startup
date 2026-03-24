@@ -16,10 +16,15 @@ You have been dispatched to publish the final results of a Factory objective. Th
 3. Use the `gh` CLI to create a Pull Request:
    - Write a detailed PR description summarizing the objective, the tasks completed, and the test/validation results.
    - Run `gh pr create --title "<Objective Title>" --body "<Detailed Markdown Body>"`
-4. Once the PR is created, output the PR URL in your final message and finish.
+4. Once the PR is created, fetch the final metadata for the current branch:
+   - `gh pr view --json url,number,headRefName,baseRefName`
+5. Return a strict JSON object as your final response:
+   - `{"summary":"<short publish summary>","prUrl":"https://github.com/...","prNumber":123,"headRefName":"branch-name","baseRefName":"main"}`
+   - Use `null` for `prNumber`, `headRefName`, or `baseRefName` only when GitHub does not return them.
 
 ## Rules
 
 - Do NOT attempt to run builds or tests; the code has already been validated by the Factory integration pipeline.
 - Do NOT make any code changes.
 - Ensure the PR description is thorough and explains the "why" and "what" based on the receipts.
+- Return publish metadata, not prose-only success text.

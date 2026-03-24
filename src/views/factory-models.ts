@@ -54,6 +54,8 @@ export type FactorySelectedObjectiveCard = {
   readonly readyTaskCount?: number;
   readonly taskCount?: number;
   readonly latestCommitHash?: string;
+  readonly prUrl?: string;
+  readonly prNumber?: number;
   readonly checks?: ReadonlyArray<string>;
   readonly latestDecisionSummary?: string;
   readonly latestDecisionAt?: number;

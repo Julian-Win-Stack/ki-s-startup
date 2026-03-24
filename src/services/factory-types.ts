@@ -156,6 +156,10 @@ export type FactoryObjectiveCard = {
   readonly taskCount: number;
   readonly integrationStatus: FactoryState["integration"]["status"];
   readonly latestCommitHash?: string;
+  readonly prUrl?: string;
+  readonly prNumber?: number;
+  readonly headRefName?: string;
+  readonly baseRefName?: string;
   readonly profile: FactoryObjectiveProfileSnapshot;
 };
 
@@ -268,6 +272,10 @@ export type FactoryDebugProjection = {
   };
   readonly latestDecision?: FactoryObjectiveCard["latestDecision"];
   readonly nextAction?: string;
+  readonly prUrl?: string;
+  readonly prNumber?: number;
+  readonly headRefName?: string;
+  readonly baseRefName?: string;
   readonly profile: FactoryObjectiveProfileSnapshot;
   readonly policy: FactoryNormalizedObjectivePolicy;
   readonly contextSources: FactoryContextSources;
