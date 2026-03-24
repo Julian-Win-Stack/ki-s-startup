@@ -13,7 +13,6 @@ import {
   iconProject,
   iconReceipt,
   iconBadgeToneClass,
-  panelClass,
   railCardClass,
   renderJobActionCards,
   sectionLabelClass,
@@ -289,6 +288,8 @@ const composerCommandsJson = (): string => JSON.stringify(COMPOSER_COMMANDS.map(
 const composerTextareaClass = "min-h-[88px] w-full flex-[1_1_0%] resize-none rounded-xl border border-border bg-muted px-4 py-3 text-sm leading-6 text-foreground outline-none transition placeholder:text-muted-foreground focus:border-primary/30 focus:bg-muted focus-visible:ring-2 focus-visible:ring-ring/40";
 const composerShellClass = "mx-auto w-full max-w-6xl";
 const composerPanelClass = "relative flex flex-col gap-2 rounded-2xl border border-border/80 bg-card/95 p-2 shadow-sm ring-1 ring-border/50 sm:p-3";
+const assistantResponseCardClass = "overflow-hidden rounded-xl border border-border/80 bg-card/90 shadow-sm backdrop-blur-xl";
+const assistantResponseBodyClass = "max-w-[72ch] px-5 py-4 sm:px-6 sm:py-5";
 
 const composerJobId = (model: FactoryChatShellModel): string | undefined => {
   if (model.jobId) return model.jobId;
@@ -354,18 +355,13 @@ const renderChatItem = (
   }
   if (item.kind === "assistant") {
     return `<section class="flex justify-start">
-      <div class="w-full max-w-4xl space-y-2">
+      <div class="w-full max-w-3xl space-y-2">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <div class="flex min-w-0 items-center gap-2">
-            <div class="flex h-7 w-7 items-center justify-center rounded-xl border border-success/20 bg-success/10 text-success">
-              ${iconChat("h-3.5 w-3.5")}
-            </div>
-            <span class="text-xs font-semibold tracking-[0.12em] text-foreground uppercase">${esc(activeProfileLabel)}</span>
-          </div>
+          <div class="flex min-w-0 items-center gap-1.5 ${sectionLabelClass}">${iconChat("w-3.5 h-3.5")} ${esc(activeProfileLabel)}</div>
           ${item.meta ? `<span class="text-[11px] text-muted-foreground">${esc(item.meta)}</span>` : ""}
         </div>
-        <div class="factory-response ${panelClass}">
-          <div class="factory-response__body">
+        <div class="${assistantResponseCardClass}">
+          <div class="${assistantResponseBodyClass}">
             <div class="factory-markdown">${renderMarkdown(item.body)}</div>
           </div>
         </div>

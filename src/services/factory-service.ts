@@ -1102,7 +1102,7 @@ export class FactoryService {
       roleLabel: "Infrastructure engineer",
       guidance: [
         "These files are curated repo-scoped infrastructure memory, not the full receipt history.",
-        "Reuse a stored script when the account and question still match; rerun it when freshness matters.",
+        "Stored scripts are durable and reusable, but for live cloud/account/runtime questions rerun the best matching script before you finalize.",
       ],
       selectedEntries: ranked
         .filter((entry): entry is FactoryInfrastructureKnowledgeSelection => Boolean(entry))
@@ -1151,7 +1151,7 @@ export class FactoryService {
         for (const scriptPath of entry.scriptPaths) lines.push(`- reusable script: ${scriptPath}`);
         for (const artifactPath of entry.artifactPaths) lines.push(`- reusable evidence: ${artifactPath}`);
       }
-      lines.push(`If freshness is uncertain, rerun or adapt the stored script instead of trusting cached output blindly.`);
+      lines.push(`For live cloud/account/runtime questions, rerun or adapt the best matching stored script before finalizing. Use cached output as a hint, not as the answer.`);
     }
     lines.push(``);
     return lines;

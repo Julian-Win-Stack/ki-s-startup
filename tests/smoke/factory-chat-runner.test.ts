@@ -541,7 +541,42 @@ test("factory chat runner: status.read tools expose codex logs, objective status
     workspaceRoot: repoRoot,
     queue,
     dataDir,
-    factoryService: createFactoryServiceStub() as never,
+    factoryService: createFactoryServiceStub({
+      getObjective: async (objectiveId: string) => ({
+        objectiveId,
+        title: "Objective demo",
+        status: "active",
+        phase: "executing",
+        objectiveMode: "delivery",
+        severity: 2,
+        latestSummary: "Investigating the sidebar objective.",
+        nextAction: "React the current objective.",
+        integration: {
+          status: "idle",
+          queuedCandidateIds: [],
+        },
+        latestDecision: {
+          summary: "Inspect the current candidate before reacting.",
+          at: Date.now(),
+          source: "runtime",
+        },
+        blockedExplanation: undefined,
+        evidenceCards: [{
+          kind: "decision",
+          title: "Latest decision",
+          summary: "Inspect the current candidate before reacting.",
+          at: Date.now(),
+          receiptType: "rebracket.applied",
+        }],
+        tasks: [],
+        contextSources: {
+          sharedArtifactRefs: [
+            { kind: "artifact", ref: "/tmp/infra-knowledge/entry.json", label: "reusable infrastructure knowledge" },
+            { kind: "artifact", ref: "/tmp/infra-knowledge/scripts/inventory.sh", label: "reusable infrastructure script" },
+          ],
+        },
+      }),
+    }) as never,
     repoRoot,
     profileRoot,
   });
@@ -551,6 +586,8 @@ test("factory chat runner: status.read tools expose codex logs, objective status
   const observations = chain.filter((receipt) => receipt.body.type === "tool.observed").map((receipt) => receipt.body);
   expect(observations.find((event) => event.tool === "codex.logs" && "output" in event)?.output ?? "").toContain('"artifacts"');
   expect(observations.find((event) => event.tool === "factory.status" && "output" in event)?.output ?? "").toContain('"latestDecision"');
+  expect(observations.find((event) => event.tool === "factory.status" && "output" in event)?.output ?? "").toContain('"reusableInfrastructureScripts"');
+  expect(observations.find((event) => event.tool === "factory.status" && "output" in event)?.output ?? "").toContain('/tmp/infra-knowledge/scripts/inventory.sh');
   expect(observations.find((event) => event.tool === "factory.receipts" && "output" in event)?.output ?? "").toContain('"receipts"');
   expect(observations.find((event) => event.tool === "factory.output" && "output" in event)?.output ?? "").toContain('Streaming live output.');
 });

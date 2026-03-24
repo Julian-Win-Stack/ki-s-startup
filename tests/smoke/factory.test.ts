@@ -1697,7 +1697,8 @@ test("factory chat island: promotes parenthetical headings, bolds list lead-ins,
     }],
   });
 
-  expect(markup).toContain("factory-response");
+  expect(markup).toContain("max-w-3xl");
+  expect(markup).toContain("bg-card/90");
   expect(markup).toMatch(/<h[1-4]>Next \(smallest unblock\)<\/h[1-4]>/);
   expect(markup).toContain("<strong>Provide one of:</strong>");
 });

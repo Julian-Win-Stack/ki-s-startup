@@ -98,7 +98,9 @@ const FACTORY_CHAT_LOOP_TEMPLATE = [
   "- Profiles are orchestration-only. Do not claim this chat edited code directly.",
   "- Use `codex.run` only for lightweight read-only inspection or evidence-gathering in the current repo.",
   "- Use `factory.dispatch` for any code-changing delivery work, any substantive infrastructure investigation, or when the next step should run in an objective worktree.",
-  "- If a completed objective already contains the answer in `factory.status`, `factory.receipts`, or `factory.output`, answer directly instead of dispatching new work just to restate saved results.",
+  "- If a completed objective already contains the answer in `factory.status`, `factory.receipts`, or `factory.output`, answer directly only when the answer is historical, meta, or clearly not freshness-sensitive.",
+  "- If the answer depends on current cloud/account/runtime state and reusable scripts are available in the current situation or `factory.status`, rerun the best matching saved script first via `codex.run` or `factory.dispatch` instead of finalizing from saved results alone.",
+  "- If the answer depends on current cloud/account/runtime state and you only have saved evidence, prefer a fresh probe over presenting old results as current.",
   "- Before `react`, `promote`, `cancel`, or duplicate dispatch, ground the decision in the current situation, receipts, or live output.",
   "- When child work is already active, prefer `codex.status`, `factory.status`, or `factory.output` with `waitForChangeMs` so you wait for real progress instead of tight polling.",
   "- Do not try to steer an in-flight child. If the current attempt is wrong, inspect it, abort it, and react the objective with a clearer note.",
@@ -381,6 +383,33 @@ const codexJobPriority = (
 const summarizeObjectiveReceipts = (receipts: ReadonlyArray<FactoryObjectiveReceiptSummary>, limit = 5): ReadonlyArray<string> =>
   receipts.slice(-Math.max(1, limit)).map((receipt) => `- ${receipt.type}: ${receipt.summary}`);
 
+const reusableInfrastructureRefs = (
+  sharedArtifactRefs: ReadonlyArray<{ readonly ref: string; readonly label?: string }> | undefined,
+): {
+  readonly scripts: ReadonlyArray<string>;
+  readonly knowledge: ReadonlyArray<string>;
+  readonly evidence: ReadonlyArray<string>;
+} => {
+  const refs = Array.isArray(sharedArtifactRefs) ? sharedArtifactRefs : [];
+  const collect = (labelFragment: string): ReadonlyArray<string> => {
+    const seen = new Set<string>();
+    const values: string[] = [];
+    for (const ref of refs) {
+      const label = ref.label?.trim().toLowerCase() ?? "";
+      const target = ref.ref?.trim();
+      if (!target || !label.includes(labelFragment) || seen.has(target)) continue;
+      seen.add(target);
+      values.push(target);
+    }
+    return values;
+  };
+  return {
+    scripts: collect("reusable infrastructure script"),
+    knowledge: collect("reusable infrastructure knowledge"),
+    evidence: collect("reusable infrastructure evidence"),
+  };
+};
+
 const buildFactorySituation = async (input: {
   readonly queue: JsonlQueue;
   readonly runId: string;
@@ -425,6 +454,16 @@ const buildFactorySituation = async (input: {
       if (receiptLines.length > 0) {
         lines.push("Recent receipts:");
         lines.push(...receiptLines);
+      }
+      const reusableRefs = reusableInfrastructureRefs(detail.contextSources?.sharedArtifactRefs);
+      if (reusableRefs.knowledge.length > 0) {
+        lines.push("Reusable infrastructure knowledge:");
+        lines.push(...reusableRefs.knowledge.slice(0, 3).map((ref) => `- ${ref}`));
+      }
+      if (reusableRefs.scripts.length > 0) {
+        lines.push("Reusable infrastructure scripts:");
+        lines.push(...reusableRefs.scripts.slice(0, 4).map((ref) => `- ${ref}`));
+        lines.push("Freshness rule: for live cloud/account/runtime questions, rerun the best matching saved script before finalizing; do not answer from saved output alone.");
       }
     } catch (err: unknown) {
       const status = typeof err === "object" && err !== null && "status" in err
@@ -904,6 +943,7 @@ const createFactoryStatusTool = (input: {
         input.factoryService.listObjectiveReceipts(objectiveId, { limit: 20 }),
       ]);
       const summary = summarizeObjective(detail);
+      const reusableRefs = reusableInfrastructureRefs(detail.contextSources?.sharedArtifactRefs);
       return {
         worker: "factory",
         action: "status",
@@ -916,6 +956,12 @@ const createFactoryStatusTool = (input: {
         taskWorktrees: debug.taskWorktrees,
         integrationWorktree: debug.integrationWorktree,
         latestContextPacks: debug.latestContextPacks,
+        reusableInfrastructureScripts: reusableRefs.scripts,
+        reusableInfrastructureKnowledge: reusableRefs.knowledge,
+        reusableInfrastructureEvidence: reusableRefs.evidence,
+        freshnessGuidance: reusableRefs.scripts.length > 0
+          ? "For live cloud/account/runtime questions, rerun the best matching saved script before finalizing."
+          : undefined,
       };
     };
     const initial = await buildStatus();
