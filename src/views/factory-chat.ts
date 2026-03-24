@@ -769,6 +769,32 @@ export const factoryChatIsland = (model: FactoryChatIslandModel): string => {
   </div>`;
 };
 
+const renderObjectiveTokenCallout = (tokensUsed: number): string => `<div class="mt-2 rounded-xl border border-info/20 bg-info/10 px-3 py-2.5">
+  <div class="flex items-start justify-between gap-2">
+    <div class="min-w-0">
+      <div class="text-[10px] font-semibold uppercase tracking-[0.18em] text-info">Token Usage</div>
+      <div class="mt-1 text-lg font-semibold leading-none tracking-tight text-foreground">${esc(tokensUsed.toLocaleString())}</div>
+    </div>
+    <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-info/20 bg-background/70 text-info">
+      ${iconTokens("h-4 w-4")}
+    </span>
+  </div>
+  <div class="mt-1 text-[11px] text-muted-foreground">Codex tokens recorded so far</div>
+</div>`;
+
+const renderSidebarTokenHero = (tokensUsed: number): string => `<div class="rounded-2xl border border-info/25 bg-info/10 px-3 py-3">
+  <div class="flex items-start justify-between gap-3">
+    <div class="min-w-0">
+      <div class="text-[10px] font-semibold uppercase tracking-[0.18em] text-info">Token Usage</div>
+      <div class="mt-1 text-2xl font-semibold leading-none tracking-tight text-foreground">${esc(tokensUsed.toLocaleString())}</div>
+      <div class="mt-2 text-[11px] text-muted-foreground">Codex tokens recorded for this thread</div>
+    </div>
+    <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-info/20 bg-background/70 text-info">
+      ${iconTokens("h-5 w-5")}
+    </span>
+  </div>
+</div>`;
+
 
 const renderObjectiveLink = (model: FactoryNavModel, objective: FactoryChatObjectiveNav): string => {
   const href = factoryChatQuery({
@@ -780,10 +806,6 @@ const renderObjectiveLink = (model: FactoryNavModel, objective: FactoryChatObjec
     ? "border-primary/30 bg-primary/10"
     : "border-border bg-muted hover:bg-accent";
   const displayStatus = objective.phase || objective.status;
-  const meta = [
-    objective.updatedAt ? formatTs(objective.updatedAt) : undefined,
-    objective.tokensUsed ? `${objective.tokensUsed.toLocaleString()} tok` : undefined,
-  ].filter(Boolean);
   const summary = compactStatusText(objective.summary ?? "", 92);
   const tone = toneForValue(displayStatus);
   return `<a class="block min-w-0 rounded-xl border px-3 py-2.5 transition ${selectedClass}" href="${href}">
@@ -794,6 +816,7 @@ const renderObjectiveLink = (model: FactoryNavModel, objective: FactoryChatObjec
       <div class="min-w-0 flex-1">
         <div class="text-sm font-semibold leading-5 text-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">${esc(objective.title)}</div>
         ${summary ? `<div class="mt-1 text-[11px] leading-4 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">${esc(summary)}</div>` : ""}
+        ${objective.tokensUsed ? renderObjectiveTokenCallout(objective.tokensUsed) : ""}
       </div>
     </div>
     <div class="mt-2 flex flex-wrap items-center justify-between gap-2">
@@ -803,7 +826,6 @@ const renderObjectiveLink = (model: FactoryNavModel, objective: FactoryChatObjec
           <span class="sr-only">${esc(displayLabel(displayStatus) || displayStatus)}</span>
         </span>
         ${objective.updatedAt ? `<span class="inline-flex items-center gap-1 whitespace-nowrap">${iconClock("h-3 w-3")} ${esc(formatTs(objective.updatedAt))}</span>` : ""}
-        ${objective.tokensUsed ? `<span class="inline-flex items-center gap-1 whitespace-nowrap">${iconTokens("h-3 w-3")} ${esc(`${objective.tokensUsed.toLocaleString()} tok`)}</span>` : ""}
       </div>
     </div>
   </a>`;
@@ -831,17 +853,16 @@ const renderSidebarMetricTile = (label: string, value: string, icon: string): st
 
 const renderSidebarMetrics = (obj?: FactorySelectedObjectiveCard): string => {
   if (!obj) return "";
-  const metricColumns = obj.tokensUsed ? "grid-cols-2" : "grid-cols-3";
   return `<section class="space-y-2">
     <div class="flex items-center justify-between gap-2">
       <div class="${sectionLabelClass}">Snapshot</div>
       <div class="text-[10px] text-muted-foreground">${esc(obj.slotState ?? "idle")}</div>
     </div>
-    <div class="grid ${metricColumns} gap-1.5">
+    ${obj.tokensUsed ? renderSidebarTokenHero(obj.tokensUsed) : ""}
+    <div class="grid grid-cols-3 gap-1.5">
       ${renderSidebarMetricTile("Active", String(obj.activeTaskCount ?? 0), iconRun("h-3.5 w-3.5"))}
       ${renderSidebarMetricTile("Ready", String(obj.readyTaskCount ?? 0), iconNext("h-3.5 w-3.5"))}
       ${renderSidebarMetricTile("Total", String(obj.taskCount ?? 0), iconTask("h-3.5 w-3.5"))}
-      ${obj.tokensUsed ? renderSidebarMetricTile("Tokens", obj.tokensUsed.toLocaleString(), iconTokens("h-3.5 w-3.5")) : ""}
     </div>
   </section>`;
 };

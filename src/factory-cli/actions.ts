@@ -2,7 +2,7 @@ import type { QueueJob } from "../adapters/jsonl-queue";
 import type { FactoryObjectiveMode, FactoryObjectivePolicy, FactoryObjectiveSeverity } from "../modules/factory";
 import { FactoryServiceError, type FactoryObjectiveDetail, type FactoryLiveProjection } from "../services/factory-service";
 import type { FactoryCliRuntime } from "./runtime";
-import { deriveObjectiveTitle } from "./composer";
+import { prepareObjectiveCreation } from "./composer";
 
 export type FactoryObjectiveMutationAction =
   | "create"
@@ -63,11 +63,15 @@ export const createObjectiveMutation = async (
     readonly profileId?: string;
   },
 ): Promise<FactoryObjectiveMutationResult> => {
-  const objective = await runtime.service.createObjective({
-    title: input.title ?? deriveObjectiveTitle(input.prompt),
-    prompt: input.prompt,
-    baseHash: input.baseHash,
+  const prepared = prepareObjectiveCreation(input.prompt, {
+    title: input.title,
     objectiveMode: input.objectiveMode,
+  });
+  const objective = await runtime.service.createObjective({
+    title: prepared.title,
+    prompt: prepared.prompt,
+    baseHash: input.baseHash,
+    objectiveMode: prepared.objectiveMode,
     severity: input.severity,
     checks: input.checks,
     channel: input.channel,
@@ -97,12 +101,18 @@ export const composeObjectiveMutation = async (
     readonly profileId?: string;
   },
 ): Promise<FactoryObjectiveMutationResult> => {
+  const prepared = input.objectiveId
+    ? undefined
+    : prepareObjectiveCreation(input.prompt, {
+        title: input.title,
+        objectiveMode: input.objectiveMode,
+      });
   const objective = await runtime.service.composeObjective({
-    prompt: input.prompt,
+    prompt: prepared?.prompt ?? input.prompt,
     objectiveId: input.objectiveId,
-    title: input.title ?? deriveObjectiveTitle(input.prompt),
+    title: prepared?.title ?? input.title,
     baseHash: input.baseHash,
-    objectiveMode: input.objectiveMode,
+    objectiveMode: prepared?.objectiveMode ?? input.objectiveMode,
     severity: input.severity,
     checks: input.checks,
     channel: input.channel,

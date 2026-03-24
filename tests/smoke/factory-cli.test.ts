@@ -942,6 +942,22 @@ test("factory cli: composer parser handles plain text and slash commands", () =>
   });
 });
 
+test("factory cli: composer parser marks diagnostic prompts as investigations and adds root-cause guidance", () => {
+  expect(parseComposerDraft("why is build failing")).toEqual({
+    ok: true,
+    command: {
+      type: "new",
+      prompt: [
+        "why is build failing",
+        "",
+        "Treat this as an investigation request. Determine the concrete root cause from evidence before proposing or applying fixes.",
+      ].join("\n"),
+      title: "Investigate: why is build failing",
+      objectiveMode: "investigation",
+    },
+  });
+});
+
 test("factory cli: composer parser rejects job commands without a selected objective", () => {
   expect(parseComposerDraft("/abort-job stop the current worker")).toEqual({
     ok: false,

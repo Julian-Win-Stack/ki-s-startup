@@ -57,7 +57,7 @@ import type {
   FactoryInspectorTabsModel,
 } from "../../views/factory-models";
 import type { QueueJob } from "../../adapters/jsonl-queue";
-import { deriveObjectiveTitle, parseComposerDraft } from "../../factory-cli/composer";
+import { parseComposerDraft, prepareObjectiveCreation } from "../../factory-cli/composer";
 import {
   listReceiptFiles,
   readReceiptFile,
@@ -1611,6 +1611,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
                 const created = await service.createObjective({
                   title: command.title ?? "Factory objective",
                   prompt: command.prompt,
+                  objectiveMode: command.objectiveMode,
                   profileId: resolved.root.id,
                   startImmediately: true,
                 });
@@ -1707,9 +1708,11 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           }
 
           if (!objectiveId) {
+            const prepared = prepareObjectiveCreation(prompt);
             const created = await service.createObjective({
-              title: deriveObjectiveTitle(prompt),
-              prompt,
+              title: prepared.title,
+              prompt: prepared.prompt,
+              objectiveMode: prepared.objectiveMode,
               profileId: resolved.root.id,
               startImmediately: true,
             });

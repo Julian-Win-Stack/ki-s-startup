@@ -13,7 +13,7 @@ import {
   requireActiveObjectiveJob,
 } from "./actions";
 import type { FactoryCliRuntime } from "./runtime";
-import { COMPOSER_COMMANDS, deriveObjectiveTitle, parseComposerDraft } from "./composer";
+import { COMPOSER_COMMANDS, parseComposerDraft } from "./composer";
 import { FactoryThemeProvider, InlineAlert, statusColor, terminalTheme, tone } from "./theme";
 import {
   BOARD_SECTION_META,
@@ -1062,7 +1062,8 @@ export const FactoryTerminalApp = ({
       await runAction("Creating objective", async () => {
         const created = await createObjectiveMutation(runtime, {
           prompt: command.prompt,
-          title: command.title ?? deriveObjectiveTitle(command.prompt),
+          title: command.title,
+          objectiveMode: command.objectiveMode,
           checks: runtime.config.defaultChecks,
           policy: runtime.config.defaultPolicy,
         });

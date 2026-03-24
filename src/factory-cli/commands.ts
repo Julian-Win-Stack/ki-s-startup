@@ -72,14 +72,6 @@ const asStrings = (flags: Flags, key: string): ReadonlyArray<string> => {
   return [];
 };
 
-const deriveTitle = (title: string | undefined, prompt: string): string => {
-  const provided = title?.trim();
-  if (provided) return provided;
-  const compact = prompt.replace(/\s+/g, " ").trim();
-  const firstSentence = compact.split(/[.!?]/)[0] ?? compact;
-  return firstSentence.slice(0, 96).trim() || "Factory objective";
-};
-
 const mergePolicy = (base: FactoryObjectivePolicy, override: FactoryObjectivePolicy | undefined): FactoryObjectivePolicy => {
   if (!override) return base;
   return {
@@ -758,7 +750,7 @@ export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<stri
         await runtime.start();
         const created = await createObjectiveMutation(runtime, {
           prompt,
-          title: deriveTitle(asString(flags, "title"), prompt),
+          title: asString(flags, "title"),
           baseHash: asString(flags, "base-hash"),
           objectiveMode,
           severity,
@@ -793,7 +785,7 @@ export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<stri
         );
         const result = await createObjectiveMutation(runtime, {
           prompt,
-          title: deriveTitle(asString(flags, "title"), prompt),
+          title: asString(flags, "title"),
           baseHash: asString(flags, "base-hash"),
           objectiveMode,
           severity,
@@ -816,7 +808,7 @@ export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<stri
         const result = await composeObjectiveMutation(runtime, {
           prompt,
           objectiveId: asString(flags, "objective"),
-          title: deriveTitle(asString(flags, "title"), prompt),
+          title: asString(flags, "title"),
           baseHash: asString(flags, "base-hash"),
           objectiveMode,
           severity,

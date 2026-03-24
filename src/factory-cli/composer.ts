@@ -6,6 +6,7 @@ export type ComposerCommand =
       readonly type: "new";
       readonly prompt: string;
       readonly title?: string;
+      readonly objectiveMode?: "delivery" | "investigation";
     }
   | {
       readonly type: "react";
@@ -85,11 +86,68 @@ const normalizeBody = (value: string): string =>
     .replace(/\r\n/g, "\n")
     .trim();
 
+const DIAGNOSTIC_INVESTIGATION_RE = /\b(investigate|investigation|debug|diagnose|diagnostic|root cause|triage|look into|find out|figure out|trace|explain why|what is causing|what's causing)\b/i;
+const FAILURE_TERMS_RE = /\b(fail|failing|failed|failure|broken|error|issue|problem|crash|hang|timeout|timed out|not working|regression|flake|flaky|build|test|tests|compile|compilation|lint|ci|deploy)\b/i;
+const EXPLICIT_DELIVERY_RE = /\b(fix|implement|add|update|change|refactor|remove|rename|support|ship|create|wire up)\b/i;
+
+const compactPrompt = (prompt: string): string =>
+  normalizeBody(prompt).replace(/\s+/g, " ").trim();
+
+const inferObjectiveMode = (prompt: string): "investigation" | undefined => {
+  const compact = compactPrompt(prompt).toLowerCase();
+  if (!compact) return undefined;
+  if (DIAGNOSTIC_INVESTIGATION_RE.test(compact)) return "investigation";
+  if (EXPLICIT_DELIVERY_RE.test(compact)) return undefined;
+  if (/^(why|what|how)\b/.test(compact) && FAILURE_TERMS_RE.test(compact)) return "investigation";
+  return undefined;
+};
+
+const rewriteInvestigationPrompt = (prompt: string): string => {
+  const normalized = normalizeBody(prompt);
+  if (!normalized) return normalized;
+  if (/determine the concrete root cause from evidence before proposing or applying fixes\./i.test(normalized)) {
+    return normalized;
+  }
+  return [
+    normalized,
+    "",
+    "Treat this as an investigation request. Determine the concrete root cause from evidence before proposing or applying fixes.",
+  ].join("\n");
+};
+
 export const deriveObjectiveTitle = (prompt: string): string => {
   const compact = prompt.replace(/\s+/g, " ").trim();
   if (!compact) return "Factory objective";
   const firstSentence = compact.split(/[.!?]/)[0] ?? compact;
   return firstSentence.slice(0, 96).trim() || "Factory objective";
+};
+
+export const prepareObjectiveCreation = (
+  prompt: string,
+  options?: {
+    readonly title?: string;
+    readonly objectiveMode?: "delivery" | "investigation";
+  },
+): {
+  readonly prompt: string;
+  readonly title: string;
+  readonly objectiveMode?: "delivery" | "investigation";
+} => {
+  const normalizedPrompt = normalizeBody(prompt);
+  const objectiveMode = options?.objectiveMode ?? inferObjectiveMode(normalizedPrompt);
+  const rewrittenPrompt = objectiveMode === "investigation"
+    ? rewriteInvestigationPrompt(normalizedPrompt)
+    : normalizedPrompt;
+  const compact = compactPrompt(normalizedPrompt);
+  const title = options?.title?.trim()
+    || (objectiveMode === "investigation"
+      ? deriveObjectiveTitle(/^(investigate|debug|diagnose|triage|trace)\b/i.test(compact) ? compact : `Investigate: ${compact}`)
+      : deriveObjectiveTitle(normalizedPrompt));
+  return {
+    prompt: rewrittenPrompt,
+    title,
+    ...(objectiveMode ? { objectiveMode } : {}),
+  };
 };
 
 export const parseComposerDraft = (draft: string, selectedObjectiveId?: string): ParsedComposerDraft => {
@@ -102,6 +160,7 @@ export const parseComposerDraft = (draft: string, selectedObjectiveId?: string):
   }
 
   if (!body.startsWith("/")) {
+    const prepared = prepareObjectiveCreation(body);
     if (selectedObjectiveId) {
       return {
         ok: true,
@@ -115,8 +174,9 @@ export const parseComposerDraft = (draft: string, selectedObjectiveId?: string):
       ok: true,
       command: {
         type: "new",
-        prompt: body,
-        title: deriveObjectiveTitle(body),
+        prompt: prepared.prompt,
+        title: prepared.title,
+        objectiveMode: prepared.objectiveMode,
       },
     };
   }
@@ -144,14 +204,18 @@ export const parseComposerDraft = (draft: string, selectedObjectiveId?: string):
       if (!payload) {
         return { ok: false, error: "Use /new followed by an objective prompt." };
       }
-      return {
-        ok: true,
-        command: {
-          type: "new",
-          prompt: payload,
-          title: deriveObjectiveTitle(payload),
-        },
-      };
+      {
+        const prepared = prepareObjectiveCreation(payload);
+        return {
+          ok: true,
+          command: {
+            type: "new",
+            prompt: prepared.prompt,
+            title: prepared.title,
+            objectiveMode: prepared.objectiveMode,
+          },
+        };
+      }
     case "react":
       if (!selectedObjectiveId) {
         return { ok: false, error: "Select an objective before reacting to it." };

@@ -1356,9 +1356,10 @@ test("factory sidebar island: objective cards and selected metrics show token to
     jobs: [],
   }, selectedObjective);
 
-  expect(markup).toContain("12,345 tok");
-  expect(markup).toContain("Tokens");
+  expect(markup).not.toContain("12,345 tok");
+  expect(markup).toContain("Token Usage");
   expect(markup).toContain("12,345");
+  expect(markup).toContain("Codex tokens recorded for this thread");
 });
 
 test("factory chat shell: sidebar and inspector avoid agent-refresh churn", () => {
@@ -1495,7 +1496,8 @@ test("factory chat shell: sidebar and inspector avoid agent-refresh churn", () =
   expect(markup).toMatch(/id="factory-composer-completions"[^>]+role="listbox"/);
   expect(markup).toMatch(/id="factory-composer-submit"[^>]+min-h-\[88px\]/);
   expect(markup).toContain("Objective blocked");
-  expect(markup).toContain("321 tokens");
+  expect(markup).toContain("Codex Token Usage");
+  expect(markup).toContain("Rolled up from recorded candidate executions");
   expect(markup).toContain("Run completed");
   expect(markup).toContain("Tasks");
   expect(markup).toContain("Validate cost-driver inventory");
@@ -2437,6 +2439,41 @@ test("factory route: composer accepts UI chat submissions and redirects into que
     objectiveId: "objective_created",
     problem: "Check the repo and tell me what happens next.",
   });
+});
+
+test("factory route: software diagnostic prompts create investigation objectives", async () => {
+  let createdInput: Record<string, unknown> | undefined;
+  const app = createRouteTestApp({
+    service: {
+      createObjective: async (input: Record<string, unknown>) => {
+        createdInput = input;
+        return makeStubObjectiveDetail("objective_diag", "job_diag");
+      },
+    },
+  });
+
+  const response = await app.request("http://receipt.test/factory/compose?profile=software&chat=chat_software", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      prompt: "why is build failing",
+    }).toString(),
+  });
+
+  expect(response.status).toBe(303);
+  expect(createdInput).toMatchObject({
+    title: "Investigate: why is build failing",
+    objectiveMode: "investigation",
+    profileId: "software",
+    startImmediately: true,
+  });
+  expect(createdInput?.prompt).toBe([
+    "why is build failing",
+    "",
+    "Treat this as an investigation request. Determine the concrete root cause from evidence before proposing or applying fixes.",
+  ].join("\n"));
 });
 
 test("factory route: follow-up composer submissions stop pinning the URL to a completed thread", async () => {

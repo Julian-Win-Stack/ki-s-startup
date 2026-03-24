@@ -33,6 +33,19 @@ const formatBytes = (bytes: number | undefined): string => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+const renderTokenUsageHero = (tokensUsed: number): string => `<div class="rounded-2xl border border-info/25 bg-info/10 px-4 py-3">
+  <div class="flex items-start justify-between gap-3">
+    <div class="min-w-0">
+      <div class="text-[10px] font-semibold uppercase tracking-[0.18em] text-info">Codex Token Usage</div>
+      <div class="mt-2 text-2xl font-semibold leading-none tracking-tight text-foreground">${esc(tokensUsed.toLocaleString())}</div>
+      <div class="mt-2 text-[11px] text-muted-foreground">Rolled up from recorded candidate executions</div>
+    </div>
+    <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-info/20 bg-background/70 text-info">
+      ${iconTokens("h-5 w-5")}
+    </span>
+  </div>
+</div>`;
+
 type FactoryInspectorIslandOptions = {
   readonly tabsPath?: string;
   readonly panelPath?: string;
@@ -221,13 +234,14 @@ const renderOverviewPanel = (model: FactoryInspectorModel): string => {
       ${esc(obj.summary)}
     </div>` : ''}
 
+    ${obj.tokensUsed ? renderTokenUsageHero(obj.tokensUsed) : ''}
+
     <div class="grid grid-cols-2 gap-3">
       ${statPill("Slot State", obj.slotState + (obj.queuePosition ? ` (q${obj.queuePosition})` : ''), { icon: iconStatus("h-3.5 w-3.5") })}
       ${statPill("Tasks", `${obj.activeTaskCount ?? 0} active / ${obj.readyTaskCount ?? 0} ready / ${obj.taskCount ?? 0} total`, { icon: iconTask("h-3.5 w-3.5") })}
       ${statPill("Head Commit", shortHash(obj.latestCommitHash) || "None", { icon: iconCommit("h-3.5 w-3.5") })}
       ${statPill("Pull Request", obj.prNumber ? `#${obj.prNumber}` : obj.prUrl ? "Opened" : "None", { icon: iconPullRequest("h-3.5 w-3.5") })}
       ${statPill("Checks", obj.checks?.length ? `${obj.checks.length} checks` : "None", { icon: iconCheckCircle("h-3.5 w-3.5") })}
-      ${obj.tokensUsed ? statPill("Codex Tokens", obj.tokensUsed.toLocaleString(), { icon: iconTokens("h-3.5 w-3.5") }) : ''}
     </div>
 
     ${obj.prUrl ? `
