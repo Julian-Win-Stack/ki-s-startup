@@ -5401,6 +5401,7 @@ export class FactoryService {
         ? `Interpret command and script outputs in plain language. Do not just paste logs.`
         : `Capture implementation and validation results precisely in the handoff.`,
       `Make a short internal plan before the first tool: name the concrete question, the primary evidence path, the stop condition, and the one follow-up check that would change your answer.`,
+      `Runtime compatibility: emit at most one tool call in each response, then wait for that tool result before issuing the next call. If you need several nearby packet or repo reads, combine them into one shell command instead of batching separate tool calls.`,
       `Use Codex subagents only for bounded sidecar work such as parsing a captured artifact, checking one secondary evidence path, or verifying a concrete claim.`,
       `Keep this task session as the single owner of the final JSON result. Any delegated ask must restate the objective ID, task ID, candidate ID, and exact artifact or question it owns.`,
       `Do not fan out broad parallel exploration when one primary evidence path is already producing enough signal to finish the task.`,

@@ -693,6 +693,8 @@ test("factory investigation: infrastructure task prompts require helper-first AW
   expect(prompt).toContain("Record the helper runner command in report.scriptsRun");
   expect(prompt).toContain("prefer the checked-in `aws_account_scope` and `aws_region_scope` helpers");
   expect(prompt).toContain("Make a short internal plan before the first tool");
+  expect(prompt).toContain("Runtime compatibility: emit at most one tool call in each response, then wait for that tool result before issuing the next call.");
+  expect(prompt).toContain("If you need several nearby packet or repo reads, combine them into one shell command instead of batching separate tool calls.");
   expect(prompt).toContain("Use Codex subagents only for bounded sidecar work");
   expect(prompt).toContain("Keep this task session as the single owner of the final JSON result.");
   expect(prompt).toContain("Any delegated ask must restate the objective ID, task ID, candidate ID, and exact artifact or question it owns.");
