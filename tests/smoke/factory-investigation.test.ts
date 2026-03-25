@@ -691,6 +691,8 @@ test("factory investigation: infrastructure task prompts require helper-first AW
   expect(prompt).toContain("Only rerun a helper or switch helpers to fix a concrete scope, auth, parsing, or redaction issue.");
   expect(prompt).toContain("Treat successful helper JSON output as sufficient machine-readable evidence");
   expect(prompt).toContain("Record the helper runner command in report.scriptsRun");
+  expect(prompt).toContain("create or extend a checked-in helper in the repo");
+  expect(prompt).toContain("use the mounted helper authoring skill to add or extend a checked-in helper");
   expect(prompt).toContain("prefer the checked-in `aws_account_scope` and `aws_region_scope` helpers");
   expect(prompt).toContain("Make a short internal plan before the first tool");
   expect(prompt).toContain("Runtime compatibility: emit at most one tool call in each response, then wait for that tool result before issuing the next call.");
@@ -705,9 +707,9 @@ test("factory investigation: infrastructure task prompts require helper-first AW
   expect(prompt).toContain("do not blindly loop raw `aws ec2 describe-regions --all-regions` output");
   expect(prompt).toContain("run the checked-in `aws_region_scope` helper first");
   expect(prompt).toContain("Treat `not-opted-in` regions as skipped scope, not as a global credential failure");
-  expect(payload.executionMode).toBe("isolated");
-  expect(payload.workspacePath).toContain("/factory/runtimes/");
-  expect(prompt).toContain("This task runs in an isolated runtime directory, not a git worktree.");
+  expect(payload.executionMode).toBe("worktree");
+  expect(payload.workspacePath).toContain("/hub/worktrees/");
+  expect(prompt).toContain("from inside this task worktree. The packet already mounts recent objective receipts and state");
   expect(prompt).toContain("Do not emit commentary-style progress updates in this child session.");
   expect(prompt).toContain("Never print or persist raw secret, token, password, API key, or credential values in stdout, stderr, artifacts, or the final JSON.");
   expect(prompt).toContain("Do not load unrelated global skills from ~/.codex");
@@ -722,11 +724,6 @@ test("factory investigation: infrastructure task prompts require helper-first AW
   expect(manifest.profile?.selectedSkills ?? []).toContain("skills/factory-aws-cli-cookbook/SKILL.md");
   expect(manifest.profile?.selectedSkills ?? []).toContain("skills/factory-infrastructure-aws/SKILL.md");
   expect(manifest.profile?.selectedSkills ?? []).not.toContain("skills/factory-run-orchestrator/SKILL.md");
-  await expect(fs.access(path.join(payload.workspacePath, "skills", "factory-receipt-worker", "SKILL.md"))).resolves.toBeNull();
-  await expect(fs.access(path.join(payload.workspacePath, "skills", "factory-helper-runtime", "SKILL.md"))).resolves.toBeNull();
-  await expect(fs.access(path.join(payload.workspacePath, "skills", "factory-helper-authoring", "SKILL.md"))).resolves.toBeNull();
-  await expect(fs.access(path.join(payload.workspacePath, "skills", "factory-aws-cli-cookbook", "SKILL.md"))).resolves.toBeNull();
-  await expect(fs.access(path.join(payload.workspacePath, "skills", "factory-infrastructure-aws", "SKILL.md"))).resolves.toBeNull();
 }, 120_000);
 
 test("factory investigation: infrastructure task packets mount selected checked-in helpers for matching AWS prompts", async () => {
@@ -816,6 +813,81 @@ test("factory investigation: infrastructure task packets mount selected checked-
   expect(prompt).toContain("aws_resource_inventory");
 }, 120_000);
 
+test("factory investigation: IAM user count prompts select the checked-in IAM helper", async () => {
+  const awsContext: FactoryCloudExecutionContext = {
+    summary: "AWS CLI is available via profile default; active identity arn:aws:iam::445567089271:user/csagent-api-service in account 445567089271 with region us-west-2.",
+    availableProviders: ["aws"],
+    activeProviders: ["aws"],
+    preferredProvider: "aws",
+    guidance: ["One provider is clearly usable from the local CLI context (aws). Use it by default instead of asking the user to restate provider or scope."],
+    aws: {
+      cliPath: "/opt/homebrew/bin/aws",
+      version: "aws-cli/2.34.14",
+      profiles: ["default"],
+      selectedProfile: "default",
+      defaultRegion: "us-west-2",
+      callerIdentity: {
+        accountId: "445567089271",
+        arn: "arn:aws:iam::445567089271:user/csagent-api-service",
+        userId: "AIDATEST",
+      },
+    },
+  };
+  const { service, queue } = await createFactoryService({
+    codexRun: async () => {
+      const raw = JSON.stringify({
+        outcome: "approved",
+        summary: "IAM helper was selected.",
+        artifacts: [],
+        nextAction: null,
+        report: {
+          conclusion: "The task packet mounted the IAM user helper for the count prompt.",
+          evidence: [],
+          scriptsRun: [],
+          disagreements: [],
+          nextSteps: [],
+        },
+      });
+      return { stdout: raw, stderr: "", lastMessage: raw };
+    },
+    cloudExecutionContextProvider: async () => awsContext,
+  });
+
+  const objective = await service.createObjective({
+    title: "Count IAM users",
+    prompt: "how many iam users do i have",
+    objectiveMode: "investigation",
+    severity: 2,
+    checks: ["true"],
+    profileId: "infrastructure",
+  });
+  await runObjectiveStartup(service, objective.objectiveId);
+
+  const [job] = await objectiveTaskJobs(queue, objective.objectiveId);
+  expect(job).toBeTruthy();
+  const payload = job!.payload as FactoryTaskJobPayload;
+  const contextPack = JSON.parse(await fs.readFile(payload.contextPackPath, "utf-8")) as {
+    readonly helperCatalog?: {
+      readonly selectedHelpers?: ReadonlyArray<{
+        readonly id?: string;
+        readonly requiredContext?: ReadonlyArray<string>;
+      }>;
+    };
+  };
+
+  expect(contextPack.helperCatalog?.selectedHelpers?.some((helper) => helper.id === "aws_iam_user_inventory")).toBe(true);
+  expect(contextPack.helperCatalog?.selectedHelpers?.some((helper) =>
+    helper.id === "aws_iam_user_inventory"
+    && helper.requiredContext?.some((item) => item.includes("account-global"))
+  )).toBe(true);
+
+  await service.runTask(payload);
+  const prompt = await fs.readFile(payload.promptPath, "utf-8");
+  expect(prompt).toContain("Selected helpers for this scope:");
+  expect(prompt).toContain("aws_iam_user_inventory");
+  expect(prompt).toContain("--profile default");
+}, 120_000);
+
 test("factory investigation: resource-specific helper prompts tell Codex to use real identifiers instead of placeholders", async () => {
   const awsContext: FactoryCloudExecutionContext = {
     summary: "AWS CLI is available via profile default; active identity arn:aws:iam::445567089271:user/test in account 445567089271 with region us-west-2.",
@@ -866,7 +938,7 @@ test("factory investigation: resource-specific helper prompts tell Codex to use 
   expect(prompt).toContain("--service s3 --check public-access --resource-id my-bucket");
 }, 120_000);
 
-test("factory investigation: infrastructure objectives can start from a dirty source repo without an explicit baseHash", async () => {
+test("factory investigation: infrastructure objectives can start from a dirty source repo with an explicit baseHash", async () => {
   const { service, queue, repoRoot } = await createFactoryService({
     codexRun: async () => {
       const raw = JSON.stringify({
@@ -887,15 +959,17 @@ test("factory investigation: infrastructure objectives can start from a dirty so
   });
 
   await fs.writeFile(path.join(repoRoot, "DIRTY_NOTE.txt"), "local change\n", "utf-8");
+  const baseHash = await git(repoRoot, ["rev-parse", "HEAD"]);
 
   const created = await service.createObjective({
     title: "Dirty repo infra objective",
     prompt: "Count buckets in the mounted AWS account.",
     profileId: "infrastructure",
+    baseHash,
   });
 
   expect(created.baseHash).toBeTruthy();
   await runObjectiveStartup(service, created.objectiveId);
   const [taskJob] = await objectiveTaskJobs(queue, created.objectiveId);
-  expect((taskJob?.payload as FactoryTaskJobPayload | undefined)?.executionMode).toBe("isolated");
+  expect((taskJob?.payload as FactoryTaskJobPayload | undefined)?.executionMode).toBe("worktree");
 });

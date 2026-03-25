@@ -28,4 +28,5 @@ Use this skill when a needed helper does not exist yet or when an existing check
 
 - Do not tell a worker to invent a `.receipt/factory/*.sh` script.
 - Name the missing helper directly.
+- In repo-writing work, create the checked-in helper immediately when the missing behavior and CLI contract are clear enough to implement safely.
 - Add it under the checked-in catalog so later investigations can rerun it.

@@ -5398,7 +5398,7 @@ export class FactoryService {
         ? `This objective is investigation-first. Plan before you run commands. If the task prompt is broad, first narrow it to one concrete investigation question, one primary evidence path, and one stop condition. Use checked-in helpers first instead of writing a task-local script.`
         : `This objective is delivery-oriented. Prefer tracked repo changes and keep investigation folded into the implementation task.`,
       state.objectiveMode === "investigation"
-        ? `A tracked diff is optional. If no checked-in helper matches, stop with a no-matching-helper outcome and name the helper that should be authored next.`
+        ? `A tracked diff is optional when an existing helper answers the task. If no checked-in helper matches and the missing behavior is clear, create or extend a checked-in helper in the repo, run it, and keep the helper in the task diff. Only stop when the helper contract is too ambiguous or repo edits are explicitly out of scope.`
         : `A non-validation task is expected to leave a tracked repo diff unless you are hard blocked.`,
       state.objectiveMode === "investigation"
         ? `Interpret command and script outputs in plain language. Do not just paste logs.`
@@ -5411,6 +5411,7 @@ export class FactoryService {
       cloudExecutionContext.preferredProvider
         ? `Local execution context already indicates ${cloudExecutionContext.preferredProvider}. Use that provider and its mounted scope by default unless the objective explicitly contradicts it.`
         : `If the local execution context clearly indicates one provider/profile/account, use it instead of asking the user to restate it.`,
+      `If the helper catalog misses the required behavior and this run may edit the repo, use the mounted helper authoring skill to add or extend a checked-in helper instead of stopping at a no-helper report.`,
       `Do not emit commentary-style progress updates in this child session. Prefer the checked-in helper catalog when repeated CLI steps or evidence collection would otherwise be lossy.`,
       `Never print or persist raw secret, token, password, API key, or credential values in stdout, stderr, artifacts, or the final JSON. Report presence, source, and impact, but redact the value itself.`,
       ``,

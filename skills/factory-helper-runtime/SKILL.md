@@ -49,7 +49,8 @@ Result fields:
 ## Rules
 
 - Prefer a checked-in helper over a new `.receipt/factory/*.sh` script.
-- If no helper matches closely enough, stop and return a structured no-matching-helper outcome. Name the helper that should be authored next.
+- If no helper matches closely enough and repo edits are allowed, author or extend a checked-in helper under `skills/factory-helper-runtime/catalog/` instead of stopping at a no-helper report.
+- If repo edits are out of scope for the current run, return the missing helper name and route the work back to a repo-writing Factory task. Do not invent a task-local `.receipt/factory/*.sh` script.
 - Keep helper runs Unix-style: explicit CLI args in, structured JSON out.
 - Record helper runner invocations in `report.scriptsRun`.
 - Do not persist raw secrets, tokens, keys, or passwords in helper output, artifacts, or summaries.

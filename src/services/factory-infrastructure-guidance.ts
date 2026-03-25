@@ -54,10 +54,11 @@ export const renderInfrastructureTaskExecutionGuidance = (input: {
     `Use one primary evidence path. Only widen the investigation to a second AWS service when the first path is empty, contradictory, or permission-blocked.`,
     `If the helper succeeds and gives enough evidence to answer the task, stop immediately and return the final JSON result. Do not spend extra turns reformatting already-valid AWS CLI JSON, re-checking git status, or doing optional follow-up probes.`,
     `Only rerun a helper or switch helpers to fix a concrete scope, auth, parsing, or redaction issue. Do not keep iterating once you already have a valid finding.`,
+    `If the helper catalog misses the required behavior and the contract is clear enough, use the mounted helper authoring skill to add or extend a checked-in helper under \`skills/factory-helper-runtime/catalog/\`, then run it instead of stopping at a no-helper result.`,
     `Never print or persist raw secret, token, password, API key, or credential values in stdout, stderr, artifacts, or the final JSON. Report presence, source, and impact, but redact the value itself.`,
     `Treat successful helper JSON output as sufficient machine-readable evidence unless the task explicitly asks for a different format.`,
     `Record the helper runner command in report.scriptsRun so the operator can rerun the exact evidence path.`,
-    `If no checked-in helper matches the ask, stop and return a structured no-matching-helper outcome instead of inventing a new .receipt/factory script.`,
+    `If no checked-in helper matches the ask, create or extend a checked-in helper when the missing behavior is clear. Only stop when the helper contract is still ambiguous or repo edits are explicitly out of scope. Do not invent a new .receipt/factory script.`,
     ...(provider === "aws"
       ? [
           `For AWS tasks, prefer the checked-in \`aws_account_scope\` and \`aws_region_scope\` helpers when account or region scope is part of the evidence path.`,

@@ -43,9 +43,15 @@ test("factory helper runtime skills: document helper-first execution and ship se
     readonly id?: string;
     readonly tags?: ReadonlyArray<string>;
   };
+  const iamUserManifest = JSON.parse(await fs.readFile(new URL("../../skills/factory-helper-runtime/catalog/infrastructure/aws_iam_user_inventory/manifest.json", import.meta.url), "utf-8")) as {
+    readonly id?: string;
+    readonly tags?: ReadonlyArray<string>;
+    readonly description?: string;
+  };
   const skill = await fs.readFile(new URL("../../skills/factory-infrastructure-aws/SKILL.md", import.meta.url), "utf-8");
 
   expect(runtimeSkill).toContain("Prefer a checked-in helper over a new `.receipt/factory/*.sh` script.");
+  expect(runtimeSkill).toContain("author or extend a checked-in helper");
   expect(runtimeSkill).toContain("python3 skills/factory-helper-runtime/runner.py run --provider aws --json aws_account_scope");
   expect(authoringSkill).toContain("catalog/<domain>/<helper_id>/");
   expect(authoringSkill).toContain("Emit the canonical result envelope");
@@ -57,6 +63,9 @@ test("factory helper runtime skills: document helper-first execution and ship se
   expect(accountManifest.entrypoint).toBe("run.py");
   expect(inventoryManifest.id).toBe("aws_resource_inventory");
   expect(inventoryManifest.tags).toContain("buckets");
+  expect(iamUserManifest.id).toBe("aws_iam_user_inventory");
+  expect(iamUserManifest.tags).toContain("users");
+  expect(iamUserManifest.description).toContain("IAM users");
   expect(skill).toContain("cloudExecutionContext.aws.ec2RegionScope");
   expect(skill).toContain("checked-in helper catalog");
   expect(skill).toContain("Skip `not-opted-in` regions");

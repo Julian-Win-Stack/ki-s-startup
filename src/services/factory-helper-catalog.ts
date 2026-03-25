@@ -270,7 +270,7 @@ export const loadFactoryHelperContext = async (input: {
     runnerPath: path.join(input.profileRoot, FACTORY_HELPER_RUNNER_RELATIVE_PATH),
     guidance: [
       "Use checked-in helpers first for AWS investigations instead of generating a task-local script.",
-      "If no helper matches the ask closely enough, stop and return a structured no-matching-helper outcome plus the helper you would author next.",
+      "If no helper matches the ask closely enough, author or extend a checked-in helper when the missing behavior is clear instead of stopping at a no-helper report.",
       "For live cloud/account/runtime questions, rerun the matching helper and treat stored helper metadata as a starting point, not as fresh evidence.",
       "Helper manifests list required args, required context, and example invocations so the current packet can expose what each helper needs before you decide whether to use it.",
     ],
@@ -288,7 +288,9 @@ export const renderFactoryHelperPromptSection = (
     ...context.guidance.map((item) => `- ${item}`),
   ];
   if (context.selectedHelpers.length === 0) {
-    lines.push("- No checked-in helper matched this task. Do not invent a runtime-local `.receipt/factory/*.sh` script. Return a structured no-matching-helper outcome and name the missing helper to author.");
+    lines.push("- No checked-in helper matched this task. Do not invent a runtime-local `.receipt/factory/*.sh` script.");
+    lines.push("- If the missing behavior is clear and the current run may edit the repo, author or extend a checked-in helper under `skills/factory-helper-runtime/catalog/` and use it.");
+    lines.push("- If repo edits are out of scope for this run, return the missing helper name plus the missing scope or arguments instead of pretending the helper exists.");
   } else {
     lines.push("Selected helpers for this scope:");
     for (const helper of context.selectedHelpers) {
