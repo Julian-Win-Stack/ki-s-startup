@@ -223,6 +223,45 @@ test("local codex executor extracts tokens used from stdout", async () => {
   expect(result.tokensUsed).toBe(1234);
 });
 
+test("local codex executor extracts tokens used from stderr", async () => {
+  const root = await mkTmp("receipt-codex-executor-stderr-tokens-workspace");
+  const scriptPath = path.join(root, "codex-stderr-tokens-stub");
+  const body = [
+    "#!/usr/bin/env bun",
+    "const fs = require('node:fs');",
+    "const args = process.argv.slice(2);",
+    "const lastMessagePath = args[args.indexOf('--output-last-message') + 1];",
+    "fs.writeFileSync(lastMessagePath, 'done', 'utf8');",
+    "process.stderr.write('progress\\ntokens used\\n9,876\\nfinal stderr');",
+  ].join("\n");
+  await fs.writeFile(scriptPath, body, "utf-8");
+  await fs.chmod(scriptPath, 0o755);
+
+  const artifactDir = path.join(root, ".receipt", "factory");
+  const promptPath = path.join(artifactDir, "task.prompt.md");
+  const lastMessagePath = path.join(artifactDir, "task.last-message.md");
+  const stdoutPath = path.join(artifactDir, "task.stdout.log");
+  const stderrPath = path.join(artifactDir, "task.stderr.log");
+  const executor = new LocalCodexExecutor({
+    bin: scriptPath,
+    timeoutMs: 60_000,
+  });
+
+  const result = await executor.run({
+    prompt: "# Task\n",
+    workspacePath: root,
+    promptPath,
+    lastMessagePath,
+    stdoutPath,
+    stderrPath,
+    sandboxMode: "workspace-write",
+    mutationPolicy: "workspace_edit",
+  });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.tokensUsed).toBe(9876);
+});
+
 test("local codex executor completes once a structured last message exists and output goes quiet", async () => {
   const root = await mkTmp("receipt-codex-executor-last-message-workspace");
   const stub = await createLastMessageHungCodexStub();

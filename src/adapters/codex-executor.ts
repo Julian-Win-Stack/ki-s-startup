@@ -162,6 +162,16 @@ const closeStream = (stream: fs.WriteStream): Promise<void> =>
     stream.end(() => resolve());
   });
 
+const extractTokensUsed = (...streams: ReadonlyArray<string>): number | undefined => {
+  for (const stream of streams) {
+    const match = stream.match(/tokens used\s*\n([\d,]+)/i);
+    if (!match?.[1]) continue;
+    const parsed = parseInt(match[1].replace(/,/g, ""), 10);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return undefined;
+};
+
 export class LocalCodexExecutor implements CodexExecutor {
   private readonly bin: string;
   private readonly timeoutMs: number;
@@ -326,19 +336,13 @@ export class LocalCodexExecutor implements CodexExecutor {
           try {
             await Promise.all([closeStream(stdoutFile), closeStream(stderrFile)]);
             const lastMessage = await fsp.readFile(input.lastMessagePath, "utf-8").catch(() => "");
-            const match = stdout.match(/tokens used\s*\n([\d,]+)/i);
-            let tokensUsed: number | undefined;
-            if (match && match[1]) {
-              tokensUsed = parseInt(match[1].replace(/,/g, ""), 10);
-              if (isNaN(tokensUsed)) tokensUsed = undefined;
-            }
             resolve({
               exitCode: completionTriggered ? 0 : timedOut ? 124 : code,
               signal: completionTriggered ? null : signal,
               stdout,
               stderr,
               lastMessage: lastMessage.trim() || undefined,
-              tokensUsed,
+              tokensUsed: extractTokensUsed(stdout, stderr),
             });
           } catch (err) {
             reject(err);

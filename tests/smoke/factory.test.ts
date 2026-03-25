@@ -1068,6 +1068,7 @@ test("factory chat island: folds live execution into compact thread sections", (
       status: "running",
       summary: "Listing S3 buckets from the mounted AWS account.",
       latestNote: "Running the deterministic bucket inventory script.",
+      tokensUsed: 4321,
       stdoutTail: "{\"count\":5}",
       stderrTail: "",
       task: "Inventory S3 buckets and report the authoritative bucket count",
@@ -1084,6 +1085,30 @@ test("factory chat island: folds live execution into compact thread sections", (
   expect(markup).toContain("Next");
   expect(markup).toContain("Status");
   expect(markup).not.toContain("Stdout");
+});
+
+test("factory chat island: live codex cards show recorded token usage", () => {
+  const markup = factoryChatIsland({
+    activeProfileId: "infrastructure",
+    activeProfileLabel: "Infrastructure",
+    activeCodex: {
+      jobId: "job_codex_live",
+      status: "running",
+      summary: "Listing S3 buckets from the mounted AWS account.",
+      latestNote: "Running the deterministic bucket inventory script.",
+      tokensUsed: 4321,
+      stdoutTail: "{\"count\":5}",
+      stderrTail: "",
+      task: "Inventory S3 buckets and report the authoritative bucket count",
+      updatedAt: 1_710_000_000_000,
+      rawLink: "/jobs/job_codex_live",
+      running: true,
+    },
+    items: [],
+  });
+
+  expect(markup).toContain("Active Codex");
+  expect(markup).toContain("4,321 tokens");
 });
 
 test("factory chat items: budget stops show the codex child state instead of a stale generic stop message", () => {

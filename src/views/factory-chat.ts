@@ -486,7 +486,7 @@ const renderWorkGroup = (
 
 const renderLiveExecutionCard = (
   title: string,
-  card: Pick<FactoryLiveCodexCard, "jobId" | "status" | "summary" | "latestNote" | "task" | "updatedAt" | "rawLink">,
+  card: Pick<FactoryLiveCodexCard, "jobId" | "status" | "summary" | "latestNote" | "task" | "tokensUsed" | "updatedAt" | "rawLink">,
 ): string => {
   const note = compactStatusText(card.latestNote ?? card.summary, 220) || card.summary;
   return `<section class="${softPanelClass} px-4 py-3">
@@ -501,12 +501,17 @@ const renderLiveExecutionCard = (
       </div>
       <a class="shrink-0 text-[11px] font-medium text-primary transition hover:text-primary/80" href="${esc(card.rawLink)}">Inspect</a>
     </div>
-    ${card.updatedAt ? `<div class="mt-2 text-[11px] text-muted-foreground">${esc(formatTs(card.updatedAt))}</div>` : ""}
+    ${(card.updatedAt || card.tokensUsed)
+      ? `<div class="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+        ${card.updatedAt ? `<span>${esc(formatTs(card.updatedAt))}</span>` : ""}
+        ${card.tokensUsed ? shellPill(`${card.tokensUsed.toLocaleString()} tokens`, "info", iconTokens("h-3 w-3")) : ""}
+      </div>`
+      : ""}
   </section>`;
 };
 
 const renderLiveCodexExecution = (model: FactoryChatIslandModel): string => {
-  const codexCards: Array<Pick<FactoryLiveCodexCard, "jobId" | "status" | "summary" | "latestNote" | "task" | "updatedAt" | "rawLink">> = [];
+  const codexCards: Array<Pick<FactoryLiveCodexCard, "jobId" | "status" | "summary" | "latestNote" | "task" | "tokensUsed" | "updatedAt" | "rawLink">> = [];
   if (model.activeCodex) codexCards.push(model.activeCodex);
   const childCodex = (model.liveChildren ?? [])
     .filter((child) => child.worker === "codex" || child.agentId === "codex")

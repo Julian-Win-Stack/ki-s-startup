@@ -3003,6 +3003,7 @@ test("factory chat runner: direct codex probes run read-only and materialize a p
           stdout: "Scanned files\n",
           stderr: "",
           lastMessage: "Read-only inspection complete.",
+          tokensUsed: 4321,
         };
       },
     },
@@ -3010,11 +3011,13 @@ test("factory chat runner: direct codex probes run read-only and materialize a p
 
   expect(result.status).toBe("completed");
   expect(result.readOnly).toBe(true);
+  expect(result.tokensUsed).toBe(4321);
   expect(captured[0]?.sandboxMode).toBe("read-only");
   expect(captured[0]?.mutationPolicy).toBe("read_only_probe");
   expect(String(captured[0]?.prompt ?? "")).toContain("READ ONLY");
   await expect(fs.readFile(path.join(dataDir, "factory-chat", "codex", "job_direct_packet", "manifest.json"), "utf-8")).resolves.toContain("factory.codex.probe");
   await expect(fs.readFile(path.join(dataDir, "factory-chat", "codex", "job_direct_packet", "result.json"), "utf-8")).resolves.toContain("\"readOnly\": true");
+  await expect(fs.readFile(path.join(dataDir, "factory-chat", "codex", "job_direct_packet", "result.json"), "utf-8")).resolves.toContain("\"tokensUsed\": 4321");
 });
 
 test("factory chat runner: direct codex probes ignore pre-existing repo dirtiness when the probe stays read-only", async () => {

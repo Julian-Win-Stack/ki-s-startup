@@ -68,6 +68,7 @@ export type FactoryLiveCodexCard = {
   readonly status: string;
   readonly summary: string;
   readonly latestNote?: string;
+  readonly tokensUsed?: number;
   readonly stderrTail?: string;
   readonly stdoutTail?: string;
   readonly runId?: string;
@@ -85,6 +86,7 @@ export type FactoryLiveChildCard = {
   readonly status: string;
   readonly summary: string;
   readonly latestNote?: string;
+  readonly tokensUsed?: number;
   readonly stderrTail?: string;
   readonly stdoutTail?: string;
   readonly runId?: string;
