@@ -1,6 +1,11 @@
-node_modules
-.receipt
-dist
 .git
-.gitignore
+.DS_Store
+.receipt
+node_modules
+dist
+coverage
+video/node_modules
+video/dist
+tmp
 *.log
+.gitignore

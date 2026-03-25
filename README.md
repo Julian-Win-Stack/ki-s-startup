@@ -120,6 +120,31 @@ bun run dev
 bun run test:smoke
 ```
 
+## Docker + Resonate
+
+The repo now includes a single-container Docker setup that runs:
+
+- the Receipt server
+- an embedded Resonate server with SQLite persistence
+- the `resonate` CLI
+- the `codex` CLI used by Factory task workers
+
+Start it with:
+
+```bash
+LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) docker compose up --build
+```
+
+The container mounts the repo into `/workspace/receipt`, stores Resonate state at `.receipt/resonate/resonate.db`, and exposes:
+
+- `http://localhost:8787` for Receipt
+- `http://localhost:8001` for Resonate HTTP
+- `http://localhost:9090/metrics` for Resonate metrics
+
+The compose file also mounts `${HOME}/.codex` into the container so `codex exec` can authenticate and launch worker runs.
+
+For Linux hosts, the compose service sets `seccomp=unconfined` and `apparmor=unconfined` so Codex can install its own nested Landlock/seccomp sandbox inside the container. If you remove those, `codex exec --sandbox read-only|workspace-write` may fail inside Docker.
+
 The canonical source entrypoints in this repo are `bun src/cli.ts` and `bun --watch src/server.ts`.
 
 The server auto-loads route modules from `src/agents/*.agent.ts`.

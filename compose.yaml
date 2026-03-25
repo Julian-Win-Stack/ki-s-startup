@@ -1,0 +1,32 @@
+services:
+  receipt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /workspace/receipt
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    environment:
+      PORT: "${PORT:-8787}"
+      HOME: /tmp/receipt-home
+      CODEX_HOME: /tmp/receipt-home/.codex
+      RECEIPT_CODEX_BIN: codex
+      RESONATE_URL: http://127.0.0.1:8001
+      RESONATE_GROUP: receipt
+      RESONATE_SQLITE_PATH: /workspace/receipt/.receipt/resonate/resonate.db
+    ports:
+      - "${PORT:-8787}:8787"
+      - "8001:8001"
+      - "8002:8002"
+      - "50051:50051"
+      - "9090:9090"
+    volumes:
+      - .:/workspace/receipt
+      - receipt-node-modules:/workspace/receipt/node_modules
+      - ${HOME}/.codex:/tmp/receipt-home/.codex
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+
+volumes:
+  receipt-node-modules:
+

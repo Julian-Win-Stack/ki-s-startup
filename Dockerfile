@@ -1,38 +1,59 @@
-FROM oven/bun:1.2.20 AS base
-WORKDIR /app
+FROM oven/bun:1 AS bun-binary
 
-FROM base AS deps
-COPY package.json bun.lock bunfig.toml ./
-COPY packages ./packages
+FROM node:20-bookworm-slim
+
+ARG CODEX_VERSION=0.116.0
+ARG RESONATE_VERSION=v0.8.2
+ARG TARGETARCH
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/usr/local/bin:${PATH}"
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    dumb-init \
+    git \
+    jq \
+    python3 \
+    ripgrep \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=bun-binary /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=bun-binary /usr/local/bin/bunx /usr/local/bin/bunx
+
+RUN case "${TARGETARCH}" in \
+      amd64) resonate_arch="x86_64" ;; \
+      arm64) resonate_arch="aarch64" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+  && curl -fsSL \
+    "https://github.com/resonatehq/resonate/releases/download/${RESONATE_VERSION}/resonate_linux_${resonate_arch}.tar.gz" \
+    -o /tmp/resonate.tar.gz \
+  && tar -xzf /tmp/resonate.tar.gz -C /usr/local/bin resonate \
+  && chmod +x /usr/local/bin/resonate \
+  && rm -f /tmp/resonate.tar.gz
+
+RUN npm install -g "@openai/codex@${CODEX_VERSION}"
+
+WORKDIR /workspace/receipt
+
+COPY docker/entrypoint.sh /usr/local/bin/receipt-entrypoint.sh
+COPY docker/healthcheck.sh /usr/local/bin/receipt-healthcheck.sh
+RUN chmod +x /usr/local/bin/receipt-entrypoint.sh /usr/local/bin/receipt-healthcheck.sh
+
+COPY package.json bun.lock bunfig.toml tsconfig.json ./
+COPY packages/core/package.json packages/core/package.json
 RUN bun install --frozen-lockfile
 
-FROM deps AS build
 COPY . .
-RUN bun run build
 
-FROM oven/bun:1.2.20-slim AS runner
-WORKDIR /app
-ENV NODE_ENV=production
 ENV PORT=8787
-ENV DATA_DIR=/app/.receipt/data
+ENV RESONATE_URL=http://127.0.0.1:8001
+ENV RESONATE_GROUP=receipt
+ENV RECEIPT_CODEX_BIN=codex
 
-COPY --from=build /app/package.json ./package.json
-COPY --from=build /app/bun.lock ./bun.lock
-COPY --from=build /app/bunfig.toml ./bunfig.toml
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/packages ./packages
-COPY --from=build /app/src ./src
-COPY --from=build /app/scripts ./scripts
-COPY --from=build /app/prompts ./prompts
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/README.md ./README.md
-COPY --from=build /app/LICENSE ./LICENSE
-COPY --from=build /app/tsconfig.json ./tsconfig.json
-COPY --from=build /app/architecture.md ./architecture.md
-COPY --from=build /app/docs ./docs
-COPY --from=build /app/profiles ./profiles
-
-EXPOSE 8787
-VOLUME ["/app/.receipt/data"]
-
-CMD ["bun", "src/server.ts"]
+ENTRYPOINT ["/usr/bin/dumb-init", "--", "/usr/local/bin/receipt-entrypoint.sh"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 CMD ["/usr/local/bin/receipt-healthcheck.sh"]
