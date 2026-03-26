@@ -96,6 +96,15 @@ const REMOTE_LOCK_STALE_MS = 30_000;
 
 const clean = (value: string): string => value.trim();
 
+const pathExists = async (value: string): Promise<boolean> => {
+  try {
+    await fs.promises.access(value, fs.constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -661,16 +670,20 @@ export class HubGit {
 
   private async ensureRemote(): Promise<void> {
     await this.withRemoteConfigLock(async () => {
-      const desired = await canonicalizeRepoPath(this.repoRoot);
+      const desired = clean(path.resolve(this.repoRoot));
+      const desiredCanonical = await canonicalizeRepoPath(desired);
       const current = clean(await this.execGit(["remote", "get-url", this.remoteName], { gitDir: this.bareDir }).catch(() => ""));
       const currentCanonical = current ? await canonicalizeRepoPath(current) : "";
+      const currentAccessible = current && !looksLikeRemoteUrl(current)
+        ? await pathExists(current)
+        : Boolean(current);
       if (!current) {
         await this.execGit(["remote", "add", this.remoteName, desired], { gitDir: this.bareDir }).catch(async (err) => {
           const refreshed = clean(await this.execGit(["remote", "get-url", this.remoteName], { gitDir: this.bareDir }).catch(() => ""));
           if (refreshed) return;
           throw err;
         });
-      } else if (current !== desired && currentCanonical !== desired) {
+      } else if (current !== desired && (!currentAccessible || currentCanonical !== desiredCanonical)) {
         await this.execGit(["remote", "set-url", this.remoteName, desired], { gitDir: this.bareDir });
       }
 

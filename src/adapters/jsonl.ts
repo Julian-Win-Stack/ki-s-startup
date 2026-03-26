@@ -123,11 +123,15 @@ export const createStreamLocator = (dir: string): StreamLocator => {
   };
 
   const persistManifest = async (manifest: StreamManifest): Promise<void> => {
-    const tempPath = `${manifestPath}.tmp`;
+    const tempPath = `${manifestPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
     const body = JSON.stringify(manifest, null, 2);
-    await fs.promises.writeFile(tempPath, body, "utf-8");
-    await fs.promises.rename(tempPath, manifestPath);
-    loaded = manifest;
+    try {
+      await fs.promises.writeFile(tempPath, body, "utf-8");
+      await fs.promises.rename(tempPath, manifestPath);
+      loaded = manifest;
+    } finally {
+      await fs.promises.unlink(tempPath).catch(() => undefined);
+    }
   };
 
   const ensureStreamKey = async (stream: string): Promise<string> => {

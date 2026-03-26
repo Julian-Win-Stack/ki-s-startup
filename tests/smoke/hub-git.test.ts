@@ -25,7 +25,7 @@ test("hub git canonicalizes local source paths and serializes concurrent remote 
   const repoRoot = await mkTmp("receipt-hub-git-source");
   const dataDir = await mkTmp("receipt-hub-git-data");
   const aliasRoot = `${repoRoot}-alias`;
-  const canonicalRepoRoot = await fs.realpath(repoRoot);
+  const configuredRepoRoot = path.resolve(repoRoot);
 
   await git(repoRoot, ["init"]);
   await git(repoRoot, ["config", "user.name", "Hub Git Test"]);
@@ -50,7 +50,7 @@ test("hub git canonicalizes local source paths and serializes concurrent remote 
     maxBuffer: 16 * 1024 * 1024,
   }).then((result) => result.stdout.trim());
 
-  expect(remoteUrl).toBe(canonicalRepoRoot);
+  expect(remoteUrl).toBe(configuredRepoRoot);
 
   await fs.rm(aliasRoot, { force: true });
 });
@@ -58,7 +58,7 @@ test("hub git canonicalizes local source paths and serializes concurrent remote 
 test("hub git mirrors source publish remotes into factory worktrees", async () => {
   const repoRoot = await mkTmp("receipt-hub-git-publish-remote-source");
   const dataDir = await mkTmp("receipt-hub-git-publish-remote-data");
-  const canonicalRepoRoot = await fs.realpath(repoRoot);
+  const configuredRepoRoot = path.resolve(repoRoot);
 
   await git(repoRoot, ["init"]);
   await git(repoRoot, ["config", "user.name", "Hub Git Test"]);
@@ -77,7 +77,7 @@ test("hub git mirrors source publish remotes into factory worktrees", async () =
 
   await expect(git(bareDir, ["remote", "get-url", "origin"])).resolves.toBe("https://github.com/example/receipt.git");
   await expect(git(workspace.path, ["remote", "get-url", "origin"])).resolves.toBe("https://github.com/example/receipt.git");
-  await expect(git(workspace.path, ["remote", "get-url", "source"])).resolves.toBe(canonicalRepoRoot);
+  await expect(git(workspace.path, ["remote", "get-url", "source"])).resolves.toBe(configuredRepoRoot);
 });
 
 test("hub git reaps a stale remote config lock during bootstrap", async () => {
@@ -103,7 +103,29 @@ test("hub git reaps a stale remote config lock during bootstrap", async () => {
   await hub.ensureReady();
 
   await expect(fs.access(lockPath)).rejects.toThrow();
-  await expect(git(bareDir, ["remote", "get-url", "source"])).resolves.toBe(await fs.realpath(repoRoot));
+  await expect(git(bareDir, ["remote", "get-url", "source"])).resolves.toBe(path.resolve(repoRoot));
+});
+
+test("hub git rewrites an inaccessible source remote to the current repo root", async () => {
+  const repoRoot = await mkTmp("receipt-hub-git-source-remote-source");
+  const dataDir = await mkTmp("receipt-hub-git-source-remote-data");
+  const bareDir = path.join(dataDir, "hub", "repo.git");
+
+  await git(repoRoot, ["init"]);
+  await git(repoRoot, ["config", "user.name", "Hub Git Test"]);
+  await git(repoRoot, ["config", "user.email", "hub-git@example.com"]);
+  await fs.writeFile(path.join(repoRoot, "README.md"), "# hub git source remote test\n", "utf-8");
+  await git(repoRoot, ["add", "README.md"]);
+  await git(repoRoot, ["commit", "-m", "init"]);
+  await git(repoRoot, ["branch", "-M", "main"]);
+
+  await git(dataDir, ["init", "--bare", bareDir]);
+  await git(bareDir, ["remote", "add", "source", path.join(repoRoot, "..", "missing-source-repo")]);
+
+  const hub = new HubGit({ dataDir, repoRoot });
+  await hub.ensureReady();
+
+  await expect(git(bareDir, ["remote", "get-url", "source"])).resolves.toBe(repoRoot);
 });
 
 test("hub git promotes disjoint worktree commits into a dirty source repo", async () => {
