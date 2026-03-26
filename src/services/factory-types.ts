@@ -49,6 +49,7 @@ export type FactoryServiceOptions = {
   readonly repoRoot?: string;
   readonly profileRoot?: string;
   readonly cloudExecutionContextProvider?: () => Promise<FactoryCloudExecutionContext>;
+  readonly redriveQueuedJob?: (job: QueueJob) => Promise<void>;
 };
 
 export type FactoryObjectiveInput = {
@@ -139,6 +140,7 @@ export type FactoryObjectiveCard = {
   readonly updatedAt: number;
   readonly latestSummary?: string;
   readonly blockedReason?: string;
+  readonly sourceWarnings?: ReadonlyArray<string>;
   readonly tokensUsed?: number;
   readonly blockedExplanation?: {
     readonly summary: string;
@@ -170,6 +172,7 @@ export type FactoryObjectiveDetail = FactoryObjectiveCard & {
   readonly prompt: string;
   readonly channel: string;
   readonly baseHash: string;
+  readonly sourceWarnings?: ReadonlyArray<string>;
   readonly checks: ReadonlyArray<string>;
   readonly profile: FactoryObjectiveProfileSnapshot;
   readonly policy: FactoryNormalizedObjectivePolicy;

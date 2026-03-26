@@ -79,6 +79,7 @@ export const initialFactoryState: FactoryState = {
   prompt: "",
   channel: "results",
   baseHash: "",
+  sourceWarnings: [],
   objectiveMode: "delivery",
   severity: 1,
   checks: [],

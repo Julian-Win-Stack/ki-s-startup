@@ -323,6 +323,7 @@ export type FactoryState = {
   readonly prompt: string;
   readonly channel: string;
   readonly baseHash: string;
+  readonly sourceWarnings?: ReadonlyArray<string>;
   readonly objectiveMode: FactoryObjectiveMode;
   readonly severity: FactoryObjectiveSeverity;
   readonly checks: ReadonlyArray<string>;

@@ -145,6 +145,7 @@ export const reduceFactory: Reducer<FactoryState, FactoryEvent> = (state, event)
         prompt: event.prompt,
         channel: event.channel,
         baseHash: event.baseHash,
+        sourceWarnings: event.sourceWarnings,
         objectiveMode: event.objectiveMode,
         severity: event.severity,
         checks: event.checks,

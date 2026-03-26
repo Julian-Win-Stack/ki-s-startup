@@ -11,6 +11,7 @@ import {
   type MemoryTools,
 } from "../adapters/memory-tools";
 import { jsonBranchStore, jsonlStore } from "../adapters/jsonl";
+import type { QueueJob } from "../adapters/jsonl-queue";
 import { embed } from "../adapters/openai";
 import { createRuntime } from "@receipt/core/runtime";
 import type { JobHandler } from "../engine/runtime/job-worker";
@@ -30,6 +31,7 @@ type FactoryServiceRuntimeOptions = {
   readonly repoRoot: string;
   readonly codexBin?: string;
   readonly memoryTools?: MemoryTools;
+  readonly redriveQueuedJob?: (job: QueueJob) => Promise<void>;
 };
 
 const isNoRetryError = (err: unknown): boolean => {
@@ -67,6 +69,7 @@ export const createFactoryServiceRuntime = (opts: FactoryServiceRuntimeOptions):
     codexExecutor: new LocalCodexExecutor({ bin: opts.codexBin }),
     memoryTools,
     repoRoot: opts.repoRoot,
+    redriveQueuedJob: opts.redriveQueuedJob,
   });
 
   return {

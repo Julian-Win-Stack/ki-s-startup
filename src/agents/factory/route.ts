@@ -15,6 +15,7 @@ import {
 import type { AgentLoaderContext, AgentRouteModule } from "../../framework/agent-types";
 import { agentRunStream } from "../agent.streams";
 import type { AgentCmd, AgentEvent, AgentState } from "../../modules/agent";
+import type { JobRecord } from "../../modules/job";
 import {
   factoryChatStream,
   factoryChatSessionStream,
@@ -310,6 +311,53 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     () => discoverFactoryChatProfiles(profileRoot),
   );
 
+  const queueJobFromRecord = (job: JobRecord): QueueJob => ({
+    id: job.id,
+    agentId: job.agentId,
+    lane: job.lane,
+    sessionKey: job.sessionKey,
+    singletonMode: job.singletonMode,
+    payload: { ...job.payload },
+    status: job.status,
+    attempt: job.attempt,
+    maxAttempts: job.maxAttempts,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    leaseOwner: job.workerId,
+    leaseUntil: job.leaseUntil,
+    lastError: job.lastError,
+    result: job.result ? { ...job.result } : undefined,
+    canceledReason: job.canceledReason,
+    abortRequested: job.abortRequested,
+    commands: job.commands.map((command) => ({
+      ...command,
+      payload: command.payload ? { ...command.payload } : undefined,
+    })),
+  });
+
+  const collectExplicitObjectiveJobs = async (
+    detail: Awaited<ReturnType<FactoryService["getObjective"]>> | undefined,
+    selectedJobId?: string,
+  ): Promise<{
+    readonly jobs: ReadonlyArray<QueueJob>;
+    readonly selectedJob?: QueueJob;
+  }> => {
+    const jobsById = new Map<string, QueueJob>();
+    for (const task of detail?.tasks ?? []) {
+      if (!task.job) continue;
+      jobsById.set(task.job.id, queueJobFromRecord(task.job));
+    }
+    let selectedJob = selectedJobId ? jobsById.get(selectedJobId) : undefined;
+    if (!selectedJob && selectedJobId) {
+      selectedJob = await ctx.queue.getJob(selectedJobId);
+    }
+    const jobs = [...jobsById.values()].sort(compareJobsByRecency);
+    return {
+      jobs,
+      selectedJob,
+    };
+  };
+
   const resolveSessionObjectiveId = async (input: {
     readonly repoRoot: string;
     readonly profileId: string;
@@ -375,7 +423,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     let initialIndexChain: Awaited<ReturnType<typeof agentRuntime.chain>> = [];
     let jobs: ReadonlyArray<QueueJob> = [];
 
-    if (explicitObjectiveId || input.jobId || input.runId) {
+    if (!explicitObjectiveId && (input.jobId || input.runId)) {
       jobs = await loadRecentJobs();
     } else if (input.chatId) {
       initialSessionStream = factoryChatSessionStream(repoRoot, resolved.root.id, input.chatId);
@@ -409,11 +457,11 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       const stateProfileId = state?.profile.rootProfileId;
       const effectiveProfile = profiles.find((profile) => profile.id === stateProfileId) ?? resolved.root;
       const activeProfileOverview = describeProfileMarkdown(effectiveProfile.mdBody);
-      const objectiveJobs = jobs
-        .filter((job) => jobObjectiveId(job) === explicitObjectiveId)
-        .sort(compareJobsByRecency);
-      const jobsById = new Map(objectiveJobs.map((job) => [job.id, job] as const));
-      const selectedJob = input.jobId ? jobsById.get(input.jobId) : undefined;
+      const { jobs: objectiveJobs, selectedJob } = await collectExplicitObjectiveJobs(detail, input.jobId);
+      const relevantObjectiveJobs = selectedJob && !objectiveJobs.some((job) => job.id === selectedJob.id)
+        ? [selectedJob, ...objectiveJobs]
+        : objectiveJobs;
+      const jobsById = new Map(relevantObjectiveJobs.map((job) => [job.id, job] as const));
       const stream = resolveChatViewStream({
         repoRoot,
         profileId: effectiveProfile.id,
@@ -435,7 +483,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       const initialWorkbench = detail
         ? buildFactoryWorkbench({
             detail,
-            recentJobs: objectiveJobs,
+            recentJobs: relevantObjectiveJobs,
             requestedFocusKind: input.focusKind,
             requestedFocusId: input.focusId,
           })
@@ -450,7 +498,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       const workbench = detail
         ? buildFactoryWorkbench({
             detail,
-            recentJobs: objectiveJobs,
+            recentJobs: relevantObjectiveJobs,
             requestedFocusKind: initialWorkbench?.focus?.focusKind ?? input.focusKind,
             requestedFocusId: initialWorkbench?.focus?.focusId ?? input.focusId,
             liveOutput,
@@ -459,7 +507,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       const resolvedFocusKind = workbench?.focus?.focusKind ?? input.focusKind;
       const resolvedFocusId = workbench?.focus?.focusId ?? input.focusId;
       const inspectorPanel = input.panel ?? (workbench?.hasActiveExecution ? "live" : "overview");
-      const relevantJobs = objectiveJobs
+      const relevantJobs = relevantObjectiveJobs
         .slice(0, 12)
         .map((job) => ({
           jobId: job.id,
@@ -502,16 +550,16 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             tokensUsed: selectedObjectiveCard.tokensUsed,
           }]
         : [];
-      const activeCodex = buildActiveCodexCard(objectiveJobs);
+      const activeCodex = buildActiveCodexCard(relevantObjectiveJobs);
       const liveChildren = stream
-        ? buildLiveChildCards(objectiveJobs, stream, explicitObjectiveId)
+        ? buildLiveChildCards(relevantObjectiveJobs, stream, explicitObjectiveId)
         : [];
       const activeRunIndex = activeRunId ? runIds.indexOf(activeRunId) : -1;
       const activeRun = activeRunIndex >= 0
         ? summarizeActiveRunCard({
             runId: activeRunId!,
             runChain: runChains[activeRunIndex]!,
-            relatedJobs: objectiveJobs,
+            relatedJobs: relevantObjectiveJobs,
             profileLabel: effectiveProfile.label,
             profileId: effectiveProfile.id,
             objectiveId: explicitObjectiveId,
@@ -833,9 +881,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     });
     const profilesPromise = loadFactoryProfiles();
     let jobs: ReadonlyArray<QueueJob> = [];
-    if (explicitObjectiveId) {
-      if (input.jobId) jobs = await loadRecentJobs();
-    } else if (input.jobId || input.runId) {
+    if (!explicitObjectiveId && (input.jobId || input.runId)) {
       jobs = await loadRecentJobs();
     } else if (input.chatId) {
       const initialSessionStream = factoryChatSessionStream(repoRoot, resolved.root.id, input.chatId);
@@ -1038,21 +1084,25 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
     });
     const objectiveId = input.objectiveId.trim();
     const panel = input.panel ?? "overview";
-    const [maybeState, objectiveJobs] = await Promise.all([
+    const [maybeState, detail] = await Promise.all([
       panel === "overview" || panel === "debug" || panel === "receipts"
         ? service.getObjectiveState(objectiveId).catch(() => undefined)
         : Promise.resolve(undefined),
-      panel === "overview" || panel === "live"
-        ? loadRecentJobs().then((jobs) =>
-            jobs
-              .filter((job) => jobObjectiveId(job) === objectiveId)
-              .sort(compareJobsByRecency)
-          )
-        : Promise.resolve([] as ReadonlyArray<QueueJob>),
+      panel === "overview" || panel === "analysis" || panel === "execution" || panel === "live"
+        ? service.getObjective(objectiveId).catch(() => undefined)
+        : Promise.resolve(undefined),
     ]);
-    const selectedObjective = maybeState ? toFactoryStateSelectedObjectiveCard(maybeState) : undefined;
+    const { jobs: objectiveJobs, selectedJob } = await collectExplicitObjectiveJobs(detail, input.jobId);
+    const recentJobs = selectedJob && !objectiveJobs.some((job) => job.id === selectedJob.id)
+      ? [selectedJob, ...objectiveJobs]
+      : objectiveJobs;
+    const selectedObjective = detail
+      ? toFactorySelectedObjectiveCard(detail)
+      : maybeState
+        ? toFactoryStateSelectedObjectiveCard(maybeState)
+        : undefined;
 
-    if (!maybeState && (panel === "overview" || panel === "receipts" || panel === "debug")) {
+    if (!selectedObjective && (panel === "overview" || panel === "receipts" || panel === "debug")) {
       return buildMissingInspectorModel({
         activeProfileId: resolved.root.id,
         objectiveId,
@@ -1074,7 +1124,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         focusKind: input.focusKind,
         focusId: input.focusId,
         selectedObjective,
-        activeCodex: buildActiveCodexCard(objectiveJobs),
+        activeCodex: buildActiveCodexCard(recentJobs),
         liveChildren: [],
         activeRun: undefined,
         workbench: undefined,
@@ -1124,7 +1174,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       };
     }
 
-    const detail = await service.getObjective(objectiveId).catch(() => undefined);
     if (!detail) {
       return buildMissingInspectorModel({
         activeProfileId: resolved.root.id,
@@ -1136,15 +1185,6 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
         focusId: input.focusId,
       });
     }
-    const selectedObjectiveDetail = toFactorySelectedObjectiveCard(detail);
-
-    const recentJobs = objectiveJobs.length > 0
-      ? objectiveJobs
-      : await loadRecentJobs().then((jobs) =>
-          jobs
-            .filter((job) => jobObjectiveId(job) === objectiveId)
-            .sort(compareJobsByRecency)
-        );
     const relevantJobs = recentJobs
       .slice(0, 12)
       .map((job) => ({
@@ -1194,7 +1234,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       jobId: input.jobId,
       focusKind: workbench?.focus?.focusKind,
       focusId: workbench?.focus?.focusId,
-      selectedObjective: selectedObjectiveDetail,
+      selectedObjective,
       activeCodex: buildActiveCodexCard(recentJobs),
       liveChildren: [],
       activeRun: undefined,
@@ -1225,7 +1265,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
       profileRoot,
       requestedId: input.profileId,
     });
-    const jobs = explicitObjectiveId && !input.jobId
+    const jobs = explicitObjectiveId
       ? []
       : await loadRecentJobs();
     const jobsById = new Map(jobs.map((job) => [job.id, job] as const));

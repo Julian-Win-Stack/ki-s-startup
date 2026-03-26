@@ -552,6 +552,160 @@ test("factory service: objective control jobs use a dedicated worker id so /fact
   expect(jobs[0]?.payload.kind).toBe("factory.objective.control");
 });
 
+test("factory service: dirty worktree objectives auto-pin the committed head and record a warning", async () => {
+  const dataDir = await createTempDir("receipt-factory-dirty-source");
+  const repoRoot = await createSourceRepo();
+  await fs.writeFile(path.join(repoRoot, "DIRTY_NOTE.txt"), "local-only change\n", "utf-8");
+  const expectedBaseHash = await git(repoRoot, ["rev-parse", "HEAD"]);
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime,
+    sse: new SseHub(),
+    codexExecutor: { run: async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "" }) },
+    repoRoot,
+  });
+
+  const created = await service.createObjective({
+    title: "Dirty worktree objective",
+    prompt: "Run against the committed repo while local changes stay unstaged.",
+    checks: ["git status --short"],
+  });
+
+  expect(created.baseHash).toBe(expectedBaseHash);
+  expect(created.sourceWarnings).toEqual([
+    expect.stringContaining(`Pinned Factory worktrees to committed HEAD ${expectedBaseHash.slice(0, 8)}`),
+  ]);
+
+  const detail = await service.getObjective(created.objectiveId);
+  expect(detail.baseHash).toBe(expectedBaseHash);
+  expect(detail.sourceWarnings).toEqual(created.sourceWarnings);
+});
+
+test("factory service: reactObjective redrives active queued task jobs", async () => {
+  const dataDir = await createTempDir("receipt-factory-redrive");
+  const repoRoot = await createSourceRepo();
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const redrivenJobIds: string[] = [];
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime,
+    sse: new SseHub(),
+    codexExecutor: { run: async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "" }) },
+    repoRoot,
+    redriveQueuedJob: async (job) => {
+      redrivenJobIds.push(job.id);
+    },
+  });
+
+  const created = await service.createObjective({
+    title: "Queued task recovery",
+    prompt: "Re-drive active queued task jobs after startup recovery.",
+    checks: ["git status --short"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const detail = await service.getObjective(created.objectiveId);
+  const activeQueuedTask = detail.tasks.find((task) =>
+    task.status === "running"
+    && task.jobStatus === "queued"
+    && typeof task.jobId === "string",
+  );
+  expect(activeQueuedTask?.jobId).toBeDefined();
+
+  await service.reactObjective(created.objectiveId);
+
+  expect(redrivenJobIds).toEqual([activeQueuedTask!.jobId!]);
+});
+
+test("factory service: resumeObjectives redrives active queued task jobs before queueing fallback control", async () => {
+  const dataDir = await createTempDir("receipt-factory-resume-redrive");
+  const repoRoot = await createSourceRepo();
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const redrivenJobIds: string[] = [];
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime,
+    sse: new SseHub(),
+    codexExecutor: { run: async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "" }) },
+    repoRoot,
+    redriveQueuedJob: async (job) => {
+      redrivenJobIds.push(job.id);
+    },
+  });
+
+  const created = await service.createObjective({
+    title: "Resume queued task recovery",
+    prompt: "Resume active queued task jobs locally before queueing a fallback control job.",
+    checks: ["git status --short"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  const detail = await service.getObjective(created.objectiveId);
+  const activeQueuedTask = detail.tasks.find((task) =>
+    task.status === "running"
+    && task.jobStatus === "queued"
+    && typeof task.jobId === "string",
+  );
+  expect(activeQueuedTask?.jobId).toBeDefined();
+
+  const controlJobsBefore = (await queue.listJobs({ limit: 20 }))
+    .filter((job) => job.agentId === "factory-control")
+    .length;
+
+  await service.resumeObjectives();
+
+  const controlJobsAfter = (await queue.listJobs({ limit: 20 }))
+    .filter((job) => job.agentId === "factory-control")
+    .length;
+
+  expect(redrivenJobIds).toEqual([activeQueuedTask!.jobId!]);
+  expect(controlJobsAfter).toBe(controlJobsBefore);
+});
+
+test("factory service: getObjective reads task jobs without scanning the full queue index", async () => {
+  const dataDir = await createTempDir("receipt-factory-objective-task-job");
+  const repoRoot = await createSourceRepo();
+  const jobRuntime = createJobRuntime(dataDir);
+  const queue = jsonlQueue({ runtime: jobRuntime, stream: "jobs" });
+  const service = new FactoryService({
+    dataDir,
+    queue,
+    jobRuntime,
+    sse: new SseHub(),
+    codexExecutor: { run: async () => ({ exitCode: 0, signal: null, stdout: "", stderr: "" }) },
+    repoRoot,
+  });
+
+  const created = await service.createObjective({
+    title: "Task-job objective detail",
+    prompt: "Ensure objective detail reads task jobs directly instead of scanning the whole queue.",
+    checks: ["git status --short"],
+  });
+  await runObjectiveStartup(service, created.objectiveId);
+
+  if (!jobRuntime.listStreams) {
+    throw new Error("expected job runtime listStreams to exist for this regression");
+  }
+  const originalListStreams = jobRuntime.listStreams.bind(jobRuntime);
+  jobRuntime.listStreams = (async (prefix?: string) => {
+    if (prefix === "jobs/") {
+      throw new Error("getObjective should not scan jobs/");
+    }
+    return originalListStreams(prefix);
+  }) as typeof jobRuntime.listStreams;
+
+  const detail = await service.getObjective(created.objectiveId);
+  expect(detail.tasks.some((task) => Boolean(task.jobId))).toBe(true);
+  expect(detail.tasks.some((task) => Boolean(task.job))).toBe(true);
+});
+
 test("factory service: listObjectives uses the stream manifest instead of scanning the whole data dir", async () => {
   const dataDir = await createTempDir("receipt-factory-objective-manifest");
   const repoRoot = await createSourceRepo();
@@ -2469,6 +2623,58 @@ test("factory route: running task workbench renders above the transcript and aut
   expect(body).toContain("data-focus-id=\"task_01\"");
 });
 
+test("factory route: explicit thread shell avoids global job scans when detail already has task jobs", async () => {
+  let listJobsCalls = 0;
+  const baseObjective = makeRunningWorkbenchObjectiveDetail("objective_live");
+  const liveObjective = {
+    ...baseObjective,
+    tasks: baseObjective.tasks.map((task, index) => (
+      index === 0
+        ? {
+            ...task,
+            job: {
+              id: "job_task_01",
+              agentId: "codex",
+              lane: "collect",
+              sessionKey: undefined,
+              singletonMode: "allow",
+              payload: {
+                kind: "factory.task.run",
+                objectiveId: "objective_live",
+                taskId: "task_01",
+                candidateId: "candidate_01",
+              },
+              status: "running",
+              attempt: 1,
+              maxAttempts: 1,
+              createdAt: 1,
+              updatedAt: 2,
+              commands: [],
+            },
+          }
+        : task
+    )),
+  } as unknown as Awaited<ReturnType<FactoryService["getObjective"]>>;
+  const app = createRouteTestApp({
+    onListJobs: () => {
+      listJobsCalls += 1;
+    },
+    service: {
+      listObjectives: async () => [
+        liveObjective as unknown as Awaited<ReturnType<FactoryService["listObjectives"]>>[number],
+      ],
+      getObjective: async () => liveObjective,
+    },
+  });
+
+  const response = await app.request("http://receipt.test/factory?profile=generalist&thread=objective_live");
+  const body = await response.text();
+
+  expect(response.status).toBe(200);
+  expect(body).toContain("Implement mission shell");
+  expect(listJobsCalls).toBe(0);
+});
+
 test("factory route: recent agent thinking steps surface in the live thread shell", async () => {
   const objectiveId = "objective_live";
   const liveObjective = makeRunningWorkbenchObjectiveDetail(objectiveId);
@@ -2724,6 +2930,58 @@ test("factory route: inspector execution panel shows focused completed task outp
   expect(body).toContain("Summarize inventory results");
   expect(body).toContain("Found 12 buckets across 3 regions.");
   expect(body).toContain("bucket-a");
+});
+
+test("factory route: explicit inspector overview avoids global job scans when detail already has task jobs", async () => {
+  let listJobsCalls = 0;
+  const baseObjective = makeRunningWorkbenchObjectiveDetail("objective_live");
+  const liveObjective = {
+    ...baseObjective,
+    tasks: baseObjective.tasks.map((task, index) => (
+      index === 0
+        ? {
+            ...task,
+            job: {
+              id: "job_task_01",
+              agentId: "codex",
+              lane: "collect",
+              sessionKey: undefined,
+              singletonMode: "allow",
+              payload: {
+                kind: "factory.task.run",
+                objectiveId: "objective_live",
+                taskId: "task_01",
+                candidateId: "candidate_01",
+              },
+              status: "running",
+              attempt: 1,
+              maxAttempts: 1,
+              createdAt: 1,
+              updatedAt: 2,
+              commands: [],
+            },
+          }
+        : task
+    )),
+  } as unknown as Awaited<ReturnType<FactoryService["getObjective"]>>;
+  const app = createRouteTestApp({
+    onListJobs: () => {
+      listJobsCalls += 1;
+    },
+    service: {
+      listObjectives: async () => [
+        liveObjective as unknown as Awaited<ReturnType<FactoryService["listObjectives"]>>[number],
+      ],
+      getObjective: async () => liveObjective,
+    },
+  });
+
+  const response = await app.request("http://receipt.test/factory/island/inspector?profile=generalist&thread=objective_live&panel=overview");
+  const body = await response.text();
+
+  expect(response.status).toBe(200);
+  expect(body).toContain("Live objective");
+  expect(listJobsCalls).toBe(0);
 });
 
 test("factory route: inspector receipts panel preserves preloaded receipts", async () => {
