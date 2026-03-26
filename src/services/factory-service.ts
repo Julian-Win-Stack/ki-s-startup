@@ -5788,7 +5788,20 @@ export class FactoryService {
   }
 
   private async ensureWorkspaceReceiptCli(workspacePath: string): Promise<string> {
-    const binDir = path.join(workspacePath, ".receipt", "bin");
+    const repoReceiptBinDir = path.join(workspacePath, ".receipt", "bin");
+    const repoShimPath = path.join(repoReceiptBinDir, process.platform === "win32" ? "receipt.cmd" : "receipt");
+    if (workspacePath === this.git.repoRoot && await pathExists(repoShimPath)) {
+      return repoReceiptBinDir;
+    }
+    const shimRoot = workspacePath === this.git.repoRoot
+      ? path.join(
+          this.dataDir,
+          "factory",
+          "repo-bin",
+          createHash("sha1").update(workspacePath).digest("hex").slice(0, 12),
+        )
+      : workspacePath;
+    const binDir = path.join(shimRoot, ".receipt", "bin");
     const shimPath = path.join(binDir, process.platform === "win32" ? "receipt.cmd" : "receipt");
     const { command, args, entryPath } = resolveCliInvocation(import.meta.url);
     await fs.mkdir(binDir, { recursive: true });

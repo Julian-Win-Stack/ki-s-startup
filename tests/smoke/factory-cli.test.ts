@@ -1330,6 +1330,7 @@ test("factory runtime config: repo default data dir is .receipt/data before init
 test("factory cli: codex-probe runs direct and queue status probes without init", async () => {
   const repoDir = await createRepo();
   const codexStub = await createCodexReplyStub();
+  const wrapperPath = path.join(repoDir, ".receipt", "bin", process.platform === "win32" ? "receipt.cmd" : "receipt");
   const probe = await runCli([
     "factory",
     "codex-probe",
@@ -1374,6 +1375,7 @@ test("factory cli: codex-probe runs direct and queue status probes without init"
   const queueLastMessage = await fs.readFile(payload.queue!.artifacts.lastMessagePath, "utf-8");
   expect(directLastMessage.trim()).toBe("probe-ok");
   expect(queueLastMessage.trim()).toBe("probe-ok");
+  await expect(fs.access(wrapperPath)).rejects.toThrow();
 }, 120_000);
 
 test("factory cli: helper list surfaces the checked-in helper catalog without init", async () => {
