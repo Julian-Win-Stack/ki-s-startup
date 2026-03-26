@@ -54,7 +54,6 @@ ENV JOB_BACKEND=resonate
 ENV RECEIPT_WORKDIR=/workspace/receipt
 ENV HOME=/workspace/receipt/.receipt/home
 ENV CODEX_HOME=/workspace/receipt/.receipt/home/.codex
-ENV RECEIPT_HOST_AUTH_ROOT=/mnt/host-auth
 ENV RECEIPT_ISOLATED_CODEX_HOME_ROOT=/workspace/receipt/.receipt/home/.codex/runtime
 ENV RESONATE_URL=http://127.0.0.1:8001
 ENV RESONATE_GROUP_API=receipt-api

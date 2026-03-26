@@ -34,14 +34,33 @@ receipt_docker_prepare() {
     "${stub_root}/aws" \
     "${stub_root}/gh" \
     "${stub_root}/ssh"
+  : > "${stub_root}/codex/auth.json"
+  : > "${stub_root}/codex/config.toml"
+  : > "${stub_root}/codex/version.json"
+  : > "${stub_root}/codex/.codex-global-state.json"
   : > "${stub_root}/gitconfig"
   : > "${stub_root}/git-credentials"
   : > "${stub_root}/ssh-auth"
 
-  if [ -d "${HOST_HOME}/.codex" ]; then
-    export RECEIPT_DOCKER_CODEX_SOURCE="${HOST_HOME}/.codex"
+  if [ -f "${HOST_HOME}/.codex/auth.json" ]; then
+    export RECEIPT_DOCKER_CODEX_AUTH_SOURCE="${HOST_HOME}/.codex/auth.json"
   else
-    export RECEIPT_DOCKER_CODEX_SOURCE="${stub_root}/codex"
+    export RECEIPT_DOCKER_CODEX_AUTH_SOURCE="${stub_root}/codex/auth.json"
+  fi
+  if [ -f "${HOST_HOME}/.codex/config.toml" ]; then
+    export RECEIPT_DOCKER_CODEX_CONFIG_SOURCE="${HOST_HOME}/.codex/config.toml"
+  else
+    export RECEIPT_DOCKER_CODEX_CONFIG_SOURCE="${stub_root}/codex/config.toml"
+  fi
+  if [ -f "${HOST_HOME}/.codex/version.json" ]; then
+    export RECEIPT_DOCKER_CODEX_VERSION_SOURCE="${HOST_HOME}/.codex/version.json"
+  else
+    export RECEIPT_DOCKER_CODEX_VERSION_SOURCE="${stub_root}/codex/version.json"
+  fi
+  if [ -f "${HOST_HOME}/.codex/.codex-global-state.json" ]; then
+    export RECEIPT_DOCKER_CODEX_STATE_SOURCE="${HOST_HOME}/.codex/.codex-global-state.json"
+  else
+    export RECEIPT_DOCKER_CODEX_STATE_SOURCE="${stub_root}/codex/.codex-global-state.json"
   fi
   if [ -d "${HOST_HOME}/.aws" ]; then
     export RECEIPT_DOCKER_AWS_SOURCE="${HOST_HOME}/.aws"
@@ -85,7 +104,7 @@ receipt_docker_prepare() {
     export RECEIPT_IMAGE_EXPLICIT=0
   fi
 
-  if [ "${mode}" = "dev" ] && [ ! -f "${HOST_HOME}/.codex/version.json" ] && [ ! -f "${HOST_HOME}/.codex/config.toml" ]; then
+  if [ "${mode}" = "dev" ] && [ ! -f "${HOST_HOME}/.codex/auth.json" ] && [ ! -f "${HOST_HOME}/.codex/config.toml" ]; then
     echo "[receipt-docker] warning: ${HOST_HOME}/.codex does not look initialized; Codex auth may fail until the host CLI is signed in." >&2
   fi
 }

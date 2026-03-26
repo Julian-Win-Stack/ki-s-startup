@@ -155,16 +155,20 @@ Dev mode:
 The 80/20 auth model in dev is:
 
 - mount AWS, GitHub, Git, and SSH config directly into the stable container home
-- keep `CODEX_HOME` writable and copy only the checked-in Codex auth/config files from the mounted host `.codex` directory
+- mount the key Codex auth/config files directly into `CODEX_HOME`
+- keep `CODEX_HOME/runtime` writable for isolated Codex homes and local runtime state
 
-That means the container sees:
+That means the container sees the same login state as the host CLI:
 
 - `/workspace/receipt/.receipt/home/.aws`
 - `/workspace/receipt/.receipt/home/.config/gh`
 - `/workspace/receipt/.receipt/home/.gitconfig`
 - `/workspace/receipt/.receipt/home/.git-credentials`
 - `/workspace/receipt/.receipt/home/.ssh`
-- `/workspace/receipt/.receipt/home/.codex`
+- `/workspace/receipt/.receipt/home/.codex/auth.json`
+- `/workspace/receipt/.receipt/home/.codex/config.toml`
+- `/workspace/receipt/.receipt/home/.codex/version.json`
+- `/workspace/receipt/.receipt/home/.codex/.codex-global-state.json`
 
 Stop it with:
 

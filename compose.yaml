@@ -11,7 +11,6 @@ services:
       RECEIPT_WORKDIR: /workspace/receipt
       HOME: /workspace/receipt/.receipt/home
       CODEX_HOME: /workspace/receipt/.receipt/home/.codex
-      RECEIPT_HOST_AUTH_ROOT: /mnt/host-auth
       RECEIPT_ISOLATED_CODEX_HOME_ROOT: /workspace/receipt/.receipt/home/.codex/runtime
       RECEIPT_CODEX_BIN: codex
       CHAT_WORKER_PROCESSES: "${CHAT_WORKER_PROCESSES:-10}"

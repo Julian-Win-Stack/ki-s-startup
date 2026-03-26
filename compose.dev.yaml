@@ -12,7 +12,10 @@ services:
     volumes:
       - .:/workspace/receipt
       - receipt-node-modules:/workspace/receipt/node_modules
-      - ${RECEIPT_DOCKER_CODEX_SOURCE}:/mnt/host-auth/codex:ro
+      - ${RECEIPT_DOCKER_CODEX_AUTH_SOURCE}:/workspace/receipt/.receipt/home/.codex/auth.json
+      - ${RECEIPT_DOCKER_CODEX_CONFIG_SOURCE}:/workspace/receipt/.receipt/home/.codex/config.toml
+      - ${RECEIPT_DOCKER_CODEX_VERSION_SOURCE}:/workspace/receipt/.receipt/home/.codex/version.json
+      - ${RECEIPT_DOCKER_CODEX_STATE_SOURCE}:/workspace/receipt/.receipt/home/.codex/.codex-global-state.json
       - ${RECEIPT_DOCKER_AWS_SOURCE}:/workspace/receipt/.receipt/home/.aws
       - ${RECEIPT_DOCKER_GH_SOURCE}:/workspace/receipt/.receipt/home/.config/gh
       - ${RECEIPT_DOCKER_GITCONFIG_SOURCE}:/workspace/receipt/.receipt/home/.gitconfig

@@ -7,27 +7,9 @@ RESONATE_HTTP_URL="${RESONATE_URL:-http://127.0.0.1:8001}"
 RESONATE_SQLITE_PATH="${RESONATE_SQLITE_PATH:-${RECEIPT_WORKDIR}/.receipt/resonate/resonate.db}"
 DATA_DIR="${DATA_DIR:-${RECEIPT_WORKDIR}/.receipt/data}"
 RECEIPT_DOCKER_MODE="${RECEIPT_DOCKER_MODE:-dev}"
-HOST_CODEX_ROOT="${RECEIPT_HOST_AUTH_ROOT:-/mnt/host-auth}/codex"
 HOME="${HOME:-${RECEIPT_WORKDIR}/.receipt/home}"
 CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
 RECEIPT_CSS_WATCH="${RECEIPT_CSS_WATCH:-0}"
-
-copy_optional_file() {
-  local source_path="${1}"
-  local target_path="${2}"
-  if [ ! -f "${source_path}" ]; then
-    return 0
-  fi
-  mkdir -p "$(dirname "${target_path}")"
-  cp "${source_path}" "${target_path}"
-}
-
-sync_host_codex() {
-  copy_optional_file "${HOST_CODEX_ROOT}/auth.json" "${CODEX_HOME}/auth.json"
-  copy_optional_file "${HOST_CODEX_ROOT}/config.toml" "${CODEX_HOME}/config.toml"
-  copy_optional_file "${HOST_CODEX_ROOT}/version.json" "${CODEX_HOME}/version.json"
-  copy_optional_file "${HOST_CODEX_ROOT}/.codex-global-state.json" "${CODEX_HOME}/.codex-global-state.json"
-}
 
 cd "${RECEIPT_WORKDIR}"
 export HOME CODEX_HOME DATA_DIR RECEIPT_DATA_DIR="${RECEIPT_DATA_DIR:-${DATA_DIR}}"
@@ -41,8 +23,6 @@ mkdir -p \
   "${CODEX_HOME}" \
   "${CODEX_HOME}/runtime" \
   "${RECEIPT_WORKDIR}/.receipt"
-
-sync_host_codex
 
 if [ "${RECEIPT_DOCKER_MODE}" = "dev" ]; then
   if [ ! -d node_modules ] || [ ! -e node_modules/.bin/tailwindcss ]; then
