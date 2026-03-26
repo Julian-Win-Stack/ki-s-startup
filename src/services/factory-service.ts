@@ -5823,12 +5823,15 @@ export class FactoryService {
     const workspaceNodeModulesBin = await pathExists(path.join(workspacePath, "node_modules", ".bin"))
       ? path.join(workspacePath, "node_modules", ".bin")
       : undefined;
+    const repoNodeModulesBin = await pathExists(path.join(this.git.repoRoot, "node_modules", ".bin"))
+      ? path.join(this.git.repoRoot, "node_modules", ".bin")
+      : undefined;
     const repoReceiptBinDir = await pathExists(path.join(this.git.repoRoot, ".receipt", "bin"))
       ? path.join(this.git.repoRoot, ".receipt", "bin")
       : undefined;
     return {
       receiptBinDir,
-      path: prependPaths([receiptBinDir, workspaceNodeModulesBin, repoReceiptBinDir], process.env.PATH),
+      path: prependPaths([receiptBinDir, workspaceNodeModulesBin, repoNodeModulesBin, repoReceiptBinDir], process.env.PATH),
     };
   }
 
