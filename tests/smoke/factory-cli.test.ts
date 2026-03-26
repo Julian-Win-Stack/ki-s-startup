@@ -187,6 +187,42 @@ const createPathCodexStub = async (): Promise<string> => {
   return dir;
 };
 
+test("receipt wrapper resolves the repo root when invoked through a symlink", async () => {
+  const tempDir = await createTempDir("receipt-cli-wrapper");
+  const repoRoot = path.join(tempDir, "repo");
+  const sourceWrapper = await fs.readFile(path.join(ROOT, ".receipt", "bin", "receipt"), "utf-8");
+  const fakeBinDir = path.join(tempDir, "bin");
+  const fakeBun = path.join(fakeBinDir, "bun");
+  const outPath = path.join(tempDir, "bun-argv.json");
+  const linkPath = path.join(tempDir, "usr", "local", "bin", "receipt");
+
+  await fs.mkdir(path.join(repoRoot, ".receipt", "bin"), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, "src"), { recursive: true });
+  await fs.mkdir(path.dirname(linkPath), { recursive: true });
+  await fs.mkdir(fakeBinDir, { recursive: true });
+  await fs.writeFile(path.join(repoRoot, ".receipt", "bin", "receipt"), sourceWrapper, "utf-8");
+  await fs.chmod(path.join(repoRoot, ".receipt", "bin", "receipt"), 0o755);
+  await fs.writeFile(path.join(repoRoot, "src", "cli.ts"), "export {};\n", "utf-8");
+  await fs.writeFile(
+    fakeBun,
+    `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(outPath)}\n`,
+    "utf-8",
+  );
+  await fs.chmod(fakeBun, 0o755);
+  await fs.symlink(path.join(repoRoot, ".receipt", "bin", "receipt"), linkPath);
+
+  await execFileAsync(linkPath, ["--help"], {
+    env: {
+      ...process.env,
+      PATH: `${fakeBinDir}:${process.env.PATH || ""}`,
+    },
+  });
+
+  const recorded = (await fs.readFile(outPath, "utf-8")).trim().split("\n");
+  expect(recorded[0]).toBe(path.join(repoRoot, "src", "cli.ts"));
+  expect(recorded[1]).toBe("--help");
+});
+
 const createAwsStub = async (): Promise<string> => {
   const dir = await createTempDir("receipt-factory-cli-aws");
   const nodeBody = [

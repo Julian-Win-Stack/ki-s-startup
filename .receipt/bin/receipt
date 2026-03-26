@@ -1,8 +1,20 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)"
+SCRIPT_PATH="$0"
+while [ -L "${SCRIPT_PATH}" ]; do
+  TARGET_PATH="$(readlink "${SCRIPT_PATH}")"
+  case "${TARGET_PATH}" in
+    /*) SCRIPT_PATH="${TARGET_PATH}" ;;
+    *)
+      LINK_DIR="$(CDPATH= cd -- "$(dirname -- "${SCRIPT_PATH}")" && pwd)"
+      SCRIPT_PATH="${LINK_DIR}/${TARGET_PATH}"
+      ;;
+  esac
+done
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${SCRIPT_PATH}")" && pwd)"
+ROOT="${RECEIPT_ROOT:-$(CDPATH= cd -- "${SCRIPT_DIR}/../.." && pwd)}"
 
 DATA_DIR="${DATA_DIR:-${ROOT}/.receipt/data}"
 RECEIPT_DATA_DIR="${RECEIPT_DATA_DIR:-${DATA_DIR}}"
