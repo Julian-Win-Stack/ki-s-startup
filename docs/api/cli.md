@@ -110,6 +110,7 @@ receipt abort job_abcd1234 --reason "cancel stale run"
 - Flags:
   - `--limit <n>` (optional; clamped by the memory adapter).
 - Output (JSON): `{ entries: [...] }`.
+- Side effects: appends an audited `memory.accessed` receipt for the scope.
 - Example:
 ```bash
 receipt memory read factory/objectives/demo --limit 5
@@ -121,6 +122,7 @@ receipt memory read factory/objectives/demo --limit 5
   - `--query <text>` or trailing query text (required).
   - `--limit <n>` (optional).
 - Output (JSON): `{ entries: [...] }`.
+- Side effects: appends an audited `memory.accessed` receipt for the scope.
 - Example:
 ```bash
 receipt memory search factory/repo/shared --query "integration conflict" --limit 6
@@ -133,6 +135,7 @@ receipt memory search factory/repo/shared --query "integration conflict" --limit
   - `--limit <n>` (optional).
   - `--max-chars <n>` (optional).
 - Output (JSON): `{ summary, entries }`.
+- Side effects: appends an audited `memory.accessed` receipt for the scope.
 - Example:
 ```bash
 receipt memory summarize factory/objectives/demo --query "promotion" --max-chars 1200
@@ -155,6 +158,7 @@ receipt memory commit factory/objectives/demo/tasks/task_01 --text "Need reconci
   - `--from-ts <epoch-ms>` (required).
   - `--to-ts <epoch-ms>` (optional; defaults to now).
 - Output (JSON): `{ entries: [...] }`.
+- Side effects: appends an audited `memory.accessed` receipt for the scope.
 - Example:
 ```bash
 receipt memory diff factory/objectives/demo --from-ts 1710000000000

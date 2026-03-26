@@ -5,6 +5,9 @@ import { spawn } from "node:child_process";
 const bunBin = process.execPath;
 const children = new Map();
 let shuttingDown = false;
+const serverArgs = process.env.RECEIPT_SERVER_WATCH === "1"
+  ? ["--watch", "src/server.ts"]
+  : ["src/server.ts"];
 
 const parseCount = (value, fallback) => {
   const parsed = Number(value);
@@ -31,7 +34,7 @@ const stopChildren = (signal = "SIGTERM") => {
 for (const { role, count } of roles) {
   for (let instance = 0; instance < count; instance += 1) {
     const key = `${role}:${instance + 1}`;
-    const child = spawn(bunBin, ["src/server.ts"], {
+    const child = spawn(bunBin, serverArgs, {
       cwd: process.cwd(),
       env: {
         ...process.env,

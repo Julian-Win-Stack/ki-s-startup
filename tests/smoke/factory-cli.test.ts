@@ -662,6 +662,66 @@ test("factory runtime config: shared resolver follows .receipt/config.json", asy
   expect(resolved.configPath).toBe(path.join(repoDir, ".receipt", "config.json"));
 }, 120_000);
 
+test("factory runtime config: parses recurring schedules from .receipt/config.json", async () => {
+  const repoDir = await createRepo();
+  const configDir = path.join(repoDir, ".receipt");
+  await fs.mkdir(configDir, { recursive: true });
+  await fs.writeFile(path.join(configDir, "config.json"), `${JSON.stringify({
+    repoRoot: ".",
+    dataDir: ".receipt/data",
+    codexBin: "codex",
+    schedules: [
+      {
+        id: "software-improver",
+        agentId: "factory",
+        intervalMs: 21_600_000,
+        lane: "chat",
+        payload: {
+          kind: "factory.run",
+          stream: "agents/factory/sessions/software-improver",
+          profileId: "software",
+          problem: "Review recent repo memory and create or react a scoped delivery objective.",
+          config: {
+            maxIterations: 6,
+          },
+        },
+      },
+      {
+        id: "disabled-example",
+        enabled: false,
+        agentId: "agent",
+        intervalMs: 10_000,
+        payload: {
+          kind: "agent.run",
+          problem: "should not load",
+        },
+      },
+    ],
+  }, null, 2)}\n`, "utf-8");
+
+  const resolved = await resolveFactoryRuntimeConfig(repoDir);
+  expect(resolved.schedules).toEqual([
+    {
+      id: "software-improver",
+      agentId: "factory",
+      intervalMs: 21_600_000,
+      lane: "chat",
+      sessionKey: "schedule:software-improver",
+      singletonMode: "cancel",
+      maxAttempts: 1,
+      payload: {
+        kind: "factory.run",
+        stream: "agents/factory/sessions/software-improver",
+        profileId: "software",
+        problem: "Review recent repo memory and create or react a scoped delivery objective.",
+        config: {
+          maxIterations: 6,
+        },
+      },
+    },
+  ]);
+}, 120_000);
+
 test("factory cli: init stores portable codex command when codex is auto-detected on PATH", async () => {
   const repoDir = await createRepo();
   const codexPathDir = await createPathCodexStub();

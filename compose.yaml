@@ -1,17 +1,18 @@
 services:
   receipt:
-    build:
-      context: .
-      dockerfile: Dockerfile
     working_dir: /workspace/receipt
-    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     environment:
       PORT: "${PORT:-8787}"
+      DATA_DIR: /workspace/receipt/.receipt/data
+      RECEIPT_DATA_DIR: /workspace/receipt/.receipt/data
       JOB_BACKEND: resonate
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       OPENAI_MODEL: "${OPENAI_MODEL:-gpt-5.2}"
-      HOME: /tmp/receipt-home
-      CODEX_HOME: /tmp/receipt-home/.codex
+      RECEIPT_WORKDIR: /workspace/receipt
+      HOME: /workspace/receipt/.receipt/home
+      CODEX_HOME: /workspace/receipt/.receipt/home/.codex
+      RECEIPT_HOST_AUTH_ROOT: /mnt/host-auth
+      RECEIPT_ISOLATED_CODEX_HOME_ROOT: /workspace/receipt/.receipt/home/.codex/runtime
       RECEIPT_CODEX_BIN: codex
       CHAT_WORKER_PROCESSES: "${CHAT_WORKER_PROCESSES:-10}"
       CONTROL_WORKER_PROCESSES: "${CONTROL_WORKER_PROCESSES:-4}"
@@ -29,19 +30,13 @@ services:
       RESONATE_GROUP_CONTROL: receipt-control
       RESONATE_GROUP_CODEX: receipt-codex
       RESONATE_SQLITE_PATH: /workspace/receipt/.receipt/resonate/resonate.db
+      SSH_AUTH_SOCK: "${RECEIPT_DOCKER_FORWARD_SSH_AUTH_SOCK:-}"
     ports:
       - "${PORT:-8787}:8787"
       - "8001:8001"
       - "8002:8002"
       - "50051:50051"
       - "9090:9090"
-    volumes:
-      - .:/workspace/receipt
-      - receipt-node-modules:/workspace/receipt/node_modules
-      - ${HOST_HOME}/.codex:/tmp/receipt-home/.codex
     security_opt:
       - seccomp=unconfined
       - apparmor=unconfined
-
-volumes:
-  receipt-node-modules:

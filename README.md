@@ -122,7 +122,97 @@ bun run test:smoke
 
 ## Docker + Resonate
 
-The repo now includes a single-container Docker setup that runs:
+Receipt now has two Docker modes.
+
+### Dev mode
+
+Use dev mode for local iteration. It bind-mounts the repo, keeps runtime state under the repo-local `.receipt/` tree, and forwards the targeted host auth/config surfaces that Factory and Codex need.
+
+Start it with:
+
+```bash
+bun run docker:dev:up
+```
+
+or the existing alias:
+
+```bash
+bun run docker:up
+```
+
+Dev mode:
+
+- bind-mounts the repo at `/workspace/receipt`
+- stores shared state under:
+  - `/workspace/receipt/.receipt/data`
+  - `/workspace/receipt/.receipt/resonate`
+  - `/workspace/receipt/.receipt/home`
+- runs the Receipt multi-process Resonate runtime in one container
+- enables Bun watch mode for the server roles
+- runs a Tailwind watcher for live CSS updates
+- makes `receipt`, `bun`, `git`, `gh`, `aws`, `python3`, `jq`, and `rg` available in the container
+
+Targeted host auth/config is mounted read-only under `/mnt/host-auth/` and synced into the stable container home:
+
+- `${HOME}/.codex`
+- `${HOME}/.aws`
+- `${HOME}/.config/gh`
+- `${HOME}/.gitconfig`
+- `${HOME}/.git-credentials`
+- `${HOME}/.ssh`
+
+Stop it with:
+
+```bash
+bun run docker:dev:down
+```
+
+If you really want to remove dev volumes too:
+
+```bash
+bun run docker:dev:reset
+```
+
+### Prod mode
+
+Use prod mode for distribution and upgrades. It runs from an immutable image, does not bind-mount the repo, and only persists runtime state volumes.
+
+Start it with:
+
+```bash
+bun run docker:prod:up
+```
+
+Prod mode persists only:
+
+- `/workspace/receipt/.receipt/data`
+- `/workspace/receipt/.receipt/resonate`
+- `/workspace/receipt/.receipt/home`
+
+It does **not** mount the entire `.receipt/` tree, so the checked-in `.receipt/bin/receipt` wrapper and `.receipt/config.json` stay inside the image.
+
+If you publish a distributable image, set `RECEIPT_IMAGE` and pull it first:
+
+```bash
+RECEIPT_IMAGE=ghcr.io/your-org/receipt:latest bun run docker:prod:pull
+RECEIPT_IMAGE=ghcr.io/your-org/receipt:latest bun run docker:prod:up
+```
+
+Stop prod without deleting volumes:
+
+```bash
+bun run docker:prod:down
+```
+
+If you explicitly want to destroy prod volumes too:
+
+```bash
+bun run docker:prod:reset
+```
+
+### Shared runtime details
+
+Both Docker modes run:
 
 - the Receipt API process
 - the Resonate driver process
@@ -130,35 +220,21 @@ The repo now includes a single-container Docker setup that runs:
 - the control worker process
 - the codex worker process
 - an embedded Resonate server with SQLite persistence
-- the `resonate` CLI
-- the `codex` CLI used by Factory task workers
 
-Start it with:
-
-```bash
-bun run docker:up
-```
-
-That launcher:
-
-- detects and forwards your local UID/GID
-- mounts the repo plus `${HOME}/.codex`
-- creates the local `.receipt` and Codex mount directories if needed
-- applies the tuned Resonate worker and queue defaults automatically
-
-If you want detached mode:
-
-```bash
-bun run docker:up -- up --build -d
-```
-
-The container mounts the repo into `/workspace/receipt`, stores Resonate state at `.receipt/resonate/resonate.db`, runs with `JOB_BACKEND=resonate`, and exposes:
+Both expose:
 
 - `http://localhost:8787` for Receipt
 - `http://localhost:8001` for Resonate HTTP
 - `http://localhost:9090/metrics` for Resonate metrics
 
-The compose file also mounts `${HOME}/.codex` into the container so `codex exec` can authenticate and launch worker runs.
+Both use the same internal runtime paths:
+
+- `DATA_DIR=/workspace/receipt/.receipt/data`
+- `RESONATE_SQLITE_PATH=/workspace/receipt/.receipt/resonate/resonate.db`
+- `HOME=/workspace/receipt/.receipt/home`
+- `CODEX_HOME=/workspace/receipt/.receipt/home/.codex`
+
+Codex isolated homes are created under `${CODEX_HOME}/runtime`, not `/tmp`.
 
 For Linux hosts, the compose service sets `seccomp=unconfined` and `apparmor=unconfined` so Codex can install its own nested Landlock/seccomp sandbox inside the container. If you remove those, `codex exec --sandbox read-only|workspace-write` may fail inside Docker.
 
@@ -168,33 +244,12 @@ For local non-Docker startup with the Resonate control plane, use:
 bun run start:resonate
 ```
 
-That command now starts both the local Resonate server and the full multi-process Receipt runtime. It uses SQLite at `.receipt/resonate/resonate.db`, so the only extra local prerequisite is that the `resonate` CLI is installed on your machine.
+That command starts both the local Resonate server and the full multi-process Receipt runtime. It uses SQLite at `.receipt/resonate/resonate.db`, so the only extra local prerequisite is that the `resonate` CLI is installed on your machine.
 
 The canonical source entrypoints in this repo are `bun src/cli.ts`, `bun src/server.ts`, and `bun scripts/start-resonate-runtime.mjs`.
+
+Repo-local recurring jobs can be declared in `.receipt/config.json` under `schedules`. See [docs/api/config.md](./docs/api/config.md) for the schedule schema and a recurring Factory software-improvement example.
 
 The server auto-loads route modules from `src/agents/*.agent.ts`.
 
 The web UI uses `chat`, `thread`, and `Work Details` terminology while the durable code, HTTP APIs, receipts, and CLI still use `objective`.
-
-## Docker
-
-The repo ships with a Docker image for EC2 or any other container host:
-
-```bash
-docker build -t receipt .
-docker run --rm -p 8787:8787 \
-  -e OPENAI_API_KEY=... \
-  -v receipt-data:/app/.receipt/data \
-  receipt
-```
-
-Environment variables that are commonly useful at runtime:
-
-- `PORT` defaults to `8787`
-- `DATA_DIR` defaults to `/app/.receipt/data`
-- `OPENAI_API_KEY` enables live LLM and embedding calls
-- `RECEIPT_CODEX_BIN` or `HUB_CODEX_BIN` can point at a Codex CLI binary if you want the container to use a non-default path
-
-The app expects a `codex` executable to be present on `PATH` or supplied through `RECEIPT_CODEX_BIN`. If you want it baked into the image, install that binary in the `runner` stage before starting the server.
-
-For EC2, run the container with a persistent EBS-backed volume mounted at `/app/.receipt/data` so receipts, queue state, and workspace metadata survive restarts.

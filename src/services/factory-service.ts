@@ -4143,6 +4143,10 @@ export class FactoryService {
         query,
         limit: 6,
         maxChars,
+        audit: {
+          actor: "factory-service",
+          operation: "summarize-scope",
+        },
       });
       return summary.trim() || undefined;
     } catch {
@@ -5819,9 +5823,12 @@ export class FactoryService {
     const workspaceNodeModulesBin = await pathExists(path.join(workspacePath, "node_modules", ".bin"))
       ? path.join(workspacePath, "node_modules", ".bin")
       : undefined;
+    const repoReceiptBinDir = await pathExists(path.join(this.git.repoRoot, ".receipt", "bin"))
+      ? path.join(this.git.repoRoot, ".receipt", "bin")
+      : undefined;
     return {
       receiptBinDir,
-      path: prependPaths([receiptBinDir, workspaceNodeModulesBin], process.env.PATH),
+      path: prependPaths([receiptBinDir, workspaceNodeModulesBin, repoReceiptBinDir], process.env.PATH),
     };
   }
 
@@ -5846,6 +5853,10 @@ export class FactoryService {
         query,
         limit: 8,
         maxChars: 1_200,
+        audit: {
+          actor: "factory-service",
+          operation: "load-memory-summary",
+        },
       });
       return summary;
     } catch {

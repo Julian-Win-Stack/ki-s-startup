@@ -166,6 +166,13 @@ const copyPathIfExists = async (sourcePath: string, targetPath: string): Promise
   }
 };
 
+const resolveIsolatedCodexHomeRoot = (env: NodeJS.ProcessEnv): string => {
+  const configuredRoot = env.RECEIPT_ISOLATED_CODEX_HOME_ROOT?.trim();
+  if (configuredRoot) return path.resolve(configuredRoot);
+  const codexHome = env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
+  return path.join(codexHome, "runtime");
+};
+
 const prepareIsolatedCodexHome = async (env: NodeJS.ProcessEnv): Promise<string | undefined> => {
   const sourceHome = env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
   try {
@@ -174,7 +181,9 @@ const prepareIsolatedCodexHome = async (env: NodeJS.ProcessEnv): Promise<string 
   } catch {
     return undefined;
   }
-  const isolatedHome = await fsp.mkdtemp(path.join(os.tmpdir(), "receipt-codex-home-"));
+  const isolatedRoot = resolveIsolatedCodexHomeRoot(env);
+  await fsp.mkdir(isolatedRoot, { recursive: true });
+  const isolatedHome = await fsp.mkdtemp(path.join(isolatedRoot, "isolated-"));
   await Promise.all([
     copyPathIfExists(path.join(sourceHome, "auth.json"), path.join(isolatedHome, "auth.json")),
     copyPathIfExists(path.join(sourceHome, "config.toml"), path.join(isolatedHome, "config.toml")),

@@ -1,22 +1,25 @@
 FROM oven/bun:1 AS bun-binary
 
-FROM node:20-bookworm-slim
+FROM node:20-bookworm-slim AS base
 
 ARG CODEX_VERSION=0.116.0
 ARG RESONATE_VERSION=v0.8.2
 ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PATH="/usr/local/bin:${PATH}"
+ENV PATH="/workspace/receipt/.receipt/bin:/usr/local/bin:${PATH}"
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
+    awscli \
     bash \
     ca-certificates \
     curl \
     dumb-init \
     git \
+    gh \
     jq \
+    openssh-client \
     python3 \
     ripgrep \
   && rm -rf /var/lib/apt/lists/*
@@ -44,14 +47,15 @@ COPY docker/entrypoint.sh /usr/local/bin/receipt-entrypoint.sh
 COPY docker/healthcheck.sh /usr/local/bin/receipt-healthcheck.sh
 RUN chmod +x /usr/local/bin/receipt-entrypoint.sh /usr/local/bin/receipt-healthcheck.sh
 
-COPY package.json bun.lock bunfig.toml tsconfig.json ./
-COPY packages/core/package.json packages/core/package.json
-RUN bun install --frozen-lockfile
-
-COPY . .
-
 ENV PORT=8787
+ENV DATA_DIR=/workspace/receipt/.receipt/data
+ENV RECEIPT_DATA_DIR=/workspace/receipt/.receipt/data
 ENV JOB_BACKEND=resonate
+ENV RECEIPT_WORKDIR=/workspace/receipt
+ENV HOME=/workspace/receipt/.receipt/home
+ENV CODEX_HOME=/workspace/receipt/.receipt/home/.codex
+ENV RECEIPT_HOST_AUTH_ROOT=/mnt/host-auth
+ENV RECEIPT_ISOLATED_CODEX_HOME_ROOT=/workspace/receipt/.receipt/home/.codex/runtime
 ENV RESONATE_URL=http://127.0.0.1:8001
 ENV RESONATE_GROUP_API=receipt-api
 ENV RESONATE_GROUP_DRIVER=receipt-driver
@@ -60,5 +64,25 @@ ENV RESONATE_GROUP_CONTROL=receipt-control
 ENV RESONATE_GROUP_CODEX=receipt-codex
 ENV RECEIPT_CODEX_BIN=codex
 
+FROM base AS source
+
+COPY package.json bun.lock bunfig.toml tsconfig.json ./
+COPY packages/core/package.json packages/core/package.json
+RUN bun install --frozen-lockfile
+
+COPY . .
+RUN chmod +x .receipt/bin/receipt \
+  && ln -sf /workspace/receipt/.receipt/bin/receipt /usr/local/bin/receipt
+
+FROM source AS dev
+
+ENV RECEIPT_DOCKER_MODE=dev
+ENTRYPOINT ["/usr/bin/dumb-init", "--", "/usr/local/bin/receipt-entrypoint.sh"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 CMD ["/usr/local/bin/receipt-healthcheck.sh"]
+
+FROM source AS prod
+
+RUN bun run build
+ENV RECEIPT_DOCKER_MODE=prod
 ENTRYPOINT ["/usr/bin/dumb-init", "--", "/usr/local/bin/receipt-entrypoint.sh"]
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 CMD ["/usr/local/bin/receipt-healthcheck.sh"]

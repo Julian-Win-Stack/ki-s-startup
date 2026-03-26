@@ -23,6 +23,10 @@ Examples:
 ### Memory Streams
 - `memory/<scope>`
 
+Common memory events:
+- `memory.committed`
+- `memory.accessed`
+
 ### Improvement Stream
 - `improvement`
 

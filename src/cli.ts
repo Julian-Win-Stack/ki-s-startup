@@ -604,7 +604,11 @@ const commandMemory = async (args: ReadonlyArray<string>, flags: Flags): Promise
   switch (subcommand) {
     case "read": {
       const limit = parseNumberFlag(flags, "limit");
-      const entries = await memoryTools.read({ scope, limit });
+      const entries = await memoryTools.read({
+        scope,
+        limit,
+        audit: { actor: "cli", command: "memory.read" },
+      });
       console.log(JSON.stringify({ entries }, null, 2));
       return;
     }
@@ -612,7 +616,12 @@ const commandMemory = async (args: ReadonlyArray<string>, flags: Flags): Promise
       const query = asString(flags, "query") ?? args.slice(2).join(" ").trim();
       if (!query) throw new Error("memory search requires --query or trailing query text");
       const limit = parseNumberFlag(flags, "limit");
-      const entries = await memoryTools.search({ scope, query, limit });
+      const entries = await memoryTools.search({
+        scope,
+        query,
+        limit,
+        audit: { actor: "cli", command: "memory.search" },
+      });
       console.log(JSON.stringify({ entries }, null, 2));
       return;
     }
@@ -620,7 +629,13 @@ const commandMemory = async (args: ReadonlyArray<string>, flags: Flags): Promise
       const query = asString(flags, "query") ?? (args.length > 2 ? args.slice(2).join(" ").trim() : undefined);
       const limit = parseNumberFlag(flags, "limit");
       const maxChars = parseNumberFlag(flags, "max-chars");
-      const result = await memoryTools.summarize({ scope, query, limit, maxChars });
+      const result = await memoryTools.summarize({
+        scope,
+        query,
+        limit,
+        maxChars,
+        audit: { actor: "cli", command: "memory.summarize" },
+      });
       console.log(JSON.stringify(result, null, 2));
       return;
     }
@@ -643,7 +658,12 @@ const commandMemory = async (args: ReadonlyArray<string>, flags: Flags): Promise
       const fromTs = parseNumberFlag(flags, "from-ts");
       if (fromTs === undefined) throw new Error("memory diff requires --from-ts");
       const toTs = parseNumberFlag(flags, "to-ts");
-      const entries = await memoryTools.diff({ scope, fromTs, toTs });
+      const entries = await memoryTools.diff({
+        scope,
+        fromTs,
+        toTs,
+        audit: { actor: "cli", command: "memory.diff" },
+      });
       console.log(JSON.stringify({ entries }, null, 2));
       return;
     }

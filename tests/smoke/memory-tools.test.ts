@@ -63,8 +63,30 @@ test("memory tools: commit/read/search/summarize/diff", async () => {
       scope: "theorem.run.demo",
       fromTs: first.ts,
       toTs: Date.now(),
+      audit: { actor: "test", command: "diff" },
     });
     expect(diff.length).toBe(2);
+
+    const state = await runtime.state("memory/theorem.run.demo");
+    expect(state.accesses.length).toBe(4);
+    expect(state.accesses.map((access) => access.operation)).toEqual([
+      "diff",
+      "summarize",
+      "search",
+      "read",
+    ]);
+
+    const chain = await runtime.chain("memory/theorem.run.demo");
+    expect(chain.map((receipt) => receipt.body.type)).toEqual([
+      "memory.committed",
+      "memory.committed",
+      "memory.accessed",
+      "memory.accessed",
+      "memory.accessed",
+      "memory.accessed",
+    ]);
+    const latestAccess = chain.at(-1)?.body;
+    expect(latestAccess && typeof latestAccess === "object" && "type" in latestAccess ? latestAccess.type : "").toBe("memory.accessed");
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

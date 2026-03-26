@@ -154,7 +154,7 @@ Read-only Factory HTTP routes that remain supported:
 - Body schema (JSON): `{ "limit": 20 }` (optional).
 - Success: `200` with `{ entries }`.
 - Errors: none expected.
-- Side effects: none.
+- Side effects: appends an audited `memory.accessed` receipt for the scope.
 - Example:
 ```bash
 curl -sS -X POST http://localhost:8787/memory/release/read \
@@ -168,7 +168,7 @@ curl -sS -X POST http://localhost:8787/memory/release/read \
 - Body schema (JSON): `{ "query": "...", "limit": 20 }`.
 - Success: `200` with `{ entries }`.
 - Errors: none expected.
-- Side effects: none.
+- Side effects: appends an audited `memory.accessed` receipt for the scope.
 - Example:
 ```bash
 curl -sS -X POST http://localhost:8787/memory/release/search \
@@ -182,7 +182,7 @@ curl -sS -X POST http://localhost:8787/memory/release/search \
 - Body schema (JSON): `{ "query": "optional", "limit": 20, "maxChars": 2400 }`.
 - Success: `200` with `{ summary, entries }`.
 - Errors: none expected.
-- Side effects: none.
+- Side effects: appends an audited `memory.accessed` receipt for the scope.
 - Example:
 ```bash
 curl -sS -X POST http://localhost:8787/memory/release/summarize \
@@ -210,7 +210,7 @@ curl -sS -X POST http://localhost:8787/memory/release/commit \
 - Body schema (JSON): `{ "fromTs": 1700000000000, "toTs": 1700000100000 }`.
 - Success: `200` with `{ entries }`.
 - Errors: `400` when `fromTs` missing/invalid.
-- Side effects: none.
+- Side effects: appends an audited `memory.accessed` receipt for the scope.
 - Example:
 ```bash
 curl -sS -X POST http://localhost:8787/memory/release/diff \
@@ -231,4 +231,3 @@ curl -sS -X POST http://localhost:8787/memory/release/diff \
 ```bash
 curl -sS http://localhost:8787/assets/factory.css
 ```
-

@@ -20,7 +20,7 @@ import {
   type MemoryState,
 } from "./adapters/memory-tools";
 import { createDelegationTools } from "./adapters/delegation";
-import { createHeartbeat, type HeartbeatSpec } from "./adapters/heartbeat";
+import { createHeartbeat, parseHeartbeatSpecsFromEnv } from "./adapters/heartbeat";
 import { resonateJobBackend } from "./adapters/resonate-job-backend";
 import { createResonateDriverStarter, createResonateRoleRuntime } from "./adapters/resonate-runtime";
 import { resolveProcessRole } from "./adapters/resonate-config";
@@ -796,34 +796,27 @@ const scheduleObjectiveResume = (): void => {
 // Heartbeat
 // ============================================================================
 
-const parseHeartbeatSpecs = (): ReadonlyArray<HeartbeatSpec> => {
-  const specs: HeartbeatSpec[] = [];
-  for (const [key, value] of Object.entries(process.env)) {
-    const match = key.match(/^HEARTBEAT_(\w+)_INTERVAL_MS$/);
-    if (!match || !value) continue;
-    const agentId = match[1].toLowerCase();
-    const intervalMs = Number(value);
-    if (!Number.isFinite(intervalMs) || intervalMs < 1_000) continue;
-    specs.push({
-      id: `heartbeat:${agentId}`,
-      agentId,
-      intervalMs,
-      payload: { kind: `${agentId}.heartbeat` },
-    });
+const heartbeatSpecs = (() => {
+  const configured = [...FACTORY_RUNTIME.schedules];
+  const seen = new Set(configured.map((spec) => spec.id));
+  for (const spec of parseHeartbeatSpecsFromEnv(process.env)) {
+    if (seen.has(spec.id)) continue;
+    configured.push(spec);
+    seen.add(spec.id);
   }
-  return specs;
-};
+  return configured;
+})();
 
-const heartbeats = parseHeartbeatSpecs().map((spec) =>
+const heartbeats = heartbeatSpecs.map((spec) =>
   createHeartbeat(spec, {
     enqueue: async (opts) => {
       const created = await queue.enqueue({
         agentId: opts.agentId,
         payload: opts.payload,
-        lane: "collect",
-        singletonMode: "cancel",
-        sessionKey: `heartbeat:${opts.agentId}`,
-        maxAttempts: 1,
+        lane: opts.lane,
+        singletonMode: opts.singletonMode,
+        sessionKey: opts.sessionKey,
+        maxAttempts: opts.maxAttempts,
       });
       sse.publish("jobs", created.id);
       return { id: created.id };
@@ -1032,7 +1025,11 @@ app.post("/memory/:scope/read", async (c) => {
   const scope = c.req.param("scope");
   const body = await readJsonBody(c.req.raw);
   const limit = typeof body.limit === "number" ? body.limit : undefined;
-  const entries = await memoryTools.read({ scope, limit });
+  const entries = await memoryTools.read({
+    scope,
+    limit,
+    audit: { actor: "api", route: "/memory/:scope/read" },
+  });
   return jsonResponse(200, { entries });
 });
 
@@ -1041,7 +1038,12 @@ app.post("/memory/:scope/search", async (c) => {
   const body = await readJsonBody(c.req.raw);
   const query = typeof body.query === "string" ? body.query : "";
   const limit = typeof body.limit === "number" ? body.limit : undefined;
-  const entries = await memoryTools.search({ scope, query, limit });
+  const entries = await memoryTools.search({
+    scope,
+    query,
+    limit,
+    audit: { actor: "api", route: "/memory/:scope/search" },
+  });
   return jsonResponse(200, { entries });
 });
 
@@ -1051,7 +1053,13 @@ app.post("/memory/:scope/summarize", async (c) => {
   const query = typeof body.query === "string" ? body.query : undefined;
   const limit = typeof body.limit === "number" ? body.limit : undefined;
   const maxChars = typeof body.maxChars === "number" ? body.maxChars : undefined;
-  const result = await memoryTools.summarize({ scope, query, limit, maxChars });
+  const result = await memoryTools.summarize({
+    scope,
+    query,
+    limit,
+    maxChars,
+    audit: { actor: "api", route: "/memory/:scope/summarize" },
+  });
   return jsonResponse(200, result);
 });
 
@@ -1079,7 +1087,12 @@ app.post("/memory/:scope/diff", async (c) => {
   const fromTs = typeof body.fromTs === "number" ? body.fromTs : Number.NaN;
   if (!Number.isFinite(fromTs)) return text(400, "fromTs required");
   const toTs = typeof body.toTs === "number" ? body.toTs : undefined;
-  const entries = await memoryTools.diff({ scope, fromTs, toTs });
+  const entries = await memoryTools.diff({
+    scope,
+    fromTs,
+    toTs,
+    audit: { actor: "api", route: "/memory/:scope/diff" },
+  });
   return jsonResponse(200, { entries });
 });
 

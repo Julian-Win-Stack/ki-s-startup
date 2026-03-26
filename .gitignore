@@ -4,6 +4,8 @@ dist/
 data/
 .receipt/data/
 .receipt/resonate/
+.receipt/home/
+.receipt/docker/
 *.log
 .DS_Store
 .env

@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import type { HeartbeatSpec } from "../adapters/heartbeat";
+import type { JobLane } from "../modules/job";
 import type { FactoryObjectivePolicy } from "../modules/factory";
 import { DEFAULT_FACTORY_OBJECTIVE_POLICY } from "../modules/factory";
 
@@ -14,6 +16,7 @@ export type FactoryCliStoredConfig = {
   readonly codexBin?: string;
   readonly defaultChecks?: ReadonlyArray<string>;
   readonly defaultPolicy?: FactoryObjectivePolicy;
+  readonly schedules?: ReadonlyArray<FactoryCliStoredSchedule>;
 };
 
 export type FactoryCliConfig = {
@@ -23,6 +26,7 @@ export type FactoryCliConfig = {
   readonly codexBin: string;
   readonly defaultChecks: ReadonlyArray<string>;
   readonly defaultPolicy: FactoryObjectivePolicy;
+  readonly schedules: ReadonlyArray<HeartbeatSpec>;
 };
 
 export type FactoryRuntimeConfig = {
@@ -30,6 +34,19 @@ export type FactoryRuntimeConfig = {
   readonly dataDir: string;
   readonly codexBin: string;
   readonly configPath?: string;
+  readonly schedules: ReadonlyArray<HeartbeatSpec>;
+};
+
+export type FactoryCliStoredSchedule = {
+  readonly id?: string;
+  readonly enabled?: boolean;
+  readonly agentId?: string;
+  readonly intervalMs?: number;
+  readonly lane?: JobLane;
+  readonly sessionKey?: string;
+  readonly singletonMode?: "allow" | "cancel" | "steer";
+  readonly maxAttempts?: number;
+  readonly payload?: Record<string, unknown>;
 };
 
 const CONFIG_DIR = ".receipt";
@@ -45,6 +62,60 @@ const toAbsolute = (baseDir: string, value: string | undefined, fallback: string
 
 const uniqueChecks = (values: ReadonlyArray<string> | undefined): ReadonlyArray<string> =>
   [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const asNonEmptyString = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+
+const normalizeLane = (value: unknown): JobLane =>
+  value === "chat" || value === "collect" || value === "steer" || value === "follow_up"
+    ? value
+    : "collect";
+
+const normalizeSingletonMode = (value: unknown): "allow" | "cancel" | "steer" =>
+  value === "allow" || value === "cancel" || value === "steer"
+    ? value
+    : "cancel";
+
+const normalizeSchedules = (value: unknown): ReadonlyArray<HeartbeatSpec> => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("Factory config schedules must be an array");
+  const schedules: HeartbeatSpec[] = [];
+  const seenIds = new Set<string>();
+  for (const [index, entry] of value.entries()) {
+    if (!isRecord(entry)) throw new Error(`Factory config schedule at index ${index} must be an object`);
+    if (entry.enabled === false) continue;
+    const agentId = asNonEmptyString(entry.agentId);
+    if (!agentId) throw new Error(`Factory config schedule at index ${index} requires agentId`);
+    const intervalMsRaw = typeof entry.intervalMs === "number" && Number.isFinite(entry.intervalMs)
+      ? Math.floor(entry.intervalMs)
+      : Number.NaN;
+    if (!Number.isFinite(intervalMsRaw) || intervalMsRaw < 1_000) {
+      throw new Error(`Factory config schedule '${agentId}' must set intervalMs >= 1000`);
+    }
+    if (!isRecord(entry.payload)) {
+      throw new Error(`Factory config schedule '${agentId}' requires payload to be an object`);
+    }
+    const id = asNonEmptyString(entry.id) ?? `schedule:${agentId}:${index + 1}`;
+    if (seenIds.has(id)) throw new Error(`Factory config has duplicate schedule id '${id}'`);
+    seenIds.add(id);
+    schedules.push({
+      id,
+      agentId,
+      intervalMs: intervalMsRaw,
+      lane: normalizeLane(entry.lane),
+      sessionKey: asNonEmptyString(entry.sessionKey) ?? `schedule:${id}`,
+      singletonMode: normalizeSingletonMode(entry.singletonMode),
+      maxAttempts: typeof entry.maxAttempts === "number" && Number.isFinite(entry.maxAttempts)
+        ? Math.max(1, Math.min(Math.floor(entry.maxAttempts), 8))
+        : 1,
+      payload: entry.payload as Record<string, unknown>,
+    });
+  }
+  return schedules;
+};
 
 export const isInteractiveTerminal = (): boolean =>
   Boolean(process.stdin.isTTY && process.stdout.isTTY);
@@ -112,6 +183,7 @@ export const loadFactoryConfig = async (cwd: string, repoRootOverride?: string):
     codexBin: envString(process.env.RECEIPT_CODEX_BIN, process.env.HUB_CODEX_BIN, parsed.codexBin) ?? "codex",
     defaultChecks: uniqueChecks(parsed.defaultChecks),
     defaultPolicy: parsed.defaultPolicy ?? DEFAULT_FACTORY_OBJECTIVE_POLICY,
+    schedules: normalizeSchedules(parsed.schedules),
   };
 };
 
@@ -126,6 +198,7 @@ export const resolveFactoryRuntimeConfig = async (
       dataDir: loaded.dataDir,
       codexBin: loaded.codexBin,
       configPath: loaded.configPath,
+      schedules: loaded.schedules,
     };
   }
 
@@ -136,6 +209,7 @@ export const resolveFactoryRuntimeConfig = async (
     repoRoot: fallbackRepoRoot,
     dataDir: explicitDataDir ? path.resolve(explicitDataDir) : path.join(fallbackRepoRoot, ".receipt", "data"),
     codexBin: envString(process.env.RECEIPT_CODEX_BIN, process.env.HUB_CODEX_BIN) ?? "codex",
+    schedules: [],
   };
 };
 

@@ -18,11 +18,38 @@ export type MemoryEntry = {
   readonly ts: number;
 };
 
-export type MemoryEvent = {
-  readonly type: "memory.committed";
+export type MemoryAccessOperation = "read" | "search" | "summarize" | "diff" | "reindex";
+
+export type MemoryAccessStrategy = "recent" | "keyword" | "semantic" | "time_window" | "reindex";
+
+export type MemoryAccessRecord = {
+  readonly id: string;
   readonly scope: string;
-  readonly entry: MemoryEntry;
+  readonly operation: MemoryAccessOperation;
+  readonly strategy: MemoryAccessStrategy;
+  readonly query?: string;
+  readonly limit?: number;
+  readonly maxChars?: number;
+  readonly fromTs?: number;
+  readonly toTs?: number;
+  readonly resultCount: number;
+  readonly resultIds?: ReadonlyArray<string>;
+  readonly summaryChars?: number;
+  readonly meta?: Readonly<Record<string, unknown>>;
+  readonly ts: number;
 };
+
+export type MemoryEvent =
+  | {
+      readonly type: "memory.committed";
+      readonly scope: string;
+      readonly entry: MemoryEntry;
+    }
+  | {
+      readonly type: "memory.accessed";
+      readonly scope: string;
+      readonly access: MemoryAccessRecord;
+    };
 
 export type MemoryCmd = {
   readonly type: "emit";
@@ -33,31 +60,44 @@ export type MemoryCmd = {
 
 export type MemoryState = {
   readonly entries: ReadonlyArray<MemoryEntry>;
+  readonly accesses: ReadonlyArray<MemoryAccessRecord>;
 };
 
-export const initialMemoryState: MemoryState = { entries: [] };
+export const initialMemoryState: MemoryState = { entries: [], accesses: [] };
 
 export const decideMemory: Decide<MemoryCmd, MemoryEvent> = (cmd) => [cmd.event];
 
 export const reduceMemory: Reducer<MemoryState, MemoryEvent> = (state, event) => {
-  if (event.type !== "memory.committed") {
-    throw new Error(`unknown memory event: ${(event as { type?: string }).type ?? "unknown"}`);
+  if (event.type === "memory.committed") {
+    return {
+      ...state,
+      entries: [event.entry, ...state.entries]
+        .sort((a, b) => b.ts - a.ts || b.id.localeCompare(a.id)),
+    };
   }
-  return {
-    entries: [event.entry, ...state.entries]
-      .sort((a, b) => b.ts - a.ts || b.id.localeCompare(a.id)),
-  };
+  if (event.type === "memory.accessed") {
+    return {
+      ...state,
+      accesses: [event.access, ...state.accesses]
+        .sort((a, b) => b.ts - a.ts || b.id.localeCompare(a.id)),
+    };
+  }
+  throw new Error(`unknown memory event: ${(event as { type?: string }).type ?? "unknown"}`);
 };
+
+export type MemoryAuditMeta = Readonly<Record<string, unknown>>;
 
 export type MemoryReadInput = {
   readonly scope: string;
   readonly limit?: number;
+  readonly audit?: MemoryAuditMeta;
 };
 
 export type MemorySearchInput = {
   readonly scope: string;
   readonly query: string;
   readonly limit?: number;
+  readonly audit?: MemoryAuditMeta;
 };
 
 export type MemorySummarizeInput = {
@@ -65,6 +105,7 @@ export type MemorySummarizeInput = {
   readonly query?: string;
   readonly limit?: number;
   readonly maxChars?: number;
+  readonly audit?: MemoryAuditMeta;
 };
 
 export type MemoryCommitInput = {
@@ -72,12 +113,14 @@ export type MemoryCommitInput = {
   readonly text: string;
   readonly tags?: ReadonlyArray<string>;
   readonly meta?: Readonly<Record<string, unknown>>;
+  readonly audit?: MemoryAuditMeta;
 };
 
 export type MemoryDiffInput = {
   readonly scope: string;
   readonly fromTs: number;
   readonly toTs?: number;
+  readonly audit?: MemoryAuditMeta;
 };
 
 export type EmbedFn = (texts: ReadonlyArray<string>) => Promise<ReadonlyArray<ReadonlyArray<number>>>;
@@ -162,6 +205,15 @@ const hasQuery = (entry: MemoryEntry, queryTerms: ReadonlyArray<string>): boolea
   return queryTerms.every((term) => haystack.includes(term));
 };
 
+const nextMemoryId = (prefix: "mem" | "memacc", now: () => number): string =>
+  `${prefix}_${now().toString(36)}_${randomUUID().slice(0, 6)}`;
+
+const nextEventId = (now: () => number): string =>
+  `memory_${now().toString(36)}_${randomUUID().slice(0, 6)}`;
+
+const cappedResultIds = (entries: ReadonlyArray<MemoryEntry>, limit = 20): ReadonlyArray<string> =>
+  entries.slice(0, limit).map((entry) => entry.id);
+
 export type MemoryToolsDeps = {
   readonly dir: string;
   readonly runtime: Runtime<MemoryCmd, MemoryEvent, MemoryState>;
@@ -201,17 +253,55 @@ export const createMemoryTools = (deps: MemoryToolsDeps): MemoryTools => {
     return (await readEntries(scope)).filter((entry) => hasQuery(entry, terms)).slice(0, limit);
   };
 
+  const emitAccess = async (scope: string, access: Omit<MemoryAccessRecord, "id" | "scope" | "ts">): Promise<void> => {
+    const eventScope = scope;
+    const record: MemoryAccessRecord = {
+      id: nextMemoryId("memacc", now),
+      scope: eventScope,
+      ts: now(),
+      ...access,
+    };
+    await deps.runtime.execute(streamForScope(eventScope), {
+      type: "emit",
+      eventId: nextEventId(now),
+      event: {
+        type: "memory.accessed",
+        scope: eventScope,
+        access: record,
+      },
+    });
+  };
+
   return {
     read: async (input) => {
       const limit = Math.max(1, Math.min(input.limit ?? 20, 500));
-      return (await readEntries(input.scope)).slice(0, limit);
+      const entries = (await readEntries(input.scope)).slice(0, limit);
+      await emitAccess(input.scope, {
+        operation: "read",
+        strategy: "recent",
+        limit,
+        resultCount: entries.length,
+        resultIds: cappedResultIds(entries),
+        meta: input.audit,
+      });
+      return entries;
     },
 
     search: async (input) => {
       const limit = Math.max(1, Math.min(input.limit ?? 20, 500));
-      return embedFn
+      const entries = await (embedFn
         ? semanticSearch(input.scope, input.query, limit)
-        : keywordSearch(input.scope, input.query, limit);
+        : keywordSearch(input.scope, input.query, limit));
+      await emitAccess(input.scope, {
+        operation: "search",
+        strategy: embedFn ? "semantic" : "keyword",
+        query: input.query,
+        limit,
+        resultCount: entries.length,
+        resultIds: cappedResultIds(entries),
+        meta: input.audit,
+      });
+      return entries;
     },
 
     summarize: async (input) => {
@@ -222,8 +312,20 @@ export const createMemoryTools = (deps: MemoryToolsDeps): MemoryTools => {
           ? semanticSearch(input.scope, input.query, limit)
           : keywordSearch(input.scope, input.query, limit))
         : (await readEntries(input.scope)).slice(0, limit);
+      const summary = summarizeText(entries, maxChars);
+      await emitAccess(input.scope, {
+        operation: "summarize",
+        strategy: input.query ? (embedFn ? "semantic" : "keyword") : "recent",
+        query: input.query,
+        limit,
+        maxChars,
+        resultCount: entries.length,
+        resultIds: cappedResultIds(entries),
+        summaryChars: summary.length,
+        meta: input.audit,
+      });
       return {
-        summary: summarizeText(entries, maxChars),
+        summary,
         entries,
       };
     },
@@ -232,7 +334,7 @@ export const createMemoryTools = (deps: MemoryToolsDeps): MemoryTools => {
       const text = input.text.trim();
       if (!text) throw new Error("memory.commit requires non-empty text");
       const entry: MemoryEntry = {
-        id: `mem_${now().toString(36)}_${randomUUID().slice(0, 6)}`,
+        id: nextMemoryId("mem", now),
         scope: input.scope,
         text,
         tags: input.tags?.filter((tag) => typeof tag === "string" && tag.trim().length > 0),
@@ -241,7 +343,7 @@ export const createMemoryTools = (deps: MemoryToolsDeps): MemoryTools => {
       };
       await deps.runtime.execute(streamForScope(input.scope), {
         type: "emit",
-        eventId: `memory_${now().toString(36)}_${randomUUID().slice(0, 6)}`,
+        eventId: nextEventId(now),
         event: {
           type: "memory.committed",
           scope: input.scope,
@@ -261,8 +363,18 @@ export const createMemoryTools = (deps: MemoryToolsDeps): MemoryTools => {
 
     diff: async (input) => {
       const toTs = input.toTs ?? now();
-      return (await readEntries(input.scope))
+      const entries = (await readEntries(input.scope))
         .filter((entry) => entry.ts >= input.fromTs && entry.ts <= toTs);
+      await emitAccess(input.scope, {
+        operation: "diff",
+        strategy: "time_window",
+        fromTs: input.fromTs,
+        toTs,
+        resultCount: entries.length,
+        resultIds: cappedResultIds(entries),
+        meta: input.audit,
+      });
+      return entries;
     },
 
     reindex: async (scope) => {
@@ -275,8 +387,13 @@ export const createMemoryTools = (deps: MemoryToolsDeps): MemoryTools => {
         cache[entries[idx].id] = vectors[idx];
       }
       await saveEmbeddingCache(scopeToEmbeddingsFile(root, scope), cache);
+      await emitAccess(scope, {
+        operation: "reindex",
+        strategy: "reindex",
+        resultCount: entries.length,
+        resultIds: cappedResultIds(entries),
+      });
       return entries.length;
     },
   };
 };
-

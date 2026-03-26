@@ -11,6 +11,8 @@ export const isActiveJobStatus = (status?: string): boolean =>
 export const isTerminalJobStatus = (status: string | undefined): boolean =>
   status === "completed" || status === "failed" || status === "canceled";
 
+export const LIVE_JOB_STALE_AFTER_MS = 90_000;
+
 export const asObject = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -18,6 +20,32 @@ export const asObject = (value: unknown): Record<string, unknown> | undefined =>
 
 export const asString = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+
+export const jobProgressAt = (job: QueueJob | undefined): number | undefined => {
+  const result = asObject(job?.result);
+  return typeof result?.progressAt === "number" && Number.isFinite(result.progressAt)
+    ? result.progressAt
+    : undefined;
+};
+
+export const displayJobStatus = (job: QueueJob | undefined, now = Date.now()): string => {
+  if (!job) return "unknown";
+  if (isTerminalJobStatus(job.status)) return job.status;
+  const progressAt = jobProgressAt(job);
+  if (job.status === "running" && typeof progressAt === "number" && now - progressAt >= LIVE_JOB_STALE_AFTER_MS) {
+    return "stalled";
+  }
+  if (job.status === "leased") return "running";
+  return job.status;
+};
+
+export const displayJobUpdatedAt = (job: QueueJob | undefined): number | undefined =>
+  jobProgressAt(job) ?? job?.updatedAt;
+
+export const isDisplayActiveJob = (job: QueueJob | undefined, now = Date.now()): boolean => {
+  const status = displayJobStatus(job, now);
+  return status === "queued" || status === "running";
+};
 
 export const profileLabel = (profileId?: string): string => {
   const value = profileId?.trim();

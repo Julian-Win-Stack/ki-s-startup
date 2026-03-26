@@ -5,35 +5,101 @@ RECEIPT_WORKDIR="${RECEIPT_WORKDIR:-/workspace/receipt}"
 PORT="${PORT:-8787}"
 RESONATE_HTTP_URL="${RESONATE_URL:-http://127.0.0.1:8001}"
 RESONATE_SQLITE_PATH="${RESONATE_SQLITE_PATH:-${RECEIPT_WORKDIR}/.receipt/resonate/resonate.db}"
-HOME="${HOME:-/tmp/receipt-home}"
+DATA_DIR="${DATA_DIR:-${RECEIPT_WORKDIR}/.receipt/data}"
+RECEIPT_DOCKER_MODE="${RECEIPT_DOCKER_MODE:-dev}"
+HOST_AUTH_ROOT="${RECEIPT_HOST_AUTH_ROOT:-/mnt/host-auth}"
+HOME="${HOME:-${RECEIPT_WORKDIR}/.receipt/home}"
 CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
+RECEIPT_CSS_WATCH="${RECEIPT_CSS_WATCH:-0}"
+
+copy_optional_file() {
+  local source_path="${1}"
+  local target_path="${2}"
+  if [ ! -f "${source_path}" ]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "${target_path}")"
+  cp "${source_path}" "${target_path}"
+}
+
+copy_optional_dir() {
+  local source_path="${1}"
+  local target_path="${2}"
+  if [ ! -d "${source_path}" ]; then
+    return 0
+  fi
+  if [ -z "$(find "${source_path}" -mindepth 1 -print -quit 2>/dev/null)" ]; then
+    return 0
+  fi
+  mkdir -p "${target_path}"
+  cp -R "${source_path}/." "${target_path}/"
+}
+
+sync_host_auth() {
+  copy_optional_file "${HOST_AUTH_ROOT}/codex/auth.json" "${CODEX_HOME}/auth.json"
+  copy_optional_file "${HOST_AUTH_ROOT}/codex/config.toml" "${CODEX_HOME}/config.toml"
+  copy_optional_file "${HOST_AUTH_ROOT}/codex/version.json" "${CODEX_HOME}/version.json"
+  copy_optional_file "${HOST_AUTH_ROOT}/codex/.codex-global-state.json" "${CODEX_HOME}/.codex-global-state.json"
+  copy_optional_dir "${HOST_AUTH_ROOT}/aws" "${HOME}/.aws"
+  copy_optional_dir "${HOST_AUTH_ROOT}/gh" "${HOME}/.config/gh"
+  copy_optional_dir "${HOST_AUTH_ROOT}/ssh" "${HOME}/.ssh"
+  copy_optional_file "${HOST_AUTH_ROOT}/gitconfig" "${HOME}/.gitconfig"
+  copy_optional_file "${HOST_AUTH_ROOT}/git-credentials" "${HOME}/.git-credentials"
+}
 
 cd "${RECEIPT_WORKDIR}"
+export HOME CODEX_HOME DATA_DIR RECEIPT_DATA_DIR="${RECEIPT_DATA_DIR:-${DATA_DIR}}"
+export PATH="${RECEIPT_WORKDIR}/.receipt/bin:${RECEIPT_WORKDIR}/node_modules/.bin:${PATH}"
 
 mkdir -p \
   "$(dirname "${RESONATE_SQLITE_PATH}")" \
+  "${DATA_DIR}" \
   "${HOME}" \
   "${CODEX_HOME}" \
+  "${CODEX_HOME}/runtime" \
   "${RECEIPT_WORKDIR}/.receipt"
 
-if [ ! -d node_modules ] || [ ! -e node_modules/.bin/tailwindcss ]; then
-  echo "[entrypoint] installing Bun dependencies"
-  bun install --frozen-lockfile
-fi
+sync_host_auth
 
-echo "[entrypoint] preparing runtime assets"
-bun run assets:prepare
-bun run css:build
+if [ "${RECEIPT_DOCKER_MODE}" = "dev" ]; then
+  if [ ! -d node_modules ] || [ ! -e node_modules/.bin/tailwindcss ]; then
+    echo "[entrypoint] installing Bun dependencies"
+    bun install --frozen-lockfile
+  fi
+
+  echo "[entrypoint] preparing runtime assets"
+  bun run assets:prepare
+  bun run css:build
+
+  if [ "${RECEIPT_CSS_WATCH}" = "1" ]; then
+    echo "[entrypoint] starting CSS watcher"
+    bun run css:watch &
+    asset_pid=$!
+  fi
+else
+  if [ ! -e node_modules/.bin/tailwindcss ]; then
+    echo "[entrypoint] production image is missing dependencies" >&2
+    exit 1
+  fi
+  if [ ! -f dist/assets/factory.css ]; then
+    echo "[entrypoint] production image is missing built assets" >&2
+    exit 1
+  fi
+fi
 
 shutdown() {
   local exit_code="${1:-0}"
   trap - INT TERM
+  if [ -n "${asset_pid:-}" ] && kill -0 "${asset_pid}" 2>/dev/null; then
+    kill "${asset_pid}" 2>/dev/null || true
+  fi
   if [ -n "${app_pid:-}" ] && kill -0 "${app_pid}" 2>/dev/null; then
     kill "${app_pid}" 2>/dev/null || true
   fi
   if [ -n "${resonate_pid:-}" ] && kill -0 "${resonate_pid}" 2>/dev/null; then
     kill "${resonate_pid}" 2>/dev/null || true
   fi
+  wait "${asset_pid:-}" 2>/dev/null || true
   wait "${app_pid:-}" 2>/dev/null || true
   wait "${resonate_pid:-}" 2>/dev/null || true
   exit "${exit_code}"

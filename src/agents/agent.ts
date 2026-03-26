@@ -390,6 +390,7 @@ const createTools = (opts: {
   readonly extraToolSpecs?: Readonly<Record<string, string>>;
   readonly extraTools?: Readonly<Record<string, AgentToolExecutor>>;
   readonly toolAllowlist?: ReadonlyArray<string>;
+  readonly memoryAuditMeta?: Readonly<Record<string, unknown>>;
 }): { readonly toolSpecs: Readonly<Record<string, string>>; readonly tools: Readonly<Record<string, AgentToolExecutor>> } => {
   const workspaceRoot = path.resolve(opts.workspaceRoot);
   const defaultScope = opts.defaultMemoryScope;
@@ -544,7 +545,14 @@ const createTools = (opts: {
     "memory.read": async (input) => {
       const scope = normalizeScope(input);
       const limit = typeof input.limit === "number" && Number.isFinite(input.limit) ? input.limit : undefined;
-      const entries = await memory.read({ scope, limit });
+      const entries = await memory.read({
+        scope,
+        limit,
+        audit: {
+          ...(opts.memoryAuditMeta ?? {}),
+          tool: "memory.read",
+        },
+      });
       return summarize(entries);
     },
 
@@ -552,7 +560,15 @@ const createTools = (opts: {
       const scope = normalizeScope(input);
       const query = typeof input.query === "string" ? input.query : "";
       const limit = typeof input.limit === "number" && Number.isFinite(input.limit) ? input.limit : undefined;
-      const entries = await memory.search({ scope, query, limit });
+      const entries = await memory.search({
+        scope,
+        query,
+        limit,
+        audit: {
+          ...(opts.memoryAuditMeta ?? {}),
+          tool: "memory.search",
+        },
+      });
       return summarize(entries);
     },
 
@@ -563,7 +579,16 @@ const createTools = (opts: {
       const localMaxChars = typeof input.maxChars === "number" && Number.isFinite(input.maxChars)
         ? input.maxChars
         : undefined;
-      const summary = await memory.summarize({ scope, query, limit, maxChars: localMaxChars });
+      const summary = await memory.summarize({
+        scope,
+        query,
+        limit,
+        maxChars: localMaxChars,
+        audit: {
+          ...(opts.memoryAuditMeta ?? {}),
+          tool: "memory.summarize",
+        },
+      });
       return summarize(summary);
     },
 
@@ -573,7 +598,15 @@ const createTools = (opts: {
       const tags = Array.isArray(input.tags)
         ? input.tags.filter((tag): tag is string => typeof tag === "string")
         : undefined;
-      const entry = await memory.commit({ scope, text, tags });
+      const entry = await memory.commit({
+        scope,
+        text,
+        tags,
+        meta: {
+          ...(opts.memoryAuditMeta ?? {}),
+          tool: "memory.commit",
+        },
+      });
       return summarize(entry);
     },
 
@@ -584,7 +617,15 @@ const createTools = (opts: {
         : Number.NaN;
       if (!Number.isFinite(fromTs)) throw new Error("memory.diff.fromTs is required");
       const toTs = typeof input.toTs === "number" && Number.isFinite(input.toTs) ? input.toTs : undefined;
-      const entries = await memory.diff({ scope, fromTs, toTs });
+      const entries = await memory.diff({
+        scope,
+        fromTs,
+        toTs,
+        audit: {
+          ...(opts.memoryAuditMeta ?? {}),
+          tool: "memory.diff",
+        },
+      });
       return summarize(entries);
     },
 
@@ -625,11 +666,20 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
   const model = input.model;
   const prompts = input.prompts;
   const control = input.control;
+  const workflowId = input.workflowId ?? AGENT_WORKFLOW_ID;
+  const workflowVersion = input.workflowVersion ?? AGENT_WORKFLOW_VERSION;
   const resolvedWorkspaceRoot = path.resolve(
     path.isAbsolute(input.config.workspace)
       ? input.config.workspace
       : path.join(input.workspaceRoot, input.config.workspace)
   );
+  const memoryAuditBase = {
+    actor: "agent",
+    runId: input.runId,
+    stream: runStream,
+    workflowId,
+    workspace: resolvedWorkspaceRoot,
+  } as const;
   const { tools, toolSpecs } = createTools({
     workspaceRoot: resolvedWorkspaceRoot,
     defaultMemoryScope: input.config.memoryScope,
@@ -639,9 +689,8 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
     extraToolSpecs: input.extraToolSpecs,
     extraTools: input.extraTools,
     toolAllowlist: input.toolAllowlist,
+    memoryAuditMeta: memoryAuditBase,
   });
-  const workflowId = input.workflowId ?? AGENT_WORKFLOW_ID;
-  const workflowVersion = input.workflowVersion ?? AGENT_WORKFLOW_VERSION;
   const availableTools = Object.keys(toolSpecs).sort();
   const toolHelp = availableTools.map((name) => `- ${name}: ${toolSpecs[name]}`).join("\n");
 
@@ -829,6 +878,10 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
         scope: memoryScope,
         text: flushText,
         tags: ["auto-flush", "pre-compaction"],
+        meta: {
+          ...memoryAuditBase,
+          reason: "pre-compaction",
+        },
       });
       await emit({
         type: "memory.flushed",
@@ -977,6 +1030,11 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
         query: problem,
         limit: 8,
         maxChars: 1_600,
+        audit: {
+          ...memoryAuditBase,
+          reason: "iteration-context",
+          iteration,
+        },
       });
       await emit({
         type: "memory.slice",
@@ -1115,7 +1173,7 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
           scope: memoryScope,
           text: `run ${input.runId} completed: ${truncateText(finalText, 800).text}`,
           tags: ["agent", "final"],
-          meta: { runId: input.runId, ts: now() },
+          meta: { ...memoryAuditBase, ts: now() },
         });
         finalized = true;
         break;
@@ -1249,7 +1307,7 @@ export const runAgent = async (input: AgentRunInput): Promise<AgentRunResult> =>
           scope: memoryScope,
           text: `run ${input.runId} continued: ${truncateText(finalText, 800).text}`,
           tags: ["agent", "final", "continued"],
-          meta: { runId: input.runId, ts: now(), continued: true },
+          meta: { ...memoryAuditBase, ts: now(), continued: true },
         });
         finalized = true;
       }

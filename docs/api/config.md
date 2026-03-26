@@ -15,6 +15,52 @@
 | `SUBJOB_JOIN_WAIT_MS` | `180000` | Async join timeout when merging sub-agent results. |
 | `HEARTBEAT_<AGENT>_INTERVAL_MS` | unset | Enables periodic collect-lane enqueue heartbeat for `<AGENT>` (minimum 1000ms). |
 
+## Repo Config Schedules
+
+`.receipt/config.json` can declare recurring jobs under `schedules`.
+
+Each entry supports:
+
+- `id`: stable schedule id. Defaults to `schedule:<agentId>:<index>`.
+- `enabled`: optional boolean. `false` skips the entry.
+- `agentId`: queue handler to invoke, such as `agent`, `factory`, or `codex`.
+- `intervalMs`: repeat interval in milliseconds. Must be at least `1000`.
+- `lane`: optional queue lane. Defaults to `collect`.
+- `sessionKey`: optional singleton session key. Defaults to `schedule:<id>`.
+- `singletonMode`: optional singleton behavior. Defaults to `cancel`.
+- `maxAttempts`: optional retry budget. Defaults to `1`.
+- `payload`: required JSON object passed to the job handler.
+
+Example: recurring Factory software-improvement loop
+
+```json
+{
+  "repoRoot": ".",
+  "dataDir": ".receipt/data",
+  "codexBin": "codex",
+  "schedules": [
+    {
+      "id": "software-improver",
+      "agentId": "factory",
+      "intervalMs": 21600000,
+      "lane": "chat",
+      "payload": {
+        "kind": "factory.run",
+        "stream": "agents/factory/sessions/software-improver",
+        "profileId": "software",
+        "problem": "Review recent repo memory, recent failures, and the latest completed or active work. Reuse the current objective on this stream when it is still active; otherwise create or react a scoped delivery objective that improves the codebase, validates the change, and publishes a PR."
+      }
+    }
+  ]
+}
+```
+
+Notes:
+
+- Using a stable `stream` lets Factory reuse the same active objective for later schedule ticks.
+- `lane: "chat"` is recommended for recurring Factory profile runs.
+- Config-defined schedules and `HEARTBEAT_<AGENT>_INTERVAL_MS` can coexist. Config ids win when duplicated.
+
 ## OpenAI and Model Calls
 
 | Variable | Default | Impact |

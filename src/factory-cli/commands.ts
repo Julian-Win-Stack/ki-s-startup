@@ -488,6 +488,7 @@ const initFactoryConfig = async (cwd: string, flags: Flags): Promise<FactoryCliC
     codexBin,
     defaultChecks: [],
     defaultPolicy: DEFAULT_FACTORY_OBJECTIVE_POLICY,
+    schedules: [],
   });
   const progress = isInteractiveTerminal() && !json ? spinner() : undefined;
   const profileStartedAt = Date.now();
@@ -549,6 +550,7 @@ const initFactoryConfig = async (cwd: string, flags: Flags): Promise<FactoryCliC
       codexBin,
       defaultChecks,
       defaultPolicy: compose.defaultPolicy,
+      schedules: [],
     } satisfies FactoryCliConfig;
     if (json) {
       printJson({
@@ -712,6 +714,7 @@ export const handleFactoryCommand = async (cwd: string, args: ReadonlyArray<stri
       codexBin: runtimeConfig.codexBin,
       defaultChecks: [],
       defaultPolicy: DEFAULT_FACTORY_OBJECTIVE_POLICY,
+      schedules: [],
     }, {
       mode,
       prompt,
