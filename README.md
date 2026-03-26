@@ -152,14 +152,19 @@ Dev mode:
 - runs a Tailwind watcher for live CSS updates
 - makes `receipt`, `bun`, `git`, `gh`, `aws`, `python3`, `jq`, and `rg` available in the container
 
-Targeted host auth/config is mounted read-only under `/mnt/host-auth/` and synced into the stable container home:
+The 80/20 auth model in dev is:
 
-- `${HOME}/.codex`
-- `${HOME}/.aws`
-- `${HOME}/.config/gh`
-- `${HOME}/.gitconfig`
-- `${HOME}/.git-credentials`
-- `${HOME}/.ssh`
+- mount AWS, GitHub, Git, and SSH config directly into the stable container home
+- keep `CODEX_HOME` writable and copy only the checked-in Codex auth/config files from the mounted host `.codex` directory
+
+That means the container sees:
+
+- `/workspace/receipt/.receipt/home/.aws`
+- `/workspace/receipt/.receipt/home/.config/gh`
+- `/workspace/receipt/.receipt/home/.gitconfig`
+- `/workspace/receipt/.receipt/home/.git-credentials`
+- `/workspace/receipt/.receipt/home/.ssh`
+- `/workspace/receipt/.receipt/home/.codex`
 
 Stop it with:
 

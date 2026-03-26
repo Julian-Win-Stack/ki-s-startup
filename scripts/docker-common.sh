@@ -69,7 +69,7 @@ receipt_docker_prepare() {
     export RECEIPT_DOCKER_GIT_CREDENTIALS_SOURCE="${stub_root}/git-credentials"
   fi
 
-  export RECEIPT_DOCKER_SSH_AUTH_TARGET="/mnt/host-auth/ssh-agent.sock"
+  export RECEIPT_DOCKER_SSH_AUTH_TARGET="/tmp/receipt-ssh-agent.sock"
   if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "${SSH_AUTH_SOCK}" ]; then
     export RECEIPT_DOCKER_SSH_AUTH_SOURCE="${SSH_AUTH_SOCK}"
     export RECEIPT_DOCKER_FORWARD_SSH_AUTH_SOCK="${RECEIPT_DOCKER_SSH_AUTH_TARGET}"

@@ -15,11 +15,11 @@ services:
       - receipt-resonate:/workspace/receipt/.receipt/resonate
       - receipt-home:/workspace/receipt/.receipt/home
       - ${RECEIPT_DOCKER_CODEX_SOURCE}:/mnt/host-auth/codex:ro
-      - ${RECEIPT_DOCKER_AWS_SOURCE}:/mnt/host-auth/aws:ro
-      - ${RECEIPT_DOCKER_GH_SOURCE}:/mnt/host-auth/gh:ro
-      - ${RECEIPT_DOCKER_GITCONFIG_SOURCE}:/mnt/host-auth/gitconfig:ro
-      - ${RECEIPT_DOCKER_GIT_CREDENTIALS_SOURCE}:/mnt/host-auth/git-credentials:ro
-      - ${RECEIPT_DOCKER_SSH_SOURCE}:/mnt/host-auth/ssh:ro
+      - ${RECEIPT_DOCKER_AWS_SOURCE}:/workspace/receipt/.receipt/home/.aws:ro
+      - ${RECEIPT_DOCKER_GH_SOURCE}:/workspace/receipt/.receipt/home/.config/gh:ro
+      - ${RECEIPT_DOCKER_GITCONFIG_SOURCE}:/workspace/receipt/.receipt/home/.gitconfig:ro
+      - ${RECEIPT_DOCKER_GIT_CREDENTIALS_SOURCE}:/workspace/receipt/.receipt/home/.git-credentials:ro
+      - ${RECEIPT_DOCKER_SSH_SOURCE}:/workspace/receipt/.receipt/home/.ssh:ro
       - ${RECEIPT_DOCKER_SSH_AUTH_SOURCE}:${RECEIPT_DOCKER_SSH_AUTH_TARGET}
 
 volumes:
