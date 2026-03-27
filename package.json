@@ -5,6 +5,13 @@
   "version": "0.1.0",
   "description": "Immutable, replayable chains for agent runs",
   "author": "Receipt contributors",
+  "license": "MIT",
+  "keywords": [
+    "cli",
+    "agents",
+    "automation",
+    "workflows"
+  ],
   "homepage": "https://github.com/skishore23/receipt",
   "bugs": {
     "url": "https://github.com/skishore23/receipt/issues"

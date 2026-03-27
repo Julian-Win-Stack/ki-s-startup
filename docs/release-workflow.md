@@ -49,6 +49,8 @@ Use `.github/workflows/publish.yml` with manual dispatch from `main`.
 Required secret:
 
 - `NPM_TOKEN` (token with publish permission for `receipt-agent-cli`)
+- npm package owner access for the account/token used by the workflow
+- provenance support enabled for this package (required by `--provenance`)
 
 Publish command used by workflow:
 

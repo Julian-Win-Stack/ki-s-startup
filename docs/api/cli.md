@@ -43,11 +43,15 @@ Reconfigure behavior:
 Config path:
 
 - `~/.receipt/config.json`
+- On macOS/Linux, setup enforces secure permissions (`700` directory, `600` file).
 
 ## Commands
 
 ### receipt start [--reset]
 - Purpose: configure or reconfigure CLI runtime credentials and identity targets.
+- Flags:
+  - `--reset`: ignore saved selections and start from scratch.
+  - `--openai-key <key>`: provide OpenAI key non-interactively for this setup run.
 - Required checks:
   - valid OpenAI API key
   - authenticated `gh` login on `github.com`
