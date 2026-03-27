@@ -3161,6 +3161,60 @@ test("factory route: software diagnostic prompts create investigation objectives
   ].join("\n"));
 });
 
+test("factory route: aws inventory prompts hand off new objectives to the infrastructure profile", async () => {
+  let createdInput: Record<string, unknown> | undefined;
+  let queuedInput: Record<string, unknown> | undefined;
+  const app = createRouteTestApp({
+    service: {
+      createObjective: async (input: Record<string, unknown>) => {
+        createdInput = input;
+        return makeStubObjectiveDetail("objective_ec2", "job_ec2");
+      },
+    },
+    onEnqueue: async (input) => {
+      queuedInput = input;
+      return {
+        id: "job_chat_ec2",
+        agentId: "factory",
+        payload: (input.payload as Record<string, unknown> | undefined) ?? {},
+        lane: "chat",
+        status: "queued",
+        attempt: 1,
+        maxAttempts: 1,
+        createdAt: 1,
+        updatedAt: 1,
+        commands: [],
+      };
+    },
+  });
+
+  const response = await app.request("http://receipt.test/factory/compose?profile=generalist&chat=chat_demo", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      prompt: "show me ec2 list",
+    }).toString(),
+  });
+
+  expect(response.status).toBe(303);
+  expect(response.headers.get("location")).toMatch(/^\/factory\?profile=infrastructure&chat=chat_demo&thread=objective_ec2&run=run_[a-z0-9]+_[a-z0-9]+&job=job_chat_ec2$/);
+  expect(createdInput).toMatchObject({
+    title: "show me ec2 list",
+    prompt: "show me ec2 list",
+    profileId: "infrastructure",
+    startImmediately: true,
+  });
+  expect((queuedInput?.payload as Record<string, unknown> | undefined)).toMatchObject({
+    kind: "factory.run",
+    profileId: "infrastructure",
+    chatId: "chat_demo",
+    objectiveId: "objective_ec2",
+    problem: "show me ec2 list",
+  });
+});
+
 test("factory route: follow-up composer submissions stop pinning the URL to a completed thread", async () => {
   let queuedInput: Record<string, unknown> | undefined;
   const completed = {

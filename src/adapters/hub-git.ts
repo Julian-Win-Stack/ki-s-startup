@@ -187,9 +187,9 @@ export class HubGit {
     if (!this.syncPromise) {
       this.syncPromise = (async () => {
         try {
-          await this.execGit(["remote", "get-url", this.remoteName], { gitDir: this.bareDir });
+          await this.ensureRemote();
           await this.execGit(
-            ["fetch", "--prune", this.remoteName, "+refs/heads/*:refs/remotes/source/*"],
+            ["fetch", "--prune", this.repoRoot, "+refs/heads/*:refs/remotes/source/*"],
             { gitDir: this.bareDir }
           );
           this.invalidateGraph();

@@ -59,7 +59,11 @@ import type {
 } from "../../views/factory-models";
 import type { QueueJob } from "../../adapters/jsonl-queue";
 import { readObjectiveAnalysis } from "../../factory-cli/analyze";
-import { parseComposerDraft, prepareObjectiveCreation } from "../../factory-cli/composer";
+import {
+  inferObjectiveProfileHint,
+  parseComposerDraft,
+  prepareObjectiveCreation,
+} from "../../factory-cli/composer";
 import {
   listReceiptFiles,
   readReceiptFile,
@@ -118,6 +122,18 @@ const isInspectorPanel = (value: string | undefined): value is FactoryInspectorP
 
 const isTerminalObjectiveStatus = (status: unknown): boolean =>
   status === "completed" || status === "failed" || status === "canceled";
+
+const objectiveProfileIdForPrompt = (input: {
+  readonly prompt: string;
+  readonly resolvedProfile: FactoryChatProfile;
+  readonly profiles: ReadonlyArray<FactoryChatProfile>;
+}): string => {
+  if (input.resolvedProfile.id !== "generalist") return input.resolvedProfile.id;
+  const hintedProfileId = inferObjectiveProfileHint(input.prompt);
+  if (!hintedProfileId) return input.resolvedProfile.id;
+  const hintedProfile = input.profiles.find((profile) => profile.id === hintedProfileId);
+  return hintedProfile?.id ?? input.resolvedProfile.id;
+};
 
 const makeFactoryRunId = (): string =>
   `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1679,6 +1695,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             liveObjectives,
             allowExplicitFallback: true,
           });
+          let activeProfileId = resolved.root.id;
 
           if (prompt.startsWith("/")) {
             const parsed = parseComposerDraft(prompt, objectiveId);
@@ -1728,15 +1745,20 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
               }
               case "new": {
                 const nextChatId = makeFactoryChatId();
+                const targetProfileId = objectiveProfileIdForPrompt({
+                  prompt: command.prompt,
+                  resolvedProfile: resolved.root,
+                  profiles: await loadFactoryProfiles(),
+                });
                 const created = await service.createObjective({
                   title: command.title ?? "Factory objective",
                   prompt: command.prompt,
                   objectiveMode: command.objectiveMode,
-                  profileId: resolved.root.id,
+                  profileId: targetProfileId,
                   startImmediately: true,
                 });
                 return navigationResponse(req, buildChatLink({
-                  profileId: resolved.root.id,
+                  profileId: targetProfileId,
                   chatId: nextChatId,
                   objectiveId: created.objectiveId,
                   panel: currentPanel,
@@ -1829,11 +1851,16 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
 
           if (!objectiveId) {
             const prepared = prepareObjectiveCreation(prompt);
+            activeProfileId = objectiveProfileIdForPrompt({
+              prompt,
+              resolvedProfile: resolved.root,
+              profiles: await loadFactoryProfiles(),
+            });
             const created = await service.createObjective({
               title: prepared.title,
               prompt: prepared.prompt,
               objectiveMode: prepared.objectiveMode,
-              profileId: resolved.root.id,
+              profileId: activeProfileId,
               startImmediately: true,
             });
             objectiveId = created.objectiveId;
@@ -1847,8 +1874,8 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
             : objectiveId;
 
           const stream = requestedChat
-            ? factoryChatSessionStream(service.git.repoRoot, resolved.root.id, requestedChat)
-            : factoryChatStream(service.git.repoRoot, resolved.root.id, objectiveId);
+            ? factoryChatSessionStream(service.git.repoRoot, activeProfileId, requestedChat)
+            : factoryChatStream(service.git.repoRoot, activeProfileId, objectiveId);
           const runId = makeFactoryRunId();
           const created = await ctx.queue.enqueue({
             agentId: "factory",
@@ -1861,7 +1888,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
               stream,
               runId,
               problem: prompt,
-              profileId: resolved.root.id,
+              profileId: activeProfileId,
               ...(objectiveId ? { objectiveId } : {}),
               ...(requestedChat ? { chatId: requestedChat } : {}),
             },
@@ -1869,7 +1896,7 @@ const createFactoryRoute = (ctx: AgentLoaderContext): AgentRouteModule => {
           ctx.sse.publish("jobs", created.id);
           if (objectiveId) ctx.sse.publish("factory", objectiveId);
           return navigationResponse(req, buildChatLink({
-            profileId: resolved.root.id,
+            profileId: activeProfileId,
             chatId: requestedChat,
             objectiveId: redirectObjectiveId,
             runId,

@@ -11,7 +11,7 @@ import { renderToString } from "ink";
 import { jsonBranchStore, jsonlStore } from "../../src/adapters/jsonl";
 import { createRuntime } from "@receipt/core/runtime";
 import { FactoryBoardScreen, FactoryObjectiveScreen } from "../../src/factory-cli/app.tsx";
-import { parseComposerDraft } from "../../src/factory-cli/composer";
+import { inferObjectiveProfileHint, parseComposerDraft } from "../../src/factory-cli/composer";
 import { loadFactoryConfig, resolveFactoryRuntimeConfig } from "../../src/factory-cli/config";
 import { createFactoryCliRuntime } from "../../src/factory-cli/runtime";
 import { FactoryThemeProvider } from "../../src/factory-cli/theme.tsx";
@@ -1720,6 +1720,11 @@ test("factory cli: composer parser marks diagnostic prompts as investigations an
       objectiveMode: "investigation",
     },
   });
+});
+
+test("factory cli: composer prompt classifier only steers simple aws inventory asks", () => {
+  expect(inferObjectiveProfileHint("show me ec2 list")).toBe("infrastructure");
+  expect(inferObjectiveProfileHint("fix the ec2 dashboard widget")).toBeUndefined();
 });
 
 test("factory cli: composer parser rejects job commands without a selected objective", () => {
