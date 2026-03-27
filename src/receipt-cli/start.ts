@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 import OpenAI from "openai";
@@ -26,6 +26,7 @@ type SelectOption = { readonly label: string; readonly value: string };
 
 type StartDeps = {
   readonly runCommand?: (command: string, args: ReadonlyArray<string>) => Promise<CommandResult>;
+  readonly runInteractiveCommand?: (command: string, args: ReadonlyArray<string>) => Promise<CommandResult>;
   readonly askRetry?: (message: string) => Promise<boolean>;
   readonly ensurePromptText?: (message: string, initialValue?: string) => Promise<string>;
   readonly ensurePromptPassword?: (message: string) => Promise<string>;
@@ -119,6 +120,30 @@ const runCommand = async (
   }
 };
 
+const runInteractiveCommand = async (
+  command: string,
+  args: ReadonlyArray<string>,
+): Promise<CommandResult> => new Promise((resolve) => {
+  const child = spawn(command, [...args], {
+    stdio: "inherit",
+    env: process.env,
+  });
+  child.on("error", (error) => {
+    resolve({
+      ok: false,
+      stdout: "",
+      stderr: error.message,
+    });
+  });
+  child.on("close", (code) => {
+    resolve({
+      ok: code === 0,
+      stdout: "",
+      stderr: code === 0 ? "" : `exit code ${String(code ?? "unknown")}`,
+    });
+  });
+});
+
 const installCommandFor = (name: "gh" | "aws", platform = process.platform): string =>
   name === "gh"
     ? platform === "darwin"
@@ -185,30 +210,70 @@ const extractGithubAccountsFromJson = (raw: string): ReadonlyArray<string> => {
 
 const ensureGithubLogin = async (preferredUsername?: string, deps?: StartDeps): Promise<string> => {
   const run = deps?.runCommand ?? runCommand;
+  const runInteractive = deps?.runInteractiveCommand ?? deps?.runCommand ?? runInteractiveCommand;
   const retryPrompt = deps?.askRetry ?? askRetry;
-  const promptText = deps?.ensurePromptText ?? ensurePromptText;
   const confirmChoice = deps?.confirmPrompt ?? confirmPrompt;
   const selectChoice = deps?.selectPrompt ?? selectPrompt;
   const log = deps?.log ?? console.log;
+
+  const runGithubBrowserLogin = async (): Promise<boolean> => {
+    log("Starting GitHub login in your terminal. This may open your browser.");
+    const login = await runInteractive("gh", ["auth", "login", "--hostname", "github.com", "--web"]);
+    if (login.ok) return true;
+    log("\nGitHub login command did not complete successfully.");
+    if (login.stderr) log(login.stderr);
+    log("Run manually: gh auth login --hostname github.com --web");
+    return false;
+  };
+
+  const readGithubLoginFromApi = async (): Promise<string | undefined> => {
+    const fromApi = await run("gh", ["api", "user", "--jq", ".login"]);
+    if (!fromApi.ok) return undefined;
+    const login = fromApi.stdout.trim();
+    return login.length > 0 ? login : undefined;
+  };
+
+  const promptGithubLoginAndRetry = async (): Promise<"retry" | "abort"> => {
+    log("\nCheck failed: GitHub is not authenticated for github.com.");
+    const startLogin = await confirmChoice(
+      "Start GitHub browser login now? (runs: gh auth login --hostname github.com --web)",
+      true,
+    );
+    if (startLogin) {
+      await runGithubBrowserLogin();
+    } else {
+      log("Run: gh auth login --hostname github.com --web");
+    }
+    const retry = await retryPrompt("Retry GitHub auth check now?");
+    return retry ? "retry" : "abort";
+  };
+
   while (true) {
     const jsonStatus = await run("gh", ["auth", "status", "--hostname", "github.com", "--json", "hosts"]);
     const textStatus = jsonStatus.ok
       ? { ok: true, stdout: "", stderr: "" }
       : await run("gh", ["auth", "status", "--hostname", "github.com"]);
     if (!jsonStatus.ok && !textStatus.ok) {
-      log("\nCheck failed: GitHub is not authenticated for github.com.");
-      log("Run: gh auth login");
-      const retry = await retryPrompt("Retry GitHub auth check now?");
-      if (!retry) throw new Error("GitHub login is required");
+      const decision = await promptGithubLoginAndRetry();
+      if (decision === "abort") throw new Error("GitHub login is required");
       continue;
     }
 
-    const accounts = jsonStatus.ok
+    let accounts = jsonStatus.ok
       ? extractGithubAccountsFromJson(jsonStatus.stdout)
       : extractGithubAccountsFromText(`${textStatus.stdout}\n${textStatus.stderr}`);
+    if (accounts.length === 0 && jsonStatus.ok) {
+      const textFallback = await run("gh", ["auth", "status", "--hostname", "github.com"]);
+      if (textFallback.ok || textFallback.stdout || textFallback.stderr) {
+        accounts = extractGithubAccountsFromText(`${textFallback.stdout}\n${textFallback.stderr}`);
+      }
+    }
     if (accounts.length === 0) {
-      const fallback = await promptText("GitHub username to save", preferredUsername);
-      return fallback;
+      const fromApi = await readGithubLoginFromApi();
+      if (fromApi) return fromApi;
+      const decision = await promptGithubLoginAndRetry();
+      if (decision === "abort") throw new Error("GitHub login is required");
+      continue;
     }
     if (accounts.length === 1) return accounts[0];
     if (preferredUsername && accounts.includes(preferredUsername)) {
@@ -220,7 +285,14 @@ const ensureGithubLogin = async (preferredUsername?: string, deps?: StartDeps): 
       "Select GitHub account for receipt",
       accounts.map((account) => ({ label: account, value: account })),
     );
-    await run("gh", ["auth", "switch", "--hostname", "github.com", "--user", String(selected)]);
+    const switched = await run("gh", ["auth", "switch", "--hostname", "github.com", "--user", String(selected)]);
+    if (!switched.ok) {
+      log("\nFailed to switch GitHub active account.");
+      if (switched.stderr) log(switched.stderr);
+      const retry = await retryPrompt("Retry GitHub account selection now?");
+      if (!retry) throw new Error("GitHub login is required");
+      continue;
+    }
     return String(selected);
   }
 };
@@ -261,9 +333,44 @@ const getAwsIdentity = async (profile?: string, deps?: StartDeps): Promise<AwsId
 
 const ensureAwsIdentity = async (preferredIdentity?: AwsIdentity, deps?: StartDeps): Promise<AwsIdentity> => {
   const retryPrompt = deps?.askRetry ?? askRetry;
+  const promptText = deps?.ensurePromptText ?? ensurePromptText;
   const selectChoice = deps?.selectPrompt ?? selectPrompt;
   const confirmChoice = deps?.confirmPrompt ?? confirmPrompt;
+  const run = deps?.runCommand ?? runCommand;
+  const runInteractive = deps?.runInteractiveCommand ?? deps?.runCommand ?? runInteractiveCommand;
   const log = deps?.log ?? console.log;
+
+  const runAwsSsoGuidedSetup = async (): Promise<void> => {
+    log("Starting AWS SSO setup in your terminal.");
+    log("Step 1/2: aws configure sso");
+    const configured = await runInteractive("aws", ["configure", "sso"]);
+    if (!configured.ok) {
+      log("AWS SSO configure did not complete successfully.");
+      if (configured.stderr) log(configured.stderr);
+    }
+    const profile = await promptText(
+      "AWS profile to use for SSO login (example: dev)",
+      preferredIdentity?.profile,
+    );
+    log(`Step 2/2: aws sso login --profile ${profile}`);
+    const loggedIn = await runInteractive("aws", ["sso", "login", "--profile", profile]);
+    if (!loggedIn.ok) {
+      log("AWS SSO login did not complete successfully.");
+      if (loggedIn.stderr) log(loggedIn.stderr);
+    }
+  };
+
+  const runAwsAccessKeySetup = async (): Promise<void> => {
+    log("Starting AWS access key setup in your terminal.");
+    log("This runs: aws configure");
+    await run("aws", ["configure", "set", "output", "json"]);
+    const configured = await runInteractive("aws", ["configure"]);
+    if (!configured.ok) {
+      log("AWS access key setup did not complete successfully.");
+      if (configured.stderr) log(configured.stderr);
+    }
+  };
+
   while (true) {
     const identities = new Map<string, AwsIdentity>();
     const profiles = await getAwsProfiles(deps);
@@ -283,8 +390,15 @@ const ensureAwsIdentity = async (preferredIdentity?: AwsIdentity, deps?: StartDe
     const options = [...identities.values()];
     if (options.length === 0) {
       log("\nCheck failed: AWS is not authenticated.");
-      log("Run: aws configure");
-      log("Or run: aws sso login --profile <profile>");
+      const useSso = await confirmChoice(
+        "Use AWS SSO browser login? Select \"No\" to use access keys with aws configure.",
+        true,
+      );
+      if (useSso) {
+        await runAwsSsoGuidedSetup();
+      } else {
+        await runAwsAccessKeySetup();
+      }
       const retry = await retryPrompt("Retry AWS auth check now?");
       if (!retry) throw new Error("AWS login is required");
       continue;

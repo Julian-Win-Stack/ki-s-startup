@@ -30,8 +30,8 @@ receipt start
 `receipt start` checks:
 
 1. OpenAI API key (required and validated)
-2. `gh` install + auth state for `github.com`
-3. `aws` install + auth state
+2. `gh` install + auth state for `github.com` (guided browser login available)
+3. `aws` install + auth state (guided SSO flow available)
 4. AWS account/profile selection
 5. Local config persistence
 
@@ -59,6 +59,9 @@ Config path:
 - Behavior:
   - `receipt start` reruns checks and pre-fills from saved config where possible
   - `receipt start --reset` ignores saved selections and runs full setup as new
+  - when GitHub auth is missing, setup can launch `gh auth login --hostname github.com --web`
+  - when AWS auth is missing, setup can guide `aws configure sso` then `aws sso login --profile <profile>`
+  - existing working non-SSO AWS credentials are still accepted
 - Output:
   - success summary with saved config path and selected GitHub/AWS identities
   - non-zero exit when required checks are not satisfied and user aborts retries
@@ -284,9 +287,9 @@ receipt factory codex-probe --mode both --reply status-ok
 | Failure | Command to run | Then |
 | --- | --- | --- |
 | `gh` not found | `brew install gh` (or your package manager) | rerun `receipt start` |
-| GitHub auth missing | `gh auth login` | rerun `receipt start` |
+| GitHub auth missing | use guided login in setup, or `gh auth login --hostname github.com --web` | rerun `receipt start` |
 | `aws` not found | `brew install awscli` (or your package manager) | rerun `receipt start` |
-| AWS auth missing | `aws configure` or `aws sso login --profile <profile>` | rerun `receipt start` |
+| AWS auth missing | use guided setup in CLI, or `aws configure sso` then `aws sso login --profile <profile>` | rerun `receipt start` |
 | OpenAI key invalid | provide a valid API key when prompted | retry inside setup |
 
 ## Resolution Rules
