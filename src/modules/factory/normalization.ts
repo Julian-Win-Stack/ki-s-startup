@@ -353,5 +353,8 @@ export const normalizeFactoryState = (state: FactoryState): FactoryState => {
     candidatePassesByTask: isRecord(state.candidatePassesByTask) ? state.candidatePassesByTask : {},
     consecutiveFailuresByTask: isRecord(state.consecutiveFailuresByTask) ? state.consecutiveFailuresByTask : {},
     checks: Array.isArray(state.checks) ? state.checks.filter((check): check is string => typeof check === "string") : [],
+    sourceWarnings: Array.isArray(state.sourceWarnings)
+      ? state.sourceWarnings.filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0)
+      : [],
   };
 };

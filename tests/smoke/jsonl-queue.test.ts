@@ -325,6 +325,140 @@ test("jsonl queue: getJob reads authoritative jobs/<jobId> stream", async () => 
   }
 });
 
+test("jsonl queue: cold getJob does not require scanning the full job manifest", async () => {
+  const dir = await mkTmp("receipt-queue-cold-get-job");
+  try {
+    const runtime = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob
+    );
+    const queue = jsonlQueue({ runtime, stream: "jobs" });
+
+    const created = await queue.enqueue({
+      agentId: "writer",
+      payload: { kind: "writer.run", runId: "r_direct" },
+      maxAttempts: 1,
+    });
+
+    if (!runtime.listStreams) {
+      throw new Error("expected runtime.listStreams to exist for this regression");
+    }
+    const originalListStreams = runtime.listStreams.bind(runtime);
+    runtime.listStreams = (async (prefix?: string) => {
+      if (prefix === "jobs/") {
+        throw new Error("cold getJob should not scan jobs/");
+      }
+      return originalListStreams(prefix);
+    }) as typeof runtime.listStreams;
+
+    const loaded = await queue.getJob(created.id);
+    expect(loaded?.id).toBe(created.id);
+    expect(loaded?.status).toBe("queued");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("jsonl queue: cold targeted job mutations do not require scanning the full job manifest", async () => {
+  const dir = await mkTmp("receipt-queue-cold-targeted-job-op");
+  try {
+    const runtimeA = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob
+    );
+    const queueA = jsonlQueue({ runtime: runtimeA, stream: "jobs" });
+    const created = await queueA.enqueue({
+      agentId: "writer",
+      payload: { kind: "writer.run", runId: "r_targeted_ops" },
+      maxAttempts: 1,
+    });
+
+    const runtimeB = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob
+    );
+    const queueB = jsonlQueue({ runtime: runtimeB, stream: "jobs" });
+
+    if (!runtimeB.listStreams) {
+      throw new Error("expected runtime.listStreams to exist for this regression");
+    }
+    const originalListStreams = runtimeB.listStreams.bind(runtimeB);
+    runtimeB.listStreams = (async (prefix?: string) => {
+      if (prefix === "jobs/") {
+        throw new Error("cold targeted job mutations should not scan jobs/");
+      }
+      return originalListStreams(prefix);
+    }) as typeof runtimeB.listStreams;
+
+    const leased = await queueB.leaseJob(created.id, "worker_targeted", 5_000);
+    expect(leased?.id).toBe(created.id);
+    expect(leased?.status).toBe("leased");
+
+    const heartbeated = await queueB.heartbeat(created.id, "worker_targeted", 5_000);
+    expect(heartbeated?.status).toBe("running");
+
+    const completed = await queueB.complete(created.id, "worker_targeted", { ok: true });
+    expect(completed?.status).toBe("completed");
+
+    const settled = await queueA.getJob(created.id);
+    expect(settled?.status).toBe("completed");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("jsonl queue: cold enqueue without singleton scans does not require the full job manifest", async () => {
+  const dir = await mkTmp("receipt-queue-cold-enqueue");
+  try {
+    const runtime = createRuntime<JobCmd, JobEvent, JobState>(
+      jsonlStore<JobEvent>(dir),
+      jsonBranchStore(dir),
+      decideJob,
+      reduceJob,
+      initialJob
+    );
+    const queue = jsonlQueue({ runtime, stream: "jobs" });
+
+    await queue.enqueue({
+      agentId: "writer",
+      payload: { kind: "writer.run", runId: "r_seed" },
+      maxAttempts: 1,
+    });
+
+    if (!runtime.listStreams) {
+      throw new Error("expected runtime.listStreams to exist for this regression");
+    }
+    const originalListStreams = runtime.listStreams.bind(runtime);
+    runtime.listStreams = (async (prefix?: string) => {
+      if (prefix === "jobs/") {
+        throw new Error("cold enqueue without singleton scans should not scan jobs/");
+      }
+      return originalListStreams(prefix);
+    }) as typeof runtime.listStreams;
+
+    const created = await queue.enqueue({
+      jobId: "job_direct_enqueue",
+      agentId: "writer",
+      payload: { kind: "writer.run", runId: "r_direct_enqueue" },
+      maxAttempts: 1,
+    });
+
+    expect(created.id).toBe("job_direct_enqueue");
+    expect(created.status).toBe("queued");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("jsonl queue: cross-process stale heartbeat does not append after external completion", async () => {
   const dir = await mkTmp("receipt-queue-stale-heartbeat");
   try {

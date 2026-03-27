@@ -124,3 +124,42 @@ test("resonate driver starter: submits the driver as a targeted durable rpc", as
   expect(beginRpcCalls[0]?.name).toBe("receipt.job.driver");
   expect(beginRpcCalls[0]?.payload.jobId).toBe("job_driver_1");
 });
+
+test("resonate driver starter: allows callers to redrive with a distinct dispatch key", async () => {
+  const beginRpcCalls: Array<{
+    readonly id: string;
+    readonly payload: Record<string, unknown>;
+  }> = [];
+  const client = {
+    beginRpc: async (id: string, _name: string, payload: Record<string, unknown>, _options: Record<string, unknown>) => {
+      beginRpcCalls.push({ id, payload });
+      return {
+        id,
+        result: async () => undefined,
+        done: async () => true,
+      };
+    },
+    options: (opts?: Record<string, unknown>) => opts ?? {},
+  };
+  const startDriver = createResonateDriverStarter(client);
+
+  await startDriver({
+    id: "job_driver_2",
+    agentId: "writer",
+    lane: "collect",
+    payload: { kind: "writer.run" },
+    status: "queued",
+    attempt: 0,
+    maxAttempts: 1,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    commands: [],
+  }, {
+    dispatchKey: "job_driver_2:redrive:1",
+  });
+
+  expect(beginRpcCalls).toEqual([{
+    id: "job_driver_2:redrive:1",
+    payload: { jobId: "job_driver_2" },
+  }]);
+});

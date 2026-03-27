@@ -9,7 +9,7 @@ import { Hono } from "hono";
 
 import type { JobBackend } from "./adapters/job-backend";
 import { jsonlStore, jsonBranchStore } from "./adapters/jsonl";
-import { jsonlQueue, type EnqueueJobInput } from "./adapters/jsonl-queue";
+import { jsonlQueue, type EnqueueJobInput, type QueueJob } from "./adapters/jsonl-queue";
 import {
   createMemoryTools,
   decideMemory,
@@ -157,6 +157,7 @@ const baseQueue = jsonlQueue({
   stream: JOB_STREAM,
   watchDir: DATA_DIR,
   expireLeasesOnRefresh: JOB_BACKEND === "jsonl",
+  fullRefreshWindowMs: Number(process.env.RESONATE_QUEUE_FULL_REFRESH_MS ?? (JOB_BACKEND === "resonate" ? 300_000 : 30_000)),
   onJobChange: async (jobs) => {
     for (const job of jobs) {
       sse.publish("jobs", job.id);
@@ -358,6 +359,13 @@ const delegationTools = createDelegationTools({
   dataDir: DATA_DIR,
 });
 
+const redriveQueuedJobRef = JOB_BACKEND === "resonate"
+  ? {
+      current: undefined as (((job: QueueJob) => Promise<void>) | undefined),
+      lastAttemptAt: new Map<string, number>(),
+    }
+  : undefined;
+
 const { service: factoryService } = createFactoryServiceRuntime({
   dataDir: DATA_DIR,
   queue,
@@ -366,6 +374,11 @@ const { service: factoryService } = createFactoryServiceRuntime({
   repoRoot: WORKSPACE_ROOT,
   codexBin: FACTORY_RUNTIME.codexBin,
   memoryTools,
+  redriveQueuedJob: redriveQueuedJobRef
+    ? async (job) => {
+        await redriveQueuedJobRef.current?.(job);
+      }
+    : undefined,
 });
 const factoryWorkerHandlers = createFactoryWorkerHandlers(factoryService);
 const agentRunner = createAgentRunner({
@@ -754,13 +767,27 @@ const resonateRoleRuntime = JOB_BACKEND === "resonate"
       },
     })
   : undefined;
+const startResonateDriver = JOB_BACKEND === "resonate"
+  ? createResonateDriverStarter(resonateRoleRuntime!.client)
+  : undefined;
+if (redriveQueuedJobRef && PROCESS_ROLE === "api") {
+  redriveQueuedJobRef.current = async (job) => {
+    const now = Date.now();
+    const lastAttemptAt = redriveQueuedJobRef.lastAttemptAt.get(job.id) ?? 0;
+    if (now - lastAttemptAt < 5_000) return;
+    redriveQueuedJobRef.lastAttemptAt.set(job.id, now);
+    await startResonateDriver!(job, {
+      dispatchKey: `${job.id}:redrive:${now}`,
+    });
+  };
+}
 if (JOB_BACKEND === "resonate" && PROCESS_ROLE === "worker-chat") {
   registerResonateAgentActionWorker(resonateRoleRuntime!.client, DATA_DIR);
 }
 if (JOB_BACKEND === "resonate") {
   queueImpl = resonateJobBackend({
     base: baseQueue,
-    startDriver: createResonateDriverStarter(resonateRoleRuntime!.client),
+    startDriver: startResonateDriver!,
     onDispatchError: (error, job) => {
       console.error(`[resonate dispatch ${job.id}]`, error);
     },
@@ -1133,7 +1160,7 @@ app.notFound(() => text(404, "Not found"));
 
 const shouldServeHttp = JOB_BACKEND === "jsonl" || PROCESS_ROLE === "api";
 const shouldRunHeartbeats = JOB_BACKEND === "jsonl" || PROCESS_ROLE === "api";
-const queueRefreshMs = Number(process.env.RESONATE_QUEUE_REFRESH_MS ?? 1_000);
+const queueRefreshMs = Number(process.env.RESONATE_QUEUE_REFRESH_MS ?? 5_000);
 let uiWarmupScheduled = false;
 const scheduleUiWarmup = (): void => {
   if (uiWarmupScheduled) return;
@@ -1142,10 +1169,7 @@ const scheduleUiWarmup = (): void => {
   const runWarmup = async (): Promise<void> => {
     try {
       await factoryService.ensureBootstrap();
-      await Promise.allSettled([
-        factoryService.listObjectives(),
-        queue.listJobs({ limit: 120 }),
-      ]);
+      await factoryService.listObjectives();
     } catch (err) {
       console.error("[factory ui warmup]", err);
     }
@@ -1167,14 +1191,29 @@ if (shouldRunHeartbeats) {
   for (const hb of heartbeats) hb.start();
 }
 
-let queueRefreshTimer: ReturnType<typeof setInterval> | undefined;
+let queueRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 if (JOB_BACKEND === "resonate" && PROCESS_ROLE === "api" && Number.isFinite(queueRefreshMs) && queueRefreshMs > 0) {
-  queueRefreshTimer = setInterval(() => {
-    queue.refresh().catch((err) => {
-      console.error("[resonate queue refresh]", err);
-    });
-  }, Math.max(100, Math.floor(queueRefreshMs)));
-  queueRefreshTimer.unref();
+  let refreshInFlight = false;
+  const refreshIntervalMs = Math.max(1_000, Math.floor(queueRefreshMs));
+  const scheduleNextQueueRefresh = (): void => {
+    queueRefreshTimer = setTimeout(async () => {
+      if (refreshInFlight) {
+        scheduleNextQueueRefresh();
+        return;
+      }
+      refreshInFlight = true;
+      try {
+        await queue.refresh();
+      } catch (err) {
+        console.error("[resonate queue refresh]", err);
+      } finally {
+        refreshInFlight = false;
+        scheduleNextQueueRefresh();
+      }
+    }, refreshIntervalMs);
+    queueRefreshTimer.unref();
+  };
+  scheduleNextQueueRefresh();
 }
 
 const receiptWatcher = shouldServeHttp
@@ -1218,7 +1257,7 @@ const shutdown = (signal: string): void => {
   shuttingDown = true;
   console.log(`Receipt server shutting down (${signal})`);
   receiptWatcher?.close();
-  if (queueRefreshTimer) clearInterval(queueRefreshTimer);
+  if (queueRefreshTimer) clearTimeout(queueRefreshTimer);
   for (const worker of workers) worker.stop();
   for (const hb of heartbeats) hb.stop();
   resonateRoleRuntime?.stop();

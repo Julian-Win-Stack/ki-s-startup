@@ -48,11 +48,17 @@ export const createResonateClient = (role: ReceiptProcessRole): Resonate =>
   });
 
 type DriverStarterClient = Pick<Resonate, "beginRpc" | "options">;
+type DriverDispatchOptions = {
+  readonly dispatchKey?: string;
+};
 
 export const createResonateDriverStarter = (client: DriverStarterClient) =>
-  async (job: QueueJob): Promise<void> => {
+  async (job: QueueJob, opts?: DriverDispatchOptions): Promise<void> => {
+    const dispatchKey = typeof opts?.dispatchKey === "string" && opts.dispatchKey.trim().length > 0
+      ? opts.dispatchKey.trim()
+      : job.id;
     await client.beginRpc(
-      job.id,
+      dispatchKey,
       RESONATE_DRIVER_FUNCTION,
       { jobId: job.id } satisfies DriverInvocationPayload,
       client.options({

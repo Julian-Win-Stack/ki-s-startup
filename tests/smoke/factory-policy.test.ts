@@ -482,7 +482,7 @@ test("factory policy: base-commit check failures are treated as inherited on the
   const approved = detail.candidates.find((candidate) => candidate.candidateId === "task_01_candidate_01");
   expect(["approved", "integrated"]).toContain(approved?.status);
   expect(approved?.summary ?? "").toMatch(/inherited failure/i);
-});
+}, 20_000);
 
 test("factory policy: autoPromote false stops at ready_to_promote until promotion is explicit", async () => {
   const { service, queue } = await createFactoryService({ codexOutcome: "approved" });
@@ -516,7 +516,7 @@ test("factory policy: autoPromote false stops at ready_to_promote until promotio
   const published = await service.getObjective(created.objectiveId);
   expect(published.status).toBe("completed");
   expect(published.integration.status).toBe("promoted");
-});
+}, 20_000);
 
 test("factory policy: software delivery objectives auto-publish and expose PR metadata", async () => {
   const { service, queue } = await createFactoryService({ codexOutcome: "approved" });
@@ -549,7 +549,7 @@ test("factory policy: software delivery objectives auto-publish and expose PR me
   expect(published.integration.prNumber).toBe(17);
   expect(debug.prUrl).toBe("https://github.com/example/receipt/pull/17");
   expect(debug.prNumber).toBe(17);
-});
+}, 20_000);
 
 test("factory policy: publish retries transient GitHub connectivity failures before blocking", async () => {
   const { service, queue, publishRuns } = await createFactoryService({

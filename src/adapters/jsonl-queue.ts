@@ -139,6 +139,7 @@ type JsonlQueueOptions = {
   readonly onJobChange?: (jobs: ReadonlyArray<QueueJob>) => Promise<void> | void;
   readonly watchDir?: string;
   readonly expireLeasesOnRefresh?: boolean;
+  readonly fullRefreshWindowMs?: number;
 };
 
 const TERMINAL = new Set<JobStatus>(["completed", "failed", "canceled"]);
@@ -192,6 +193,9 @@ const sameJob = (left: QueueJob | undefined, right: QueueJob | undefined): boole
 export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
   const nowTs = opts.now ?? Date.now;
   const expireLeasesOnRefresh = opts.expireLeasesOnRefresh ?? true;
+  const fullRefreshWindowMs = Number.isFinite(opts.fullRefreshWindowMs)
+    ? Math.max(0, Math.floor(opts.fullRefreshWindowMs ?? CROSS_PROCESS_FULL_REFRESH_MS))
+    : CROSS_PROCESS_FULL_REFRESH_MS;
   const jobStateCache = new Map<string, JobState>();
   let knownJobIds: ReadonlyArray<string> | undefined;
   let writeLock = Promise.resolve();
@@ -339,7 +343,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     addSessionMember(stored);
     index.version += 1;
     index.updatedAt = Math.max(index.updatedAt ?? 0, stored.updatedAt, stored.createdAt);
-    index.loaded = true;
   };
 
   const resetIndex = (jobs: ReadonlyArray<QueueJob>): QueueJob[] => {
@@ -510,7 +513,7 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
   };
 
   const refresh = async (): Promise<QueueSnapshot> => {
-    if (expireLeasesOnRefresh || !index.loaded || (nowTs() - lastFullRefreshAt) >= CROSS_PROCESS_FULL_REFRESH_MS) {
+    if (expireLeasesOnRefresh || !index.loaded || (nowTs() - lastFullRefreshAt) >= fullRefreshWindowMs) {
       const changed = await refreshAllJobs();
       if (changed.length > 0) notifyWaiters();
       await publishChangedJobList(changed);
@@ -575,7 +578,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
   };
 
   const getIndexedJob = async (jobId: string): Promise<QueueJob | undefined> => {
-    await ensureIndexLoaded();
     const changed = new Map<string, QueueJob>();
     const loaded = await withWriteLock(async () => {
       const current = await loadAuthoritativeJob(jobId, changed);
@@ -695,19 +697,22 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
 
   return {
     enqueue: async (input) => {
-      await ensureIndexLoaded();
-      await syncDiscoveredJobs(true);
+      const singletonMode = input.singletonMode ?? "allow";
+      const requiresSessionScan = singletonMode === "cancel" || singletonMode === "steer";
+      if (requiresSessionScan) {
+        await ensureIndexLoaded();
+        await syncDiscoveredJobs(true);
+      }
       const changed = new Map<string, QueueJob>();
       const created = await withWriteLock(async () => {
         const ts = nowTs();
         const jobId = input.jobId ?? `job_${ts.toString(36)}_${randomUUID().slice(0, 6)}`;
-        const existing = index.jobsById.get(jobId);
+        const existing = await loadAuthoritativeJob(jobId, changed);
         if (existing) return cloneJob(existing);
-        const singletonMode = input.singletonMode ?? "allow";
         const sessionKey = typeof input.sessionKey === "string" && input.sessionKey.trim()
           ? input.sessionKey.trim()
           : undefined;
-        if (sessionKey) {
+        if (sessionKey && requiresSessionScan) {
           const active = sortedByRecent(activeBySession(sessionKey, jobId));
           if (singletonMode === "cancel" && active.length > 0) {
             for (const prior of active) {
@@ -795,7 +800,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     },
 
     leaseJob: async (jobId, workerId, leaseMs) => {
-      await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const leased = await withWriteLock(async () => {
         const currentJob = await loadAuthoritativeJob(jobId, changed);
@@ -818,7 +822,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     },
 
     heartbeat: async (jobId, workerId, leaseMs) => {
-      await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const current = await withWriteLock(async () => {
         const currentJob = await loadAuthoritativeJob(jobId, changed);
@@ -840,7 +843,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     },
 
     progress: async (jobId, workerId, result) => {
-      await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const current = await withWriteLock(async () => {
         const currentJob = await loadAuthoritativeJob(jobId, changed);
@@ -862,7 +864,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     },
 
     complete: async (jobId, workerId, result) => {
-      await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const current = await withWriteLock(async () => {
         const currentJob = await loadAuthoritativeJob(jobId, changed);
@@ -884,7 +885,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     },
 
     fail: async (jobId, workerId, error, noRetry, result) => {
-      await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const current = await withWriteLock(async () => {
         const currentJob = await loadAuthoritativeJob(jobId, changed);
@@ -910,7 +910,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     },
 
     cancel: async (jobId, reason, by) => {
-      await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const current = await withWriteLock(async () => {
         const currentJob = await loadAuthoritativeJob(jobId, changed);
@@ -931,7 +930,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     },
 
     queueCommand: async (input) => {
-      await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const command = await withWriteLock(async () => {
         const current = await loadAuthoritativeJob(input.jobId, changed);
@@ -971,7 +969,6 @@ export const jsonlQueue = (opts: JsonlQueueOptions): JsonlQueue => {
     },
 
     consumeCommands: async (jobId, filter) => {
-      await ensureIndexLoaded();
       const changed = new Map<string, QueueJob>();
       const consumed = await withWriteLock(async () => {
         const current = await loadAuthoritativeJob(jobId, changed);

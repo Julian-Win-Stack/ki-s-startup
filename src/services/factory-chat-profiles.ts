@@ -245,14 +245,20 @@ export const factoryChatStream = (repoRoot: string, profileId: string, objective
 
 export const discoverFactoryChatProfiles = async (profileRoot: string): Promise<ReadonlyArray<FactoryChatProfile>> => {
   const profilesDir = ensureProfileDir(profileRoot);
-  const entries = await fs.readdir(profilesDir, { withFileTypes: true }).catch(() => []);
-  const loaded = await Promise.all(entries
-    .filter((entry) => entry.isDirectory())
-    .map(async (entry) => {
-      const dirPath = path.join(profilesDir, entry.name);
+  const entries = await fs.readdir(profilesDir).catch((err) => {
+    if ((err as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return [];
+    throw err;
+  });
+  const loaded = await Promise.all(entries.map(async (entry) => {
+      const dirPath = path.join(profilesDir, entry);
+      const stat = await fs.stat(dirPath).catch((err) => {
+        if ((err as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return undefined;
+        throw err;
+      });
+      if (!stat?.isDirectory()) return undefined;
       const mdPath = path.join(dirPath, "PROFILE.md");
       const mdRaw = await fs.readFile(mdPath, "utf-8");
-      const parsed = parseProfileMarkdown(mdRaw, entry.name);
+      const parsed = parseProfileMarkdown(mdRaw, entry);
       return {
         ...parsed.manifest,
         dirPath,
@@ -261,7 +267,9 @@ export const discoverFactoryChatProfiles = async (profileRoot: string): Promise<
         mdHash: sha256(mdRaw),
       } satisfies FactoryChatProfile;
     }));
-  return loaded.sort((a, b) => a.id.localeCompare(b.id));
+  return loaded
+    .filter((profile): profile is FactoryChatProfile => Boolean(profile))
+    .sort((a, b) => a.id.localeCompare(b.id));
 };
 
 export const resolveFactoryChatProfile = async (input: {

@@ -634,6 +634,7 @@ export class FactoryService {
   readonly git: HubGit;
   readonly profileRoot: string;
   private readonly cloudExecutionContextProvider?: FactoryServiceOptions["cloudExecutionContextProvider"];
+  private readonly redriveQueuedJob?: FactoryServiceOptions["redriveQueuedJob"];
   private readonly baselineCheckCache = new Map<string, Promise<{
     readonly digest: string;
     readonly excerpt: string;
@@ -663,6 +664,7 @@ export class FactoryService {
     this.codexExecutor = opts.codexExecutor;
     this.memoryTools = opts.memoryTools;
     this.cloudExecutionContextProvider = opts.cloudExecutionContextProvider;
+    this.redriveQueuedJob = opts.redriveQueuedJob;
     this.git = new HubGit({
       dataDir: opts.dataDir,
       repoRoot: resolveRepoRoot(opts.repoRoot),
@@ -1354,14 +1356,24 @@ export class FactoryService {
         }
       : normalizedPolicy;
     const sourceStatus = await this.git.sourceStatus();
-    if (!input.baseHash && sourceStatus.dirty && profile.objectivePolicy.defaultTaskExecutionMode === "worktree") {
+    const autoPinnedDirtySource =
+      !input.baseHash
+      && sourceStatus.dirty
+      && profile.objectivePolicy.defaultTaskExecutionMode === "worktree";
+    if (autoPinnedDirtySource && !sourceStatus.head) {
       throw new FactoryServiceError(
         409,
-        "source repository has uncommitted changes. Factory objectives only see committed Git history. Commit or stash changes first, or provide baseHash explicitly.",
+        "source repository has uncommitted changes but no committed HEAD to pin. Commit once or provide baseHash explicitly.",
       );
     }
+    const sourceWarnings = autoPinnedDirtySource
+      ? [
+          `Pinned Factory worktrees to committed HEAD ${sourceStatus.head!.slice(0, 8)}. ${sourceStatus.changedFiles.length} uncommitted ${sourceStatus.changedFiles.length === 1 ? "change remains" : "changes remain"} local to the source checkout and ${sourceStatus.changedFiles.length === 1 ? "is" : "are"} not visible to objective worktrees.`,
+        ]
+      : undefined;
     const objectiveId = input.objectiveId?.trim() || this.makeId("objective");
-    const baseHash = await this.git.resolveBaseHash(input.baseHash);
+    const requestedBaseHash = input.baseHash ?? (autoPinnedDirtySource ? sourceStatus.head : undefined);
+    const baseHash = await this.git.resolveBaseHash(requestedBaseHash);
     const createdAt = Date.now();
     await this.writeObjectiveProfileArtifacts(objectiveId, profile);
     const initialTask = this.createObjectiveTaskRecord({
@@ -1382,6 +1394,7 @@ export class FactoryService {
         prompt,
         channel,
         baseHash,
+        sourceWarnings,
         objectiveMode,
         severity,
         checks,
@@ -1549,15 +1562,9 @@ export class FactoryService {
         recentJobs: [],
       };
     }
-    const [detail, jobs] = await Promise.all([
-      this.getObjective(objectiveId),
-      this.queue.listJobs({ limit: 40 }),
-    ]);
+    const detail = await this.getObjective(objectiveId);
     const activeTasks = detail.tasks.filter((task) => isActiveJobStatus(task.jobStatus));
-    const recentJobs = jobs
-      .filter((job) => (job.payload as Record<string, unknown>).objectiveId === objectiveId)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-      .slice(0, 8);
+    const recentJobs = this.objectiveJobsForTasks(detail.tasks).slice(0, 8);
     return {
       selectedObjectiveId: objectiveId,
       objectiveTitle: detail.title,
@@ -1787,7 +1794,11 @@ export class FactoryService {
       && !["completed", "failed", "canceled"].includes(item.status)
       && item.scheduler.slotState === "active"
     )) {
-      await this.enqueueObjectiveControl(objective.objectiveId, "admitted");
+      try {
+        await this.reactObjective(objective.objectiveId);
+      } catch {
+        await this.enqueueObjectiveControl(objective.objectiveId, "admitted");
+      }
     }
   }
 
@@ -2335,6 +2346,18 @@ export class FactoryService {
     }
   }
 
+  private async redriveQueuedActiveTasks(state: FactoryState): Promise<void> {
+    if (!this.redriveQueuedJob) return;
+    for (const taskId of [...state.workflow.activeTaskIds]) {
+      const task = state.workflow.tasksById[taskId];
+      if (!task?.jobId) continue;
+      if (task.status !== "running" && task.status !== "reviewing") continue;
+      const job = await this.queue.getJob(task.jobId);
+      if (!job || job.status !== "queued") continue;
+      await this.redriveQueuedJob(job);
+    }
+  }
+
   async reactObjective(objectiveId: string): Promise<void> {
     await this.rebalanceObjectiveSlots();
     const refreshState = () => this.getObjectiveState(objectiveId);
@@ -2347,6 +2370,7 @@ export class FactoryService {
     if (state.scheduler.slotState === "queued") return;
 
     await this.syncFailedActiveTasks(state);
+    await this.redriveQueuedActiveTasks(state);
     state = await refreshState();
     if (this.isTerminalObjectiveStatus(state.status)) {
       await this.rebalanceObjectiveSlots();
@@ -3154,6 +3178,45 @@ export class FactoryService {
     return this.queue.getJob(jobId);
   }
 
+  private queueJobFromRecord(job: JobRecord): QueueJob {
+    return {
+      id: job.id,
+      agentId: job.agentId,
+      lane: job.lane,
+      sessionKey: job.sessionKey,
+      singletonMode: job.singletonMode,
+      payload: { ...job.payload },
+      status: job.status,
+      attempt: job.attempt,
+      maxAttempts: job.maxAttempts,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      leaseOwner: job.workerId,
+      leaseUntil: job.leaseUntil,
+      lastError: job.lastError,
+      result: job.result ? { ...job.result } : undefined,
+      canceledReason: job.canceledReason,
+      abortRequested: job.abortRequested,
+      commands: job.commands.map((command) => ({
+        ...command,
+        payload: command.payload ? { ...command.payload } : undefined,
+      })),
+    };
+  }
+
+  private objectiveJobsForTasks(tasks: ReadonlyArray<Pick<FactoryTaskView, "job">>): ReadonlyArray<QueueJob> {
+    const jobsById = new Map<string, QueueJob>();
+    for (const task of tasks) {
+      if (!task.job) continue;
+      jobsById.set(task.job.id, this.queueJobFromRecord(task.job));
+    }
+    return [...jobsById.values()].sort((a, b) =>
+      b.updatedAt - a.updatedAt
+      || b.createdAt - a.createdAt
+      || b.id.localeCompare(a.id)
+    );
+  }
+
   private nextTaskOrdinal(state: FactoryState): number {
     return state.workflow.taskIds
       .map((taskId) => /^task_(\d+)$/i.exec(taskId)?.[1])
@@ -3813,6 +3876,7 @@ export class FactoryService {
       updatedAt: state.updatedAt,
       latestSummary: state.latestSummary,
       blockedReason: state.blockedReason,
+      sourceWarnings: state.sourceWarnings,
       blockedExplanation: needsBlockedReceipts
         ? this.buildBlockedExplanation(state, resolvedReceipts)
         : undefined,
@@ -3838,9 +3902,8 @@ export class FactoryService {
   }
 
   private async buildObjectiveDetail(state: FactoryState, queuePosition?: number): Promise<FactoryObjectiveDetail> {
-    const [chain, jobs, repoSkillPaths] = await Promise.all([
+    const [chain, repoSkillPaths] = await Promise.all([
       this.runtime.chain(objectiveStream(state.objectiveId)),
-      this.queue.listJobs({ limit: 80 }),
       this.collectRepoSkillPaths(),
     ]);
     const receipts = this.summarizedReceipts(chain, 60);
@@ -3886,17 +3949,13 @@ export class FactoryService {
         } satisfies FactoryTaskView;
       })
     );
-    const objectiveJobs = jobs
-      .filter((job) => {
-        const payload = job.payload as Record<string, unknown>;
-        return payload.objectiveId === state.objectiveId;
-      })
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+    const objectiveJobs = this.objectiveJobsForTasks(tasks);
     return {
       ...await this.buildObjectiveCard(state, queuePosition, receipts),
       prompt: state.prompt,
       channel: state.channel,
       baseHash: state.baseHash,
+      sourceWarnings: state.sourceWarnings,
       checks: state.checks,
       profile: this.objectiveProfileForState(state),
       policy: state.policy,
@@ -3922,17 +3981,11 @@ export class FactoryService {
   }
 
   private async buildObjectiveDebug(state: FactoryState, queuePosition?: number): Promise<FactoryDebugProjection> {
-    const [detail, chain, jobs] = await Promise.all([
+    const [detail, chain] = await Promise.all([
       this.buildObjectiveDetail(state, queuePosition),
       this.runtime.chain(objectiveStream(state.objectiveId)),
-      this.queue.listJobs({ limit: 80 }),
     ]);
-    const objectiveJobs = jobs
-      .filter((job) => {
-        const payload = job.payload as Record<string, unknown>;
-        return payload.objectiveId === state.objectiveId;
-      })
-      .sort((a, b) => b.updatedAt - a.updatedAt);
+    const objectiveJobs = this.objectiveJobsForTasks(detail.tasks);
     const activeJobs = objectiveJobs.filter((job) => !isTerminalJobStatus(job.status)).slice(0, 12);
     const taskWorktrees = await Promise.all(
       detail.tasks.map(async (task) => {
@@ -5788,7 +5841,20 @@ export class FactoryService {
   }
 
   private async ensureWorkspaceReceiptCli(workspacePath: string): Promise<string> {
-    const binDir = path.join(workspacePath, ".receipt", "bin");
+    const repoReceiptBinDir = path.join(workspacePath, ".receipt", "bin");
+    const repoShimPath = path.join(repoReceiptBinDir, process.platform === "win32" ? "receipt.cmd" : "receipt");
+    if (workspacePath === this.git.repoRoot && await pathExists(repoShimPath)) {
+      return repoReceiptBinDir;
+    }
+    const shimRoot = workspacePath === this.git.repoRoot
+      ? path.join(
+          this.dataDir,
+          "factory",
+          "repo-bin",
+          createHash("sha1").update(workspacePath).digest("hex").slice(0, 12),
+        )
+      : workspacePath;
+    const binDir = path.join(shimRoot, ".receipt", "bin");
     const shimPath = path.join(binDir, process.platform === "win32" ? "receipt.cmd" : "receipt");
     const { command, args, entryPath } = resolveCliInvocation(import.meta.url);
     await fs.mkdir(binDir, { recursive: true });

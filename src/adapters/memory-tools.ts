@@ -67,19 +67,28 @@ export const initialMemoryState: MemoryState = { entries: [], accesses: [] };
 
 export const decideMemory: Decide<MemoryCmd, MemoryEvent> = (cmd) => [cmd.event];
 
+const insertNewestFirst = <T extends { readonly ts: number }>(
+  item: T,
+  items: ReadonlyArray<T>,
+): ReadonlyArray<T> => {
+  const next = [...items];
+  const index = next.findIndex((candidate) => item.ts >= candidate.ts);
+  if (index === -1) next.push(item);
+  else next.splice(index, 0, item);
+  return next;
+};
+
 export const reduceMemory: Reducer<MemoryState, MemoryEvent> = (state, event) => {
   if (event.type === "memory.committed") {
     return {
       ...state,
-      entries: [event.entry, ...state.entries]
-        .sort((a, b) => b.ts - a.ts || b.id.localeCompare(a.id)),
+      entries: insertNewestFirst(event.entry, state.entries),
     };
   }
   if (event.type === "memory.accessed") {
     return {
       ...state,
-      accesses: [event.access, ...state.accesses]
-        .sort((a, b) => b.ts - a.ts || b.id.localeCompare(a.id)),
+      accesses: insertNewestFirst(event.access, state.accesses),
     };
   }
   throw new Error(`unknown memory event: ${(event as { type?: string }).type ?? "unknown"}`);

@@ -58,6 +58,28 @@ test("factory chat profiles: discovers checked-in profiles under the profile roo
   expect(profiles.map((profile) => profile.id)).toEqual(["generalist", "software"]);
 });
 
+test("factory chat profiles: discovery does not depend on dirent type metadata", async () => {
+  const root = await createTempDir("receipt-factory-profiles");
+  await writeProfile(root, { id: "generalist", label: "Generalist", default: true });
+  await writeProfile(root, { id: "software", label: "Software" });
+
+  const originalReaddir = fs.readdir.bind(fs);
+  const readdirSpy = (async (...args: Parameters<typeof originalReaddir>) => {
+    const [target, options] = args;
+    if (String(target) === path.join(root, "profiles")) {
+      expect(options).toBeUndefined();
+    }
+    return originalReaddir(...args);
+  }) as typeof originalReaddir;
+  Object.assign(fs, { readdir: readdirSpy });
+  try {
+    const profiles = await discoverFactoryChatProfiles(root);
+    expect(profiles.map((profile) => profile.id)).toEqual(["generalist", "software"]);
+  } finally {
+    Object.assign(fs, { readdir: originalReaddir });
+  }
+});
+
 test("factory chat profiles: resolves an explicitly requested profile with the minimal contract", async () => {
   const profileRoot = await createTempDir("receipt-factory-profile-root");
   const repoRoot = await createTempDir("receipt-factory-target-repo");
