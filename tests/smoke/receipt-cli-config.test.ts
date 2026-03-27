@@ -90,3 +90,17 @@ test("receipt cli config: reports invalid schema with reason", async () => {
     expect(state.configPath).toBe(configPath);
   }
 });
+
+test("receipt cli config: reports malformed json with reason", async () => {
+  const tempHome = await createTempDir("receipt-cli-config-bad-json");
+  const configPath = resolveReceiptCliConfigPath(tempHome);
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(configPath, "{ not valid json", "utf-8");
+
+  const state = await readReceiptCliConfigState(tempHome);
+  expect(state.status).toBe("invalid");
+  if (state.status === "invalid") {
+    expect(state.reason).toContain("not valid JSON");
+    expect(state.configPath).toBe(configPath);
+  }
+});

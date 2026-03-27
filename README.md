@@ -88,7 +88,7 @@ receipt fork <run-id> --at 12
 - `aws` installed and authenticated
 
 ```bash
-npm run eval:axiom:first
+receipt start --openai-key "sk-..."
 ```
 
 ## Public SDK

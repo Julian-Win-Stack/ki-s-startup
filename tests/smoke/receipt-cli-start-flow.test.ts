@@ -155,3 +155,70 @@ test("receipt start: successful setup writes config", async () => {
   expect(writes[0]?.github.username).toBe("octocat");
   expect(writes[0]?.aws.accountId).toBe("111111111111");
 });
+
+test("receipt start --reset: ignores saved selections", async () => {
+  const writes: ReceiptCliConfig[] = [];
+  let confirmCalls = 0;
+  const runCommand = makeRunCommand({
+    [commandKey("gh", ["--version"])]: { ok: true, stdout: "gh version 2.81.0", stderr: "" },
+    [commandKey("gh", ["auth", "status", "--hostname", "github.com", "--json", "hosts"])]: {
+      ok: true,
+      stdout: JSON.stringify({
+        hosts: {
+          "github.com": [{ user: "octocat", active: true }],
+        },
+      }),
+      stderr: "",
+    },
+    [commandKey("aws", ["--version"])]: { ok: true, stdout: "aws-cli/2.34.0", stderr: "" },
+    [commandKey("aws", ["configure", "list-profiles"])]: { ok: true, stdout: "dev\nprod", stderr: "" },
+    [commandKey("aws", ["sts", "get-caller-identity", "--output", "json", "--profile", "dev"])]: {
+      ok: true,
+      stdout: JSON.stringify({ Account: "111111111111", Arn: "arn:aws:iam::111111111111:user/dev" }),
+      stderr: "",
+    },
+    [commandKey("aws", ["sts", "get-caller-identity", "--output", "json", "--profile", "prod"])]: {
+      ok: true,
+      stdout: JSON.stringify({ Account: "222222222222", Arn: "arn:aws:iam::222222222222:user/prod" }),
+      stderr: "",
+    },
+    [commandKey("aws", ["sts", "get-caller-identity", "--output", "json"])]: { ok: false, stdout: "", stderr: "no default" },
+  });
+
+  await __receiptCliStartTestables.runReceiptStart(
+    { reset: true },
+    {
+      runCommand,
+      validateOpenAiKey: async (candidate) => candidate === "new-valid-key",
+      ensurePromptPassword: async () => "new-valid-key",
+      loadReceiptCliConfig: async () => ({
+        version: 1,
+        setupCompletedAt: new Date(0).toISOString(),
+        openai: { apiKey: "old-key" },
+        github: { hostname: "github.com", username: "old-user" },
+        aws: {
+          profile: "dev",
+          accountId: "111111111111",
+          arn: "arn:aws:iam::111111111111:user/dev",
+        },
+      }),
+      writeReceiptCliConfig: async (config) => {
+        writes.push(config);
+        return "/tmp/receipt-config.json";
+      },
+      confirmPrompt: async () => {
+        confirmCalls += 1;
+        return true;
+      },
+      selectPrompt: async (_message, options) => options[1]?.value ?? options[0]!.value,
+      intro: () => undefined,
+      outro: () => undefined,
+      log: () => undefined,
+    },
+  );
+
+  expect(confirmCalls).toBe(0);
+  expect(writes.length).toBe(1);
+  expect(writes[0]?.openai.apiKey).toBe("new-valid-key");
+  expect(writes[0]?.aws.profile).toBe("prod");
+});

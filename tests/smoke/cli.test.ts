@@ -49,3 +49,15 @@ test("cli: invalid setup config fails until --reset", async () => {
   expect(failed.code).toBe(1);
   expect(failed.stderr.includes("receipt start --reset")).toBe(true);
 }, 60_000);
+
+test("cli: malformed setup config fails with recovery guidance", async () => {
+  const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "receipt-cli-bad-json-"));
+  const configDir = path.join(tempHome, ".receipt");
+  await fs.mkdir(configDir, { recursive: true });
+  await fs.writeFile(path.join(configDir, "config.json"), "{ not valid json", "utf-8");
+
+  const failed = await run(["help"], { HOME: tempHome });
+  expect(failed.code).toBe(1);
+  expect(failed.stderr.includes("not valid JSON")).toBe(true);
+  expect(failed.stderr.includes("receipt start --reset")).toBe(true);
+}, 60_000);

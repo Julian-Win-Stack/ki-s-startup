@@ -52,10 +52,19 @@ export const readReceiptCliConfigState = async (homeDir = os.homedir()): Promise
   let raw = "";
   try {
     raw = await fs.readFile(configPath, "utf-8");
-  } catch {
-    return { status: "missing", configPath };
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") {
+      return { status: "missing", configPath };
+    }
+    return { status: "invalid", configPath, reason: `cannot read config file (${err.code ?? "unknown error"})` };
   }
-  const parsed = JSON.parse(raw) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return { status: "invalid", configPath, reason: "config file is not valid JSON" };
+  }
   if (!isObject(parsed)) {
     return { status: "invalid", configPath, reason: "config must be a JSON object" };
   }
